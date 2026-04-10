@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ask-seattle"
+version = "0.1.0"
+description = "Cheap binary classifier for Ask Seattle-style Reddit moderation."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "joblib>=1.4",
+  "scikit-learn>=1.4",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "ruff>=0.6",
+]
+reddit = [
+  "praw>=7.7",
+]
+transformer = [
+  "torch>=2.3",
+  "transformers>=4.40",
+]
+
+[project.scripts]
+ask-seattle = "ask_seattle.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
