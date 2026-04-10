@@ -23,7 +23,7 @@ reddit = [
 ]
 transformer = [
   "torch>=2.3",
-  "transformers>=4.40",
+  "transformers>=4.48",
 ]
 
 [project.scripts]

@@ -12,6 +12,8 @@ The first implementation is intentionally cheap: a local TF-IDF + logistic regre
 
 See [docs/labeling_policy.md](docs/labeling_policy.md) for labeling guidance.
 
+For a developer-oriented architecture overview, see [docs/developer_notes.md](docs/developer_notes.md).
+
 ## Quickstart
 
 ```bash
@@ -37,6 +39,21 @@ ask-seattle train \
 ```
 
 The seed file is only a smoke test for the pipeline. Use real subreddit labels before trusting any metric or removal threshold.
+
+There is also a larger deterministic synthetic set for exercising model training:
+
+```bash
+python scripts/generate_synthetic_seed_data.py
+ask-seattle train-all \
+  --data data/seed/askseattle_synthetic.jsonl \
+  --output-dir models/bert-tiny-synthetic-smoke \
+  --min-precision 0.95 \
+  --transformer-base-model google/bert_uncased_L-2_H-128_A-2 \
+  --transformer-epochs 3 \
+  --transformer-batch-size 8
+```
+
+Synthetic data is useful for proving the training pipeline can learn a signal, but it is still blocked from production-ready model selection.
 
 Run a single prediction:
 
@@ -127,7 +144,31 @@ ask-seattle train-all \
   --min-precision 0.95
 ```
 
-The default local transformer base model is `distilbert/distilbert-base-uncased`. If transformer dependencies are not installed or the machine is not ready for transformer training, run the baseline-only comparison:
+The default local transformer preset is `distilbert`, backed by `distilbert/distilbert-base-uncased`. List supported presets:
+
+```bash
+ask-seattle transformer-presets
+```
+
+Train a specific preset:
+
+```bash
+ask-seattle train-all \
+  --data data/processed/training.jsonl \
+  --output-dir models/run-001 \
+  --transformer-preset deberta-v3-small
+```
+
+Train the core benchmark set:
+
+```bash
+ask-seattle train-all \
+  --data data/processed/training.jsonl \
+  --output-dir models/run-001 \
+  --benchmark-transformers
+```
+
+If transformer dependencies are not installed or the machine is not ready for transformer training, run the baseline-only comparison:
 
 ```bash
 ask-seattle train-all \

@@ -11,7 +11,13 @@ from ask_seattle.decision_log import export_review_csv
 from ask_seattle.model import load_model, save_model, score_post, train_and_evaluate
 from ask_seattle.moderation import decide
 from ask_seattle.reddit_data import collect_submissions, reddit_from_env, refresh_deleted_content
-from ask_seattle.transformer_model import DEFAULT_BASE_MODEL
+from ask_seattle.transformer_model import (
+    DEFAULT_BASE_MODEL,
+    DEFAULT_TRANSFORMER_BENCHMARK_PRESETS,
+    DEFAULT_TRANSFORMER_PRESET,
+    TRANSFORMER_PRESETS,
+    transformer_preset_rows,
+)
 from ask_seattle.training import train_all_models
 
 
@@ -40,11 +46,38 @@ def build_parser() -> argparse.ArgumentParser:
     train_all.add_argument("--validation-size", type=float, default=0.2)
     train_all.add_argument("--test-size", type=float, default=0.2)
     train_all.add_argument("--random-state", type=int, default=42)
-    train_all.add_argument("--transformer-base-model", default=DEFAULT_BASE_MODEL)
+    train_all.add_argument(
+        "--transformer-preset",
+        action="append",
+        choices=sorted(TRANSFORMER_PRESETS),
+        help=(
+            "Named transformer preset to train. May be repeated. Defaults to "
+            f"{DEFAULT_TRANSFORMER_PRESET!r} when no custom base model is supplied."
+        ),
+    )
+    train_all.add_argument(
+        "--benchmark-transformers",
+        action="store_true",
+        help=(
+            "Train the core transformer benchmark presets: "
+            + ", ".join(DEFAULT_TRANSFORMER_BENCHMARK_PRESETS)
+        ),
+    )
+    train_all.add_argument(
+        "--transformer-base-model",
+        default=None,
+        help=(
+            "Raw Hugging Face checkpoint id. Use this for custom experiments; preset metadata "
+            f"is skipped. Default preset base model is {DEFAULT_BASE_MODEL}."
+        ),
+    )
     train_all.add_argument("--transformer-epochs", type=int, default=2)
     train_all.add_argument("--transformer-batch-size", type=int, default=8)
     train_all.add_argument("--skip-transformer", action="store_true")
     train_all.set_defaults(func=train_all_command)
+
+    presets = subparsers.add_parser("transformer-presets", help="List supported transformer presets")
+    presets.set_defaults(func=transformer_presets_command)
 
     predict = subparsers.add_parser("predict", help="Score a single post")
     add_inference_args(predict)
@@ -130,6 +163,16 @@ def train_command(args: argparse.Namespace) -> int:
 
 
 def train_all_command(args: argparse.Namespace) -> int:
+    if args.skip_transformer and (
+        args.transformer_preset or args.benchmark_transformers or args.transformer_base_model
+    ):
+        raise SystemExit("--skip-transformer cannot be combined with transformer model options")
+    transformer_presets = args.transformer_preset
+    if args.benchmark_transformers:
+        transformer_presets = list(DEFAULT_TRANSFORMER_BENCHMARK_PRESETS)
+    if transformer_presets and args.transformer_base_model:
+        raise SystemExit("--transformer-preset cannot be combined with --transformer-base-model")
+
     posts = load_labeled_posts(args.data)
     summary = train_all_models(
         posts,
@@ -140,6 +183,7 @@ def train_all_command(args: argparse.Namespace) -> int:
         random_state=args.random_state,
         include_transformer=not args.skip_transformer,
         transformer_base_model=args.transformer_base_model,
+        transformer_presets=transformer_presets,
         transformer_epochs=args.transformer_epochs,
         transformer_batch_size=args.transformer_batch_size,
         production_ready_blocked_reason=(
@@ -147,6 +191,11 @@ def train_all_command(args: argparse.Namespace) -> int:
         ),
     )
     print(json.dumps(summary, indent=2))
+    return 0
+
+
+def transformer_presets_command(_: argparse.Namespace) -> int:
+    print(json.dumps(transformer_preset_rows(), indent=2))
     return 0
 
 

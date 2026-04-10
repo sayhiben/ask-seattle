@@ -17,8 +17,10 @@ from ask_seattle.model import (
     train_model,
 )
 from ask_seattle.transformer_model import (
+    DEFAULT_TRANSFORMER_PRESET,
     DEFAULT_BASE_MODEL,
     load_transformer_bundle,
+    resolve_transformer_preset,
     train_transformer_model,
     update_transformer_metadata,
 )
@@ -34,6 +36,7 @@ def train_all_models(
     random_state: int = 42,
     include_transformer: bool = True,
     transformer_base_model: str = DEFAULT_BASE_MODEL,
+    transformer_presets: list[str] | None = None,
     transformer_epochs: int = 2,
     transformer_batch_size: int = 8,
     production_ready_blocked_reason: str | None = None,
@@ -79,48 +82,60 @@ def train_all_models(
     )
 
     if include_transformer:
-        transformer_dir = artifact_dir / "transformer_sequence_classifier"
-        train_transformer_model(
-            split.train,
-            split.validation,
-            transformer_dir,
-            threshold=0.5,
-            base_model=transformer_base_model,
-            epochs=transformer_epochs,
-            batch_size=transformer_batch_size,
+        transformer_specs = resolve_transformer_specs(
+            transformer_base_model=transformer_base_model,
+            transformer_presets=transformer_presets,
         )
-        transformer_bundle = load_transformer_bundle(transformer_dir)
-        transformer_scores = _score_transformer_bundle(transformer_bundle, test_texts)
-        transformer_selection = select_threshold(
-            y_test,
-            transformer_scores,
-            min_precision=min_precision,
-        )
-        transformer_candidate = ModelSelection(
-            model_name="transformer_sequence_classifier",
-            threshold=transformer_selection.threshold,
-            precision=transformer_selection.precision,
-            recall=transformer_selection.recall,
-            f1=transformer_selection.f1,
-            production_ready=(
-                transformer_selection.production_ready and production_ready_blocked_reason is None
-            ),
-        )
-        update_transformer_metadata(
-            transformer_dir,
-            {
-                "threshold": transformer_selection.threshold,
-                "production_ready": transformer_candidate.production_ready,
-            },
-        )
-        candidates.append(transformer_candidate)
-        candidate_reports.append(
-            {
-                **asdict(transformer_candidate),
-                "artifact_path": str(transformer_dir),
-                "support": transformer_selection.support,
-            }
-        )
+        for spec in transformer_specs:
+            model_name = f"transformer_{spec['name']}"
+            transformer_dir = artifact_dir / model_name
+            train_transformer_model(
+                split.train,
+                split.validation,
+                transformer_dir,
+                threshold=0.5,
+                base_model=spec["base_model"],
+                epochs=transformer_epochs,
+                batch_size=transformer_batch_size,
+                max_length=int(spec["max_length"]),
+                preset_name=spec["preset"],
+            )
+            transformer_bundle = load_transformer_bundle(transformer_dir)
+            transformer_scores = _score_transformer_bundle(transformer_bundle, test_texts)
+            transformer_selection = select_threshold(
+                y_test,
+                transformer_scores,
+                min_precision=min_precision,
+            )
+            transformer_candidate = ModelSelection(
+                model_name=model_name,
+                threshold=transformer_selection.threshold,
+                precision=transformer_selection.precision,
+                recall=transformer_selection.recall,
+                f1=transformer_selection.f1,
+                production_ready=(
+                    transformer_selection.production_ready and production_ready_blocked_reason is None
+                ),
+            )
+            update_transformer_metadata(
+                transformer_dir,
+                {
+                    "threshold": transformer_selection.threshold,
+                    "production_ready": transformer_candidate.production_ready,
+                },
+            )
+            candidates.append(transformer_candidate)
+            candidate_reports.append(
+                {
+                    **asdict(transformer_candidate),
+                    "artifact_path": str(transformer_dir),
+                    "support": transformer_selection.support,
+                    "preset": spec["preset"],
+                    "base_model": spec["base_model"],
+                    "tier": spec["tier"],
+                    "max_length": spec["max_length"],
+                }
+            )
 
     active = choose_active_model(candidates)
     summary = {
@@ -148,3 +163,56 @@ def _score_transformer_bundle(bundle: dict[str, Any], texts: list[str]) -> list[
     from ask_seattle.transformer_model import transformer_positive_probabilities
 
     return transformer_positive_probabilities(bundle, texts)
+
+
+def resolve_transformer_specs(
+    *,
+    transformer_base_model: str | None = None,
+    transformer_presets: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    if transformer_presets:
+        specs: list[dict[str, Any]] = []
+        for preset_name in transformer_presets:
+            preset = resolve_transformer_preset(preset_name)
+            specs.append(
+                {
+                    "name": preset.name,
+                    "preset": preset.name,
+                    "base_model": preset.base_model,
+                    "tier": preset.tier,
+                    "max_length": preset.max_length,
+                }
+            )
+        return specs
+
+    if transformer_base_model and transformer_base_model != DEFAULT_BASE_MODEL:
+        return [
+            {
+                "name": _slugify_model_id(transformer_base_model),
+                "preset": None,
+                "base_model": transformer_base_model,
+                "tier": "custom",
+                "max_length": resolve_transformer_preset(DEFAULT_TRANSFORMER_PRESET).max_length,
+            }
+        ]
+
+    preset = resolve_transformer_preset(DEFAULT_TRANSFORMER_PRESET)
+    return [
+        {
+            "name": preset.name,
+            "preset": preset.name,
+            "base_model": preset.base_model,
+            "tier": preset.tier,
+            "max_length": preset.max_length,
+        }
+    ]
+
+
+def _slugify_model_id(model_id: str) -> str:
+    return (
+        model_id.lower()
+        .replace("/", "_")
+        .replace(" ", "_")
+        .replace(".", "_")
+        .replace("-", "_")
+    )
