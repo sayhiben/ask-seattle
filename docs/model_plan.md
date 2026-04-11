@@ -11,26 +11,18 @@ Acceptance criteria before automatic removal:
 - Reviewed in dry-run or shadow mode for at least several days of real traffic.
 - False positives reviewed by moderators and folded back into the training set.
 
-## Phase 2: Local Transformer
+## Phase 2: Browser Review Loop
 
-Train a local open-source sequence classifier on the same deterministic split as the TF-IDF baseline. The default base model is `distilbert/distilbert-base-uncased`.
+Run the selected model behind the local bridge and review it in the browser labeling workflow. The server should not fetch Reddit content or write anything back to Reddit.
 
-The active model must be selected by held-out `askseattle` precision first. Choose the candidate with the highest recall among models that reach at least 95% precision. If no model reaches that gate, do not mark a production-ready model.
-
-The container runtime defaults to CPU. Local training uses CUDA if present, Apple MPS if available, otherwise CPU.
-
-## Phase 3: Shadow Review
-
-Run the selected model in no-write shadow mode. The bot writes decision logs only. It must not remove, reply, report, approve, distinguish, lock, or send modmail.
-
-Before any future Reddit write action, shadow review should confirm at least 95% precision on 100 high-confidence flagged posts or 7 days of traffic, whichever comes first.
+Before any future Reddit-integrated action, browser review plus manually checked held-out evaluation should confirm at least 95% precision on 100 high-confidence flagged posts or an equivalent reviewed sample.
 
 ## Deployment Shape
 
-Use a containerized external moderator bot:
+Use a local bridge:
 
-1. Stream new submissions.
-2. Build the same title/body text used in training.
-3. Score the submission.
-4. Write a structured JSONL decision event under `reports/decisions/`.
-5. Export review CSVs for moderators and fold reviewed errors back into the training data.
+1. Accept title/body text from the browser helper.
+2. Score the post locally.
+3. Store reviewed labels locally.
+4. Prepare labels and retrain locally.
+5. Feed reviewed errors back into the next training run.

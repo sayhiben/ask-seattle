@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ask-seattle"
 version = "0.1.0"
-description = "Cheap binary classifier for Ask Seattle-style Reddit moderation."
+description = "Cheap local binary classifier for Ask Seattle-style Reddit posts."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,13 +17,6 @@ dependencies = [
 dev = [
   "pytest>=8.0",
   "ruff>=0.6",
-]
-reddit = [
-  "praw>=7.7",
-]
-transformer = [
-  "torch>=2.3",
-  "transformers>=4.48",
 ]
 
 [project.scripts]

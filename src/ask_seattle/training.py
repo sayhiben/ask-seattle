@@ -1,157 +1,121 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 from ask_seattle import __version__
-from ask_seattle.data import LabeledPost, post_text
+from ask_seattle.data import LabeledPost, prepare_training_posts
 from ask_seattle.model import (
-    ModelSelection,
-    choose_active_model,
+    CalibrationResult,
+    DecisionThresholds,
+    ThresholdSelection,
+    apply_probability_calibrator,
+    build_inference_row,
+    evaluate_decision_policy,
+    fit_sigmoid_calibrator,
     positive_probabilities,
     save_model,
-    select_threshold,
+    select_decision_thresholds,
     split_labeled_posts,
+    tfidf_feature_audit,
     train_model,
 )
-from ask_seattle.transformer_model import (
-    DEFAULT_TRANSFORMER_PRESET,
-    DEFAULT_BASE_MODEL,
-    load_transformer_bundle,
-    resolve_transformer_preset,
-    train_transformer_model,
-    update_transformer_metadata,
-)
+
+DEFAULT_HIGH_PRECISION_TARGET = 0.95
+DEFAULT_CALIBRATION_SIZE = 0.2
+DEFAULT_TEST_SIZE = 0.2
 
 
-def train_all_models(
+def train_model_bundle(
     posts: list[LabeledPost],
     output_dir: str | Path,
     *,
-    min_precision: float = 0.95,
-    validation_size: float = 0.2,
-    test_size: float = 0.2,
-    random_state: int = 42,
-    include_transformer: bool = True,
-    transformer_base_model: str = DEFAULT_BASE_MODEL,
-    transformer_presets: list[str] | None = None,
-    transformer_epochs: int = 2,
-    transformer_batch_size: int = 8,
-    production_ready_blocked_reason: str | None = None,
+    prepared_data_summary: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     artifact_dir = Path(output_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     split = split_labeled_posts(
         posts,
-        validation_size=validation_size,
-        test_size=test_size,
-        random_state=random_state,
+        calibration_size=DEFAULT_CALIBRATION_SIZE,
+        test_size=DEFAULT_TEST_SIZE,
     )
+    calibration_rows = [build_inference_row(title=post.title, selftext=post.selftext) for post in split.calibration]
+    test_rows = [build_inference_row(title=post.title, selftext=post.selftext) for post in split.test]
+    y_calibration = [post.label for post in split.calibration]
     y_test = [post.label for post in split.test]
-    test_texts = [post_text(post.title, post.selftext) for post in split.test]
-    candidates: list[ModelSelection] = []
-    candidate_reports: list[dict[str, Any]] = []
 
-    tfidf_model = train_model(split.train)
-    tfidf_scores = positive_probabilities(tfidf_model, test_texts)
-    tfidf_selection = select_threshold(
+    model = train_model(split.train)
+    raw_calibration_scores = positive_probabilities(model, calibration_rows)
+    calibrator, calibration = fit_sigmoid_calibrator(y_calibration, raw_calibration_scores)
+    thresholds = _select_thresholds_or_default(
+        y_calibration,
+        apply_probability_calibrator(calibrator, raw_calibration_scores),
+        high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
+        calibration=calibration,
+    )
+    raw_test_scores = positive_probabilities(model, test_rows)
+    calibrated_test_scores = apply_probability_calibrator(calibrator, raw_test_scores)
+    band_metrics = evaluate_decision_policy(
         y_test,
-        tfidf_scores,
-        min_precision=min_precision,
-    )
-    tfidf_path = artifact_dir / "tfidf_logreg.joblib"
-    save_model(tfidf_model, tfidf_path, threshold=tfidf_selection.threshold)
-    tfidf_candidate = ModelSelection(
-        model_name="tfidf_logreg",
-        threshold=tfidf_selection.threshold,
-        precision=tfidf_selection.precision,
-        recall=tfidf_selection.recall,
-        f1=tfidf_selection.f1,
-        production_ready=tfidf_selection.production_ready and production_ready_blocked_reason is None,
-    )
-    candidates.append(tfidf_candidate)
-    candidate_reports.append(
-        {
-            **asdict(tfidf_candidate),
-            "artifact_path": str(tfidf_path),
-            "support": tfidf_selection.support,
-        }
+        calibrated_test_scores,
+        low_threshold=thresholds.low_threshold,
+        high_threshold=thresholds.high_threshold,
     )
 
-    if include_transformer:
-        transformer_specs = resolve_transformer_specs(
-            transformer_base_model=transformer_base_model,
-            transformer_presets=transformer_presets,
-        )
-        for spec in transformer_specs:
-            model_name = f"transformer_{spec['name']}"
-            transformer_dir = artifact_dir / model_name
-            train_transformer_model(
-                split.train,
-                split.validation,
-                transformer_dir,
-                threshold=0.5,
-                base_model=spec["base_model"],
-                epochs=transformer_epochs,
-                batch_size=transformer_batch_size,
-                max_length=int(spec["max_length"]),
-                preset_name=spec["preset"],
-            )
-            transformer_bundle = load_transformer_bundle(transformer_dir)
-            transformer_scores = _score_transformer_bundle(transformer_bundle, test_texts)
-            transformer_selection = select_threshold(
-                y_test,
-                transformer_scores,
-                min_precision=min_precision,
-            )
-            transformer_candidate = ModelSelection(
-                model_name=model_name,
-                threshold=transformer_selection.threshold,
-                precision=transformer_selection.precision,
-                recall=transformer_selection.recall,
-                f1=transformer_selection.f1,
-                production_ready=(
-                    transformer_selection.production_ready and production_ready_blocked_reason is None
-                ),
-            )
-            update_transformer_metadata(
-                transformer_dir,
-                {
-                    "threshold": transformer_selection.threshold,
-                    "production_ready": transformer_candidate.production_ready,
-                },
-            )
-            candidates.append(transformer_candidate)
-            candidate_reports.append(
-                {
-                    **asdict(transformer_candidate),
-                    "artifact_path": str(transformer_dir),
-                    "support": transformer_selection.support,
-                    "preset": spec["preset"],
-                    "base_model": spec["base_model"],
-                    "tier": spec["tier"],
-                    "max_length": spec["max_length"],
-                }
-            )
+    artifact_path = artifact_dir / "tfidf_logreg.joblib"
+    threshold_policy = _decision_policy(
+        split=split,
+        calibration=calibration,
+        thresholds=thresholds,
+    )
+    save_model(
+        model,
+        artifact_path,
+        calibrator=calibrator,
+        decision_policy=threshold_policy,
+    )
 
-    active = choose_active_model(candidates)
+    production_ready = calibration.available and thresholds.high_threshold_selection.production_ready
+    blocked_reason = None
+    if not production_ready:
+        if not calibration.available:
+            blocked_reason = "calibration_unavailable"
+        else:
+            blocked_reason = "high_precision_target_not_met"
+
     summary = {
         "version": __version__,
-        "min_precision": min_precision,
+        "model_name": "tfidf_logreg",
+        "artifact_path": str(artifact_path),
+        "high_precision_target": DEFAULT_HIGH_PRECISION_TARGET,
         "split": {
             "train": len(split.train),
-            "validation": len(split.validation),
+            "calibration": len(split.calibration),
             "test": len(split.test),
-            "random_state": random_state,
+            "split_strategy": split.split_strategy,
+            "excluded_for_time_split": split.excluded_for_time_split,
+            "time_coverage": split.time_coverage,
         },
-        "candidates": candidate_reports,
-        "active_model": asdict(active) if active else None,
-        "production_ready": active is not None,
-        "production_ready_blocked_reason": production_ready_blocked_reason,
+        "calibration": asdict(calibration),
+        "threshold_selection": _threshold_summary(thresholds),
+        "metrics": {
+            "high_confidence_precision": band_metrics.high_confidence_precision,
+            "high_confidence_recall": band_metrics.high_confidence_recall,
+            "high_confidence_f1": band_metrics.high_confidence_f1,
+            "support": band_metrics.support,
+            "confidence_band_counts": band_metrics.band_counts,
+        },
+        "threshold_policy": threshold_policy,
+        "feature_audit": tfidf_feature_audit(model),
+        "production_ready": production_ready,
+        "production_ready_blocked_reason": blocked_reason,
     }
+    if prepared_data_summary is not None:
+        summary["prepared_data"] = prepared_data_summary
     (artifact_dir / "training_summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -159,60 +123,83 @@ def train_all_models(
     return summary
 
 
-def _score_transformer_bundle(bundle: dict[str, Any], texts: list[str]) -> list[float]:
-    from ask_seattle.transformer_model import transformer_positive_probabilities
+def train_model_bundle_from_labels(
+    input_path: str | Path,
+    output_dir: str | Path,
+) -> dict[str, Any]:
+    posts, prepared_data_summary = prepare_training_posts(input_path)
+    return train_model_bundle(
+        posts,
+        output_dir,
+        prepared_data_summary=prepared_data_summary,
+    )
 
-    return transformer_positive_probabilities(bundle, texts)
 
-
-def resolve_transformer_specs(
+def _select_thresholds_or_default(
+    y_calibration: list[int],
+    probabilities: list[float],
     *,
-    transformer_base_model: str | None = None,
-    transformer_presets: list[str] | None = None,
-) -> list[dict[str, Any]]:
-    if transformer_presets:
-        specs: list[dict[str, Any]] = []
-        for preset_name in transformer_presets:
-            preset = resolve_transformer_preset(preset_name)
-            specs.append(
-                {
-                    "name": preset.name,
-                    "preset": preset.name,
-                    "base_model": preset.base_model,
-                    "tier": preset.tier,
-                    "max_length": preset.max_length,
-                }
-            )
-        return specs
+    high_precision_target: float,
+    calibration: CalibrationResult,
+) -> DecisionThresholds:
+    if calibration.available:
+        return select_decision_thresholds(
+            y_calibration,
+            probabilities,
+            auto_precision_target=high_precision_target,
+        )
 
-    if transformer_base_model and transformer_base_model != DEFAULT_BASE_MODEL:
-        return [
-            {
-                "name": _slugify_model_id(transformer_base_model),
-                "preset": None,
-                "base_model": transformer_base_model,
-                "tier": "custom",
-                "max_length": resolve_transformer_preset(DEFAULT_TRANSFORMER_PRESET).max_length,
-            }
-        ]
-
-    preset = resolve_transformer_preset(DEFAULT_TRANSFORMER_PRESET)
-    return [
-        {
-            "name": preset.name,
-            "preset": preset.name,
-            "base_model": preset.base_model,
-            "tier": preset.tier,
-            "max_length": preset.max_length,
-        }
-    ]
+    support = Counter(y_calibration)[1]
+    default_threshold = 0.85
+    return DecisionThresholds(
+        low_threshold=default_threshold,
+        high_threshold=default_threshold,
+        high_threshold_selection=_empty_threshold_selection(default_threshold, support=support),
+        low_threshold_metrics={
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "support": support,
+        },
+        high_threshold_sweep=[],
+        low_threshold_sweep=[],
+        abstain_enabled=False,
+    )
 
 
-def _slugify_model_id(model_id: str) -> str:
-    return (
-        model_id.lower()
-        .replace("/", "_")
-        .replace(" ", "_")
-        .replace(".", "_")
-        .replace("-", "_")
+def _threshold_summary(thresholds: DecisionThresholds) -> dict[str, Any]:
+    return {
+        "low_threshold": thresholds.low_threshold,
+        "high_threshold": thresholds.high_threshold,
+        "abstain_enabled": thresholds.abstain_enabled,
+        "high_threshold_selection": asdict(thresholds.high_threshold_selection),
+        "low_threshold_metrics": thresholds.low_threshold_metrics,
+        "high_threshold_sweep": thresholds.high_threshold_sweep,
+        "low_threshold_sweep": thresholds.low_threshold_sweep,
+    }
+
+
+def _decision_policy(
+    *,
+    split: Any,
+    calibration: CalibrationResult,
+    thresholds: DecisionThresholds,
+) -> dict[str, Any]:
+    return {
+        "low_threshold": thresholds.low_threshold,
+        "high_threshold": thresholds.high_threshold,
+        "calibration_method": calibration.method,
+        "split_strategy": split.split_strategy,
+        "time_coverage": split.time_coverage,
+    }
+
+
+def _empty_threshold_selection(threshold: float, *, support: int) -> ThresholdSelection:
+    return ThresholdSelection(
+        threshold=threshold,
+        precision=0.0,
+        recall=0.0,
+        f1=0.0,
+        support=support,
+        production_ready=False,
     )

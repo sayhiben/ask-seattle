@@ -29,16 +29,14 @@ Common negative cases:
 - Photos, local observations, trip reports, or follow-up reports that are not asking for planning advice.
 - Narrow factual questions that are clearly tied to a current local event and not reusable advice content.
 
-## Ambiguous Cases
-
-Prefer `not_askseattle` when removal would be hard to justify from the post alone.
+## Borderline Cases
 
 Use `askseattle` when the title and body are mostly a request for personalized recommendations or planning help, even if the post mentions a specific date, budget, or personal context.
 
-Do not train on examples where moderators disagree until the rule is clarified. Keep a separate adjudication file for those examples.
+Use `not_askseattle` when the post does not clearly fit the redirect category. Borderline cases should be resolved as binary labels during review rather than stored as a third class.
 
 ## Evaluation Sets
 
 Keep a held-out evaluation set from real subreddit history. Do not repeatedly hand-tune on the same examples.
 
-For automatic removals, track precision at the configured threshold. Recall matters, but a high false positive rate is more damaging than missing some low-value posts.
+For automatic removals, track precision in the `auto` band. Recall matters, but a high false positive rate is more damaging than missing some low-value posts.

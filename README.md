@@ -1,8 +1,8 @@
-# Ask Seattle Moderator Classifier
+# Ask Seattle Classifier
 
-A small ML moderation project for classifying Reddit submissions as `askseattle` or `not_askseattle`.
+A small local project for classifying Reddit submissions as `askseattle` or `not_askseattle`.
 
-The first implementation is intentionally cheap: a local TF-IDF + logistic regression classifier that can run on every new submission without paying for an API call. The project keeps training, inference, and moderation decisions separated so embeddings or fine-tuning can be added later if the baseline is not strong enough.
+The current implementation is intentionally cheap and simple: one local TF-IDF + logistic regression classifier with calibrated thresholds. The server only talks to the browser helper and local files.
 
 ## Target Label
 
@@ -20,62 +20,33 @@ For a developer-oriented architecture overview, see [docs/developer_notes.md](do
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,reddit]"
+python -m pip install -e ".[dev]"
 ```
 
-For local transformer fine-tuning and transformer inference, install the optional transformer dependencies:
+Start the local bridge:
 
 ```bash
-python -m pip install -e ".[dev,reddit,transformer]"
+make bridge
 ```
 
-Train the starter model:
+Then label real posts in the browser helper and retrain:
 
 ```bash
-ask-seattle train \
-  --data data/seed/askseattle_seed.jsonl \
-  --model models/askseattle_tfidf.joblib \
-  --threshold 0.50
+make retrain
 ```
 
-The seed file is only a smoke test for the pipeline. Use real subreddit labels before trusting any metric or removal threshold.
-
-There is also a larger deterministic synthetic set for exercising model training:
+Run a single check:
 
 ```bash
-python scripts/generate_synthetic_seed_data.py
-ask-seattle train-all \
-  --data data/seed/askseattle_synthetic.jsonl \
-  --output-dir models/bert-tiny-synthetic-smoke \
-  --min-precision 0.95 \
-  --transformer-base-model google/bert_uncased_L-2_H-128_A-2 \
-  --transformer-epochs 3 \
-  --transformer-batch-size 8
-```
-
-Synthetic data is useful for proving the training pipeline can learn a signal, but it is still blocked from production-ready model selection.
-
-Run a single prediction:
-
-```bash
-ask-seattle predict \
-  --model models/askseattle_tfidf.joblib \
-  --title "Where should I stay for a weekend visit?" \
-  --selftext "First time in Seattle and looking for hotel and food recommendations."
-```
-
-Return the moderation decision payload:
-
-```bash
-ask-seattle decide \
-  --model models/askseattle_tfidf.joblib \
+ask-seattle check \
+  --model models/real-labels-precision-refresh/tfidf_logreg.joblib \
   --title "Where should I stay for a weekend visit?" \
   --selftext "First time in Seattle and looking for hotel and food recommendations."
 ```
 
 ## Data Format
 
-Training data can be JSONL or CSV. Each row needs at least:
+Reviewed label data is JSONL from the Tampermonkey helper. Each row needs at least:
 
 ```json
 {"id":"abc123","title":"Where should I stay?","selftext":"Visiting next month.","label":"askseattle"}
@@ -85,134 +56,103 @@ Accepted positive labels: `1`, `true`, `askseattle`, `ask_seattle`, `ask`.
 
 Accepted negative labels: `0`, `false`, `not_askseattle`, `not_ask_seattle`, `not`.
 
-Put real exports in `data/raw/`; that folder is gitignored so moderation data does not get committed accidentally.
+Keep reviewed captures under `data/processed/`; that directory is gitignored so captured label data does not get committed accidentally.
 
 ## Labeling Workflow
 
-Collect recent posts:
+The training workflow is Tampermonkey-only:
+
+1. Label posts in Reddit with the Tampermonkey helper, which writes reviewed JSONL under `data/processed/`.
+2. Retrain from that reviewed file.
+3. The train command normalizes labels, dedupes by identity and text hash, derives time keys, and fits the model.
+4. Run the local bridge with the selected model artifact and continue labeling or spot-checking in the browser.
+
+There is no separate server-side collection or label-export path for training data. The reviewed post text that goes into training must originate in the browser helper.
+
+Full post text is stored locally for training by design, and `data/processed/` is gitignored.
+
+## Model Training
+
+Train the calibrated TF-IDF model:
 
 ```bash
-ask-seattle collect \
-  --subreddit Seattle \
-  --output data/raw/submissions.jsonl \
-  --limit 500
+ask-seattle train \
+  --data data/processed/tampermonkey_labels.jsonl \
+  --output-dir models/run-001
 ```
 
-Continue collecting new posts after the recent fetch:
+`train` uses one built-in policy: chronological train/calibration/test splitting with a 95% high-confidence precision gate. If that gate is not met, artifacts are still written, but `training_summary.json` will show that the model is not production-ready.
+
+## Make Targets
+
+For the normal retraining loop, use the `Makefile`:
 
 ```bash
-ask-seattle collect \
-  --subreddit Seattle \
-  --output data/raw/submissions.jsonl \
-  --limit 500 \
-  --stream
+make retrain
 ```
 
-Export a review CSV:
+That retrains the TF-IDF model from `data/processed/tampermonkey_labels.jsonl` into `models/real-labels-precision-refresh/`.
+
+The targets are configurable through variables:
 
 ```bash
-ask-seattle export-labeling \
-  --raw data/raw/submissions.jsonl \
-  --output data/processed/labeling.csv
+make retrain MODEL_DIR=models/run-002
+make bridge MODEL_PATH=models/run-002/tfidf_logreg.joblib LOG_LEVEL=DEBUG
+make bridge RETRAIN_EVERY=25
 ```
 
-After manual review, import only rows with a filled label:
+## Local Bridge Runtime
+
+The runtime is bridge-only. The server does not fetch Reddit posts, stream Reddit traffic, or call Reddit moderator APIs. All text used for checking or training comes from the browser helper.
+
+Run the bridge locally:
 
 ```bash
-ask-seattle import-labels \
-  --labels data/processed/labeling.csv \
-  --output data/processed/training.jsonl
+make bridge
 ```
 
-Refresh locally stored raw content for posts that were deleted or removed upstream:
+## Tampermonkey Helper
+
+The userscript at `userscripts/ask-seattle-reddit-helper.user.js` adds a small panel to Reddit listing and post pages with local helper buttons:
+
+- `Seed queue`: records the currently visible listing order in browser storage.
+- auto-check on post load: sends the visible post title/body to the local model and shows whether the post looks like `askseattle`.
+- `Re-check`: runs the same check again on demand.
+- `Train positive`: sends the visible post title/body to the local bridge and appends it as `askseattle`. Hotkey: `P`.
+- `Train negative`: sends the visible post title/body to the local bridge and appends it as `not_askseattle`. Hotkey: `N`.
+- `Auto next after training`: when enabled, moves to the next post from the visible listing queue after a train click.
+
+Start the local bridge first:
 
 ```bash
-ask-seattle refresh-deletions \
-  --raw data/raw/submissions.jsonl
+ask-seattle serve-bridge \
+  --model models/real-labels-precision-refresh/tfidf_logreg.joblib \
+  --labels data/processed/tampermonkey_labels.jsonl
 ```
 
-Full post text is stored locally for training by design, but `data/raw/` and `data/processed/` are gitignored.
+Then install `userscripts/ask-seattle-reddit-helper.user.js` in Tampermonkey and open a Reddit post page. The userscript calls `http://127.0.0.1:8765`; it does not call Reddit moderator write APIs.
 
-## Full Model Training
+The userscript scrapes the title/body already visible in your browser and sends that text to the local bridge; the bridge does not fetch Reddit content independently. It also sends the browser-side capture timestamp plus optional debugging metadata when visible in the page DOM, such as subreddit, post type, outbound content URL/domain, created time, and a crosspost hint. The train buttons collect reviewed labels for later retraining.
 
-Train and compare the TF-IDF baseline plus the local transformer classifier:
+If you want the bridge to retrain itself after every N net-new effective training rows and hot-reload the TF-IDF model, start it with:
 
 ```bash
-ask-seattle train-all \
-  --data data/processed/training.jsonl \
-  --output-dir models/run-001 \
-  --min-precision 0.95
+ask-seattle serve-bridge \
+  --model models/real-labels-precision-refresh/tfidf_logreg.joblib \
+  --labels data/processed/tampermonkey_labels.jsonl \
+  --retrain-every 25
 ```
 
-The default local transformer preset is `distilbert`, backed by `distilbert/distilbert-base-uncased`. List supported presets:
+That path still runs only on browser-captured label data. It normalizes and dedupes labels in the background, retrains the TF-IDF model, and swaps the in-memory bundle only after a successful run.
 
-```bash
-ask-seattle transformer-presets
-```
+To use auto-next, open a subreddit listing such as `/new` first so the userscript can record the visible post order. The panel appears on listing pages; click `Seed queue` after scrolling if the queue count is too low, then open a post from that listing. Auto-check and the training buttons only run on post/comment pages so a listing page is not accidentally labeled. Auto-next uses that browser-side queue; it does not call the Reddit API. The bridge also checks whether the current post is already recorded and displays the saved label. Re-labeling a post updates the local label file with last-click-wins behavior instead of creating duplicates. All training fields now originate in the browser payload; the bridge only stores and normalizes them.
 
-Train a specific preset:
-
-```bash
-ask-seattle train-all \
-  --data data/processed/training.jsonl \
-  --output-dir models/run-001 \
-  --transformer-preset deberta-v3-small
-```
-
-Train the core benchmark set:
-
-```bash
-ask-seattle train-all \
-  --data data/processed/training.jsonl \
-  --output-dir models/run-001 \
-  --benchmark-transformers
-```
-
-If transformer dependencies are not installed or the machine is not ready for transformer training, run the baseline-only comparison:
-
-```bash
-ask-seattle train-all \
-  --data data/processed/training.jsonl \
-  --output-dir models/run-001 \
-  --min-precision 0.95 \
-  --skip-transformer
-```
-
-The active model is selected only if it reaches at least 95% `askseattle` precision on the held-out test set. If no candidate reaches that gate, artifacts are still written for review, but `training_summary.json` will not mark a production-ready model.
-
-## Reddit Bot
-
-Reddit's native AutoModerator YAML cannot run an ML classifier. This repo assumes an external bot process watches submissions and takes moderator actions through Reddit's API.
-
-Copy `.env.example` to `.env` and add credentials for a moderator bot account. The stream runtime is no-write shadow mode only:
-
-```bash
-ASK_SEATTLE_NO_WRITE=1 ask-seattle stream
-```
-
-The bot writes JSONL decision logs under `reports/decisions/YYYY-MM-DD.jsonl`. This version does not remove, reply, report, approve, distinguish, lock, or send modmail. Any Reddit write behavior should be added only after a separate plan change.
-
-Export shadow-mode decisions for moderator review:
-
-```bash
-ask-seattle export-review \
-  --decisions reports/decisions/2026-04-09.jsonl \
-  --output reports/review/2026-04-09.csv
-```
-
-Run with Docker:
-
-```bash
-docker compose up --build
-```
-
-The container mounts `data/raw/`, `data/processed/`, `models/`, and `reports/` as local volumes. Those paths are ignored by git.
+Use `--log-level DEBUG` for request-level bridge diagnostics. Relative `models/...` and `data/...` paths are resolved from the current directory first, then from the project root, so the bridge still works if you start it from a subdirectory such as `scripts/`.
 
 ## Model Plan
 
-1. Start with the cheap local classifier in this repo.
-2. Label real subreddit examples and tune for high precision before automatic removals.
-3. If precision/recall is not good enough, add embeddings as features or a retrieval step for similar historical examples.
-4. Consider fine-tuning only after the label policy is stable and the local baseline has been measured.
+1. Keep the current TF-IDF classifier small and inspectable.
+2. Label real subreddit examples and tune for high-confidence precision before any downstream automation.
+3. Use the browser loop and auto-retrain to tighten the model over time.
 
-For removals, optimize for precision first. A false positive removes a valid community post, so automatic removal thresholds should be conservative.
+This repo currently stops at training and checking. Any later moderation actions should sit on top of the `/check` response rather than inside the bridge.

@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import csv
+import hashlib
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -11,7 +12,6 @@ from typing import Any
 POSITIVE_LABELS = {"1", "true", "yes", "ask", "askseattle", "ask_seattle"}
 NEGATIVE_LABELS = {"0", "false", "no", "not", "not_askseattle", "not_ask_seattle"}
 DELETED_TEXT_MARKERS = {"[deleted]", "[removed]", "[deleted by user]"}
-LABELING_FIELDS = ["id", "created_utc", "permalink", "title", "selftext", "label", "notes"]
 
 
 @dataclass(frozen=True)
@@ -23,20 +23,9 @@ class LabeledPost:
     subreddit: str | None = None
     permalink: str | None = None
     created_utc: float | None = None
-
-
-@dataclass(frozen=True)
-class RawPost:
-    post_id: str
-    created_utc: float
-    permalink: str
-    title: str
-    selftext: str
-    subreddit: str | None = None
-    url: str | None = None
-    content_status: str = "available"
-    collected_at: str | None = None
-    refreshed_at: str | None = None
+    time_key: float | None = None
+    time_source: str | None = None
+    text_hash: str | None = None
 
 
 def normalize_label(value: Any) -> int:
@@ -52,6 +41,25 @@ def normalize_label(value: Any) -> int:
         return 0
 
     msg = f"Unsupported label {value!r}; expected one of {sorted(POSITIVE_LABELS | NEGATIVE_LABELS)}"
+    raise ValueError(msg)
+
+
+def normalize_review_label(value: Any) -> str:
+    if isinstance(value, bool):
+        return label_name(int(value))
+    if isinstance(value, int) and value in {0, 1}:
+        return label_name(value)
+
+    normalized = str(value).strip().lower()
+    if normalized in POSITIVE_LABELS:
+        return "askseattle"
+    if normalized in NEGATIVE_LABELS:
+        return "not_askseattle"
+
+    msg = (
+        f"Unsupported review label {value!r}; expected one of "
+        f"{sorted(POSITIVE_LABELS | NEGATIVE_LABELS)}"
+    )
     raise ValueError(msg)
 
 
@@ -72,14 +80,34 @@ def normalize_body(value: str | None) -> str:
     return body
 
 
+def exact_text_hash(title: str, selftext: str | None = None) -> str:
+    normalized = _normalize_text_for_hash(title, selftext)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def derive_time_key(row: dict[str, Any]) -> tuple[float | None, str | None]:
+    explicit = _float_or_none(row.get("time_key"))
+    if explicit is not None:
+        return explicit, str(row.get("time_source") or "time_key")
+
+    created_utc = _float_or_none(row.get("created_utc"))
+    if created_utc is not None:
+        return created_utc, "created_utc"
+
+    for field_name in ("collected_at", "retrieved_at"):
+        timestamp = _parse_timestamp(row.get(field_name))
+        if timestamp is not None:
+            return timestamp, field_name
+
+    return None, None
+
+
 def load_labeled_posts(path: str | Path) -> list[LabeledPost]:
     data_path = Path(path)
     if data_path.suffix.lower() == ".jsonl":
         return _load_jsonl(data_path)
-    if data_path.suffix.lower() == ".csv":
-        return _load_csv(data_path)
 
-    msg = f"Unsupported data file type for {data_path}; use .jsonl or .csv"
+    msg = f"Unsupported data file type for {data_path}; use .jsonl"
     raise ValueError(msg)
 
 
@@ -91,14 +119,20 @@ def _post_from_mapping(row: dict[str, Any], source: str) -> LabeledPost:
         msg = f"{source} is missing required field {exc.args[0]!r}"
         raise ValueError(msg) from exc
 
+    selftext = normalize_body(str(row.get("selftext") or row.get("body") or ""))
+    time_key, time_source = derive_time_key(row)
+
     return LabeledPost(
         title=str(title),
-        selftext=str(row.get("selftext") or row.get("body") or ""),
-        label=normalize_label(label),
+        selftext=selftext,
+        label=normalize_label(normalize_review_label(label)),
         post_id=str(row["id"]) if row.get("id") else None,
         subreddit=str(row["subreddit"]) if row.get("subreddit") else None,
         permalink=str(row["permalink"]) if row.get("permalink") else None,
-        created_utc=float(row["created_utc"]) if row.get("created_utc") else None,
+        created_utc=_float_or_none(row.get("created_utc")),
+        time_key=time_key,
+        time_source=time_source,
+        text_hash=str(row.get("text_hash") or exact_text_hash(str(title), selftext)),
     )
 
 
@@ -120,48 +154,8 @@ def _load_jsonl(path: Path) -> list[LabeledPost]:
     return posts
 
 
-def _load_csv(path: Path) -> list[LabeledPost]:
-    with path.open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        return [_post_from_mapping(row, f"{path}:{index}") for index, row in enumerate(reader, start=2)]
-
-
 def utc_now_iso() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat()
-
-
-def raw_post_from_mapping(row: dict[str, Any]) -> RawPost:
-    post_id = str(row.get("id") or row.get("post_id") or "").strip()
-    if not post_id:
-        raise ValueError("Raw post record is missing id")
-
-    return RawPost(
-        post_id=post_id,
-        created_utc=float(row.get("created_utc") or 0),
-        permalink=str(row.get("permalink") or ""),
-        title=str(row.get("title") or ""),
-        selftext=normalize_body(str(row.get("selftext") or "")),
-        subreddit=str(row["subreddit"]) if row.get("subreddit") else None,
-        url=str(row["url"]) if row.get("url") else None,
-        content_status=str(row.get("content_status") or "available"),
-        collected_at=str(row["collected_at"]) if row.get("collected_at") else None,
-        refreshed_at=str(row["refreshed_at"]) if row.get("refreshed_at") else None,
-    )
-
-
-def raw_post_to_record(post: RawPost) -> dict[str, Any]:
-    return {
-        "id": post.post_id,
-        "created_utc": post.created_utc,
-        "permalink": post.permalink,
-        "title": post.title,
-        "selftext": post.selftext,
-        "subreddit": post.subreddit,
-        "url": post.url,
-        "content_status": post.content_status,
-        "collected_at": post.collected_at,
-        "refreshed_at": post.refreshed_at,
-    }
 
 
 def load_jsonl_records(path: str | Path) -> list[dict[str, Any]]:
@@ -194,79 +188,174 @@ def write_jsonl_records(path: str | Path, records: list[dict[str, Any]]) -> None
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
 
-def append_jsonl_record(path: str | Path, record: dict[str, Any]) -> None:
-    output_path = Path(path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True) + "\n")
+def prepare_training_records(input_path: str | Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    normalized_records = [
+        _normalized_review_record(record)
+        for record in _load_review_records(input_path)
+        if str(record.get("label") or "").strip()
+    ]
+
+    identity_records: list[dict[str, Any]] = []
+    identity_replaced = 0
+    for record in normalized_records:
+        before = len(identity_records)
+        identity_records = _upsert_records(identity_records, record, _identity_keys)
+        if len(identity_records) == before:
+            identity_replaced += 1
+
+    deduped_records: list[dict[str, Any]] = []
+    text_hash_replaced = 0
+    for record in identity_records:
+        before = len(deduped_records)
+        deduped_records = _upsert_records(deduped_records, record, _text_hash_keys)
+        if len(deduped_records) == before:
+            text_hash_replaced += 1
+
+    ordered_training_records = _sorted_review_records(deduped_records)
+    missing_time_key = sum(1 for record in deduped_records if "time_key" not in record)
+    summary = {
+        "loaded": len(normalized_records),
+        "identity_replaced": identity_replaced,
+        "text_hash_replaced": text_hash_replaced,
+        "training_records": len(ordered_training_records),
+        "missing_time_key": missing_time_key,
+    }
+    return ordered_training_records, summary
 
 
-def dedupe_raw_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    by_id: dict[str, dict[str, Any]] = {}
-    for record in records:
-        post = raw_post_from_mapping(record)
-        by_id[post.post_id] = raw_post_to_record(post)
-    return sorted(by_id.values(), key=lambda item: (float(item.get("created_utc") or 0), item["id"]))
+def prepare_training_posts(input_path: str | Path) -> tuple[list[LabeledPost], dict[str, int]]:
+    records, summary = prepare_training_records(input_path)
+    source = str(Path(input_path))
+    posts = [_post_from_mapping(record, f"{source}:prepared") for record in records]
+    return posts, summary
 
 
-def export_labeling_csv(raw_path: str | Path, output_path: str | Path) -> dict[str, int]:
-    records = dedupe_raw_records(load_jsonl_records(raw_path))
-    csv_path = Path(output_path)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=LABELING_FIELDS)
-        writer.writeheader()
-        for record in records:
-            writer.writerow(
-                {
-                    "id": record["id"],
-                    "created_utc": record.get("created_utc", ""),
-                    "permalink": record.get("permalink", ""),
-                    "title": record.get("title", ""),
-                    "selftext": record.get("selftext", ""),
-                    "label": "",
-                    "notes": "",
-                }
-            )
-
-    return {"exported": len(records)}
+def _load_review_records(path: str | Path) -> list[dict[str, Any]]:
+    data_path = Path(path)
+    if data_path.suffix.lower() == ".jsonl":
+        return load_jsonl_records(data_path)
+    msg = f"Unsupported data file type for {data_path}; use .jsonl"
+    raise ValueError(msg)
 
 
-def import_labeling_csv(labeling_path: str | Path, output_path: str | Path) -> dict[str, int]:
-    imported = 0
-    skipped = 0
-    records: list[dict[str, Any]] = []
+def _normalized_review_record(row: dict[str, Any]) -> dict[str, Any]:
+    title = str(row.get("title") or "").strip()
+    if not title:
+        raise ValueError("Reviewed label record is missing title")
 
-    with Path(labeling_path).open(newline="", encoding="utf-8") as handle:
-        reader = csv.DictReader(handle)
-        missing = {"id", "title", "selftext", "label"} - set(reader.fieldnames or [])
-        if missing:
-            raise ValueError(f"{labeling_path} is missing required columns: {sorted(missing)}")
+    normalized_label = normalize_review_label(row.get("label"))
+    selftext = normalize_body(row.get("selftext") or row.get("body") or "")
+    record = {
+        "id": str(row.get("id") or "").strip(),
+        "created_utc": row.get("created_utc") or "",
+        "permalink": str(row.get("permalink") or "").strip(),
+        "title": title,
+        "selftext": selftext,
+        "label": normalized_label,
+        "notes": str(row.get("notes") or ""),
+        "text_hash": exact_text_hash(title, selftext),
+    }
+    for optional_field in (
+        "collected_at",
+        "retrieved_at",
+        "subreddit",
+        "post_type",
+        "content_domain",
+        "content_href",
+        "capture_context",
+        "source",
+        "is_crosspost",
+        "time_source",
+        "time_key",
+    ):
+        if optional_field in row and row.get(optional_field) not in ("", None):
+            record[optional_field] = row.get(optional_field)
 
-        for row_number, row in enumerate(reader, start=2):
-            raw_label = str(row.get("label") or "").strip()
-            if not raw_label:
-                skipped += 1
-                continue
+    time_key, time_source = derive_time_key(record)
+    if time_key is not None:
+        record["time_key"] = time_key
+        record["time_source"] = time_source
+    else:
+        record.pop("time_key", None)
+        record.pop("time_source", None)
 
-            try:
-                normalized_label = normalize_label(raw_label)
-            except ValueError as exc:
-                raise ValueError(f"{labeling_path}:{row_number}: {exc}") from exc
+    return record
 
-            records.append(
-                {
-                    "id": row.get("id", ""),
-                    "created_utc": row.get("created_utc", ""),
-                    "permalink": row.get("permalink", ""),
-                    "title": row.get("title", ""),
-                    "selftext": normalize_body(row.get("selftext")),
-                    "label": label_name(normalized_label),
-                    "notes": row.get("notes", ""),
-                }
-            )
-            imported += 1
 
-    write_jsonl_records(output_path, records)
-    return {"imported": imported, "skipped": skipped}
+def _normalize_text_for_hash(title: str, selftext: str | None = None) -> str:
+    def collapse(value: str) -> str:
+        return re.sub(r"\s+", " ", value.strip().lower())
+
+    return f"title:{collapse(str(title))}\nbody:{collapse(normalize_body(selftext))}"
+
+
+def _identity_keys(record: dict[str, Any]) -> set[str]:
+    keys: set[str] = set()
+    record_id = str(record.get("id") or "").strip()
+    permalink = str(record.get("permalink") or "").strip()
+    if record_id:
+        keys.add(f"id:{record_id}")
+    if permalink:
+        keys.add(f"permalink:{permalink}")
+    return keys
+
+
+def _text_hash_keys(record: dict[str, Any]) -> set[str]:
+    text_hash = str(record.get("text_hash") or "").strip()
+    return {f"text_hash:{text_hash}"} if text_hash else set()
+
+
+def _upsert_records(
+    records: list[dict[str, Any]],
+    new_record: dict[str, Any],
+    key_fn: Any,
+) -> list[dict[str, Any]]:
+    new_keys = key_fn(new_record)
+    if not new_keys:
+        return [*records, new_record]
+
+    output = [record for record in records if not key_fn(record) & new_keys]
+    output.append(new_record)
+    return output
+
+
+def _sorted_review_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def sort_key(record: dict[str, Any]) -> tuple[float, str, str, str]:
+        time_key = float(record.get("time_key")) if record.get("time_key") is not None else float("inf")
+        return (
+            time_key,
+            str(record.get("collected_at") or ""),
+            str(record.get("id") or ""),
+            str(record.get("permalink") or ""),
+        )
+
+    return sorted(records, key=sort_key)
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value in ("", None):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_timestamp(value: Any) -> float | None:
+    if value in ("", None):
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        return numeric / 1000 if numeric > 10_000_000_000 else numeric
+
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        normalized = text.replace("Z", "+00:00")
+        timestamp = datetime.fromisoformat(normalized)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=UTC)
+        return timestamp.timestamp()
+    except ValueError:
+        return None
