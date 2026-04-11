@@ -1,42 +1,59 @@
 # Labeling Policy
 
-Use this policy when creating training and evaluation data. The goal is to model the moderation rule, not personal taste.
+Use this page when assigning `askseattle` or `not_askseattle` labels to reviewed posts.
+
+The goal is to model the moderation rule, not personal taste.
 
 ## Positive: `askseattle`
 
-Label a submission `askseattle` when the main purpose is a recurring advice, recommendation, planning, or basic information request that the subreddit wants redirected.
+Label a post `askseattle` when its main purpose is asking the community for recurring advice, recommendations, planning help, or basic reusable city guidance.
 
 Common positive cases:
 
-- Visitor itinerary planning or itinerary review.
-- Where to stay, what neighborhood is safe, or how to get around as a visitor.
-- Moving to Seattle, moving away from Seattle, neighborhood selection, commute tradeoffs, and cost-of-living questions.
-- Product, restaurant, bar, tattoo, medical, dental, vet, pet, or service recommendations.
-- Basic city information that can be answered by existing guides, search, or official resources.
-- Vacation advice, day trip advice, and airport or transit planning.
-- Legal, landlord, lease, ticket, or employment advice when the post is primarily asking the subreddit what to do.
+- visitor itineraries or itinerary review
+- where to stay, what neighborhood is safe, or how to get around as a visitor
+- moving to Seattle, moving away, neighborhood choice, or commute tradeoffs
+- product, restaurant, bar, tattoo, medical, dental, vet, pet, or service recommendations
+- basic city information that is broadly reusable and better handled by existing guides or repeated recommendations
+- vacation planning, day-trip planning, airport planning, or transit planning
+- legal, landlord, lease, ticket, or employment advice when the post is primarily asking what to do
 
 ## Negative: `not_askseattle`
 
-Label a submission `not_askseattle` when it is not a recurring advice or recommendation request, even if it contains a question mark.
+Label a post `not_askseattle` when it does not primarily belong to that redirect-style advice bucket, even if it contains a question mark.
 
 Common negative cases:
 
-- Local news, politics, policy discussion, or public agency updates.
-- Transit alerts, weather alerts, safety incidents, power outages, and road closures.
-- Lost and found, missing pets, community announcements, volunteer events, AMAs, and moderation posts.
-- Original discussion prompts about Seattle issues.
-- Photos, local observations, trip reports, or follow-up reports that are not asking for planning advice.
-- Narrow factual questions that are clearly tied to a current local event and not reusable advice content.
+- local news, politics, policy discussion, or civic updates
+- transit alerts, weather alerts, safety incidents, power outages, and road closures
+- lost and found, missing pets, community announcements, volunteer events, AMAs, and moderation posts
+- original discussion prompts about Seattle issues
+- photos, local observations, trip reports, or follow-up reports that are not asking for planning help
+- narrow factual questions tied to a current event rather than reusable recommendation content
 
 ## Borderline Cases
 
-Use `askseattle` when the title and body are mostly a request for personalized recommendations or planning help, even if the post mentions a specific date, budget, or personal context.
+Resolve borderline posts as binary labels during review.
 
-Use `not_askseattle` when the post does not clearly fit the redirect category. Borderline cases should be resolved as binary labels during review rather than stored as a third class.
+Use `askseattle` when the post is mostly a request for personalized recommendations or planning help, even if it includes specific dates, budget details, or personal context.
 
-## Evaluation Sets
+Use `not_askseattle` when the redirect category is not clearly the main point of the post.
 
-Keep a held-out evaluation set from real subreddit history. Do not repeatedly hand-tune on the same examples.
+## Review Tips
 
-For automatic removals, track precision in the `auto` band. Recall matters, but a high false positive rate is more damaging than missing some low-value posts.
+- Judge the primary intent, not isolated keywords.
+- Use the title and body together.
+- A short or empty body does not make a post automatically negative.
+- A link or image post can still be `askseattle` if the title is clearly a recommendation request.
+- If you change your mind on a post, re-label it. The local training file is last-write-wins by identity.
+
+## Dataset Hygiene
+
+- Keep using real reviewed subreddit examples.
+- Avoid repeatedly hand-tuning on the same held-out examples.
+- If you later evaluate moderation actions, prefer precision-first analysis on the high-confidence band.
+
+Next:
+
+- [How to label posts](how-to/label-posts.md)
+- [Model and thresholds](explanation/model-and-thresholds.md)

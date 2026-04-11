@@ -1,28 +1,47 @@
-# Model Plan
+# Roadmap
 
-## Phase 1: Local Baseline
+This page describes likely future directions. It is not a statement of current behavior.
 
-Use TF-IDF word and character n-grams with logistic regression. This is cheap, fast, and works well for moderation categories that have repeated wording.
+For the current implementation, start with [Architecture](architecture.md) and [Model and thresholds](explanation/model-and-thresholds.md).
 
-Acceptance criteria before automatic removal:
+## Current State
 
-- Evaluated on real held-out subreddit data.
-- High precision at the removal threshold.
-- Reviewed in dry-run or shadow mode for at least several days of real traffic.
-- False positives reviewed by moderators and folded back into the training set.
+The implemented system is intentionally narrow:
 
-## Phase 2: Browser Review Loop
+- browser-originated capture only
+- local bridge only
+- binary labels only
+- TF-IDF + logistic regression only
+- local training and local inference only
+- no Reddit API reads or writes
+- no moderation actions inside the bridge
 
-Run the selected model behind the local bridge and review it in the browser labeling workflow. The server should not fetch Reddit content or write anything back to Reddit.
+## Near-Term Improvements
 
-Before any future Reddit-integrated action, browser review plus manually checked held-out evaluation should confirm at least 95% precision on 100 high-confidence flagged posts or an equivalent reviewed sample.
+The most realistic next improvements are operational rather than architectural:
 
-## Deployment Shape
+- better reviewed label coverage over time
+- better held-out evaluation coverage
+- cleaner false-positive and false-negative review loops
+- clearer browser-side ergonomics for labeling sessions
+- stricter documentation and artifact hygiene
 
-Use a local bridge:
+## Deferred Work
 
-1. Accept title/body text from the browser helper.
-2. Score the post locally.
-3. Store reviewed labels locally.
-4. Prepare labels and retrain locally.
-5. Feed reviewed errors back into the next training run.
+These are explicitly out of scope in the current implementation, but remain plausible later:
+
+- additional downstream moderation tooling on top of `/check`
+- richer local review tooling
+- more explicit offline evaluation dashboards
+- broader label taxonomies beyond the current binary class
+- model-family expansion beyond the current TF-IDF baseline
+
+## Non-Goals For Now
+
+- server-side Reddit collection
+- server-side Reddit moderation actions
+- hosted model inference
+- large-model fine-tuning
+- replacing the local browser capture loop
+
+Any future work should preserve the current bias toward cheap inference, local control, and explicit operator review.

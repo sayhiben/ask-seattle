@@ -1,18 +1,50 @@
 # Ask Seattle Classifier
 
-A small local project for classifying Reddit submissions as `askseattle` or `not_askseattle`.
+Ask Seattle is a local, bridge-only classifier for Reddit submissions. It helps moderators or reviewers label posts as `askseattle` or `not_askseattle`, retrain a cheap local model from those reviewed labels, and check posts through a localhost bridge.
 
-The current implementation is intentionally cheap and simple: one local TF-IDF + logistic regression classifier with calibrated thresholds. The server only talks to the browser helper and local files.
+The current stack is intentionally small:
 
-## Target Label
+- browser-captured text only
+- one TF-IDF + logistic regression model
+- local JSONL training data
+- no Reddit API reads
+- no Reddit API writes
+- no moderation actions built into the bridge
 
-`askseattle` means a low-value, repeat question or recommendation request. Examples include visitor itineraries, where to stay, where to live, moving to or from Seattle, where to find a product or service, legal advice, vacation advice, pet or animal advice, basic city information, and similar recurring advice requests.
+## What This Repo Does
 
-`not_askseattle` is for posts that should not be removed by this classifier, such as local news, original discussion, event information, alerts, policy discussion, moderation announcements, and specific posts with clear community value.
+- captures reviewed labels from a Tampermonkey userscript
+- stores those labels locally under ignored paths
+- retrains a local binary classifier from the reviewed label file
+- serves a localhost `/check` endpoint for the userscript and local tooling
 
-See [docs/labeling_policy.md](docs/labeling_policy.md) for labeling guidance.
+## What This Repo Does Not Do
 
-For a developer-oriented architecture overview, see [docs/developer_notes.md](docs/developer_notes.md).
+- fetch Reddit posts server-side
+- remove, approve, lock, reply to, or report Reddit posts
+- host a production moderation bot
+- train hosted or large-model classifiers
+
+## How It Works
+
+```mermaid
+flowchart LR
+    A["Reddit post in browser"] --> B["Tampermonkey helper"]
+    B -->|"POST /check"| C["Local bridge"]
+    B -->|"POST /train"| C
+    C --> D["TF-IDF model bundle"]
+    C --> E["Reviewed labels JSONL"]
+    E --> F["ask-seattle train / make retrain"]
+    F --> D
+```
+
+## Requirements
+
+- Python 3.11+
+- a browser with Tampermonkey
+- either:
+  - an existing trained model artifact, or
+  - an existing reviewed label file you can retrain from
 
 ## Quickstart
 
@@ -23,19 +55,22 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-Start the local bridge:
+Then choose the path that matches your current state.
+
+### Start The Bridge With An Existing Model
 
 ```bash
 make bridge
 ```
 
-Then label real posts in the browser helper and retrain:
+### Retrain From Reviewed Labels
 
 ```bash
 make retrain
+make bridge
 ```
 
-Run a single check:
+### Run A One-Off Local Check
 
 ```bash
 ask-seattle check \
@@ -44,115 +79,80 @@ ask-seattle check \
   --selftext "First time in Seattle and looking for hotel and food recommendations."
 ```
 
-## Data Format
+`serve-bridge` requires an existing `.joblib` artifact. On a clean checkout, you need either an existing model bundle or a reviewed label file you can train from.
 
-Reviewed label data is JSONL from the Tampermonkey helper. Each row needs at least:
+## Normal Workflow
 
-```json
-{"id":"abc123","title":"Where should I stay?","selftext":"Visiting next month.","label":"askseattle"}
-```
+1. Start the bridge with a trained model.
+2. Open Reddit with the Tampermonkey helper installed.
+3. Use the helper to check and label posts.
+4. Retrain from the reviewed label file.
+5. Restart the bridge unless bridge auto-retrain is enabled.
 
-Accepted positive labels: `1`, `true`, `askseattle`, `ask_seattle`, `ask`.
+The reviewed post text used for training must originate in the browser helper. There is no separate server-side collection path in the supported workflow.
 
-Accepted negative labels: `0`, `false`, `not_askseattle`, `not_ask_seattle`, `not`.
+## Core Behavior
 
-Keep reviewed captures under `data/processed/`; that directory is gitignored so captured label data does not get committed accidentally.
+- the userscript can auto-check, re-check, skip through a seeded queue, and save binary labels
+- the bridge only accepts browser-originated text and local file paths
+- `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs chronological training, calibration, and test evaluation
+- training writes artifacts even when a run is not production-ready
 
-## Labeling Workflow
+For the detailed operator flow, see [How to label posts](docs/how-to/label-posts.md) and [How to retrain](docs/how-to/retrain.md).
 
-The training workflow is Tampermonkey-only:
+## Local Storage
 
-1. Label posts in Reddit with the Tampermonkey helper, which writes reviewed JSONL under `data/processed/`.
-2. Retrain from that reviewed file.
-3. The train command normalizes labels, dedupes by identity and text hash, derives time keys, and fits the model.
-4. Run the local bridge with the selected model artifact and continue labeling or spot-checking in the browser.
+The project stores reviewed post text locally by design.
 
-There is no separate server-side collection or label-export path for training data. The reviewed post text that goes into training must originate in the browser helper.
+Canonical reviewed label file:
 
-Full post text is stored locally for training by design, and `data/processed/` is gitignored.
+- `data/processed/tampermonkey_labels.jsonl`
 
-## Model Training
+Default model output directory:
 
-Train the calibrated TF-IDF model:
+- `models/real-labels-precision-refresh/`
 
-```bash
-ask-seattle train \
-  --data data/processed/tampermonkey_labels.jsonl \
-  --output-dir models/run-001
-```
-
-`train` uses one built-in policy: chronological train/calibration/test splitting with a 95% high-confidence precision gate. If that gate is not met, artifacts are still written, but `training_summary.json` will show that the model is not production-ready.
-
-## Make Targets
-
-For the normal retraining loop, use the `Makefile`:
+## Common Commands
 
 ```bash
 make retrain
-```
-
-That retrains the TF-IDF model from `data/processed/tampermonkey_labels.jsonl` into `models/real-labels-precision-refresh/`.
-
-The targets are configurable through variables:
-
-```bash
-make retrain MODEL_DIR=models/run-002
-make bridge MODEL_PATH=models/run-002/tfidf_logreg.joblib LOG_LEVEL=DEBUG
-make bridge RETRAIN_EVERY=25
-```
-
-## Local Bridge Runtime
-
-The runtime is bridge-only. The server does not fetch Reddit posts, stream Reddit traffic, or call Reddit moderator APIs. All text used for checking or training comes from the browser helper.
-
-Run the bridge locally:
-
-```bash
 make bridge
+make bridge RETRAIN_EVERY=25
+python3 -m ruff check src tests
+PYTHONPATH=src python3 -m pytest
 ```
 
-## Tampermonkey Helper
+## Documentation
 
-The userscript at `userscripts/ask-seattle-reddit-helper.user.js` adds a small panel to Reddit listing and post pages with local helper buttons:
+Start here:
 
-- `Seed queue`: records the currently visible listing order in browser storage.
-- auto-check on post load: sends the visible post title/body to the local model and shows whether the post looks like `askseattle`.
-- `Re-check`: runs the same check again on demand.
-- `Train positive`: sends the visible post title/body to the local bridge and appends it as `askseattle`. Hotkey: `P`.
-- `Train negative`: sends the visible post title/body to the local bridge and appends it as `not_askseattle`. Hotkey: `N`.
-- `Auto next after training`: when enabled, moves to the next post from the visible listing queue after a train click.
+- [Documentation home](docs/index.md)
+- [Labeling policy](docs/labeling_policy.md)
 
-Start the local bridge first:
+How-to guides:
 
-```bash
-ask-seattle serve-bridge \
-  --model models/real-labels-precision-refresh/tfidf_logreg.joblib \
-  --labels data/processed/tampermonkey_labels.jsonl
-```
+- [Label posts in the browser](docs/how-to/label-posts.md)
+- [Retrain from reviewed labels](docs/how-to/retrain.md)
+- [Troubleshoot common problems](docs/how-to/troubleshoot.md)
 
-Then install `userscripts/ask-seattle-reddit-helper.user.js` in Tampermonkey and open a Reddit post page. The userscript calls `http://127.0.0.1:8765`; it does not call Reddit moderator write APIs.
+Reference:
 
-The userscript scrapes the title/body already visible in your browser and sends that text to the local bridge; the bridge does not fetch Reddit content independently. It also sends the browser-side capture timestamp plus optional debugging metadata when visible in the page DOM, such as subreddit, post type, outbound content URL/domain, created time, and a crosspost hint. The train buttons collect reviewed labels for later retraining.
+- [CLI reference](docs/reference/cli.md)
+- [Bridge API reference](docs/reference/bridge-api.md)
+- [Reviewed data and artifacts reference](docs/reference/data-format.md)
 
-If you want the bridge to retrain itself after every N net-new effective training rows and hot-reload the TF-IDF model, start it with:
+Explanation:
 
-```bash
-ask-seattle serve-bridge \
-  --model models/real-labels-precision-refresh/tfidf_logreg.joblib \
-  --labels data/processed/tampermonkey_labels.jsonl \
-  --retrain-every 25
-```
+- [Architecture](docs/architecture.md)
+- [Model and thresholds](docs/explanation/model-and-thresholds.md)
+- [Roadmap](docs/model_plan.md)
 
-That path still runs only on browser-captured label data. It normalizes and dedupes labels in the background, retrains the TF-IDF model, and swaps the in-memory bundle only after a successful run.
+## Status And Limitations
 
-To use auto-next, open a subreddit listing such as `/new` first so the userscript can record the visible post order. The panel appears on listing pages; click `Seed queue` after scrolling if the queue count is too low, then open a post from that listing. Auto-check and the training buttons only run on post/comment pages so a listing page is not accidentally labeled. Auto-next uses that browser-side queue; it does not call the Reddit API. The bridge also checks whether the current post is already recorded and displays the saved label. Re-labeling a post updates the local label file with last-click-wins behavior instead of creating duplicates. All training fields now originate in the browser payload; the bridge only stores and normalizes them.
+- binary classifier only: `askseattle` vs `not_askseattle`
+- optimized for local use, not shared deployment
+- browser-dependent capture
+- no automatic moderation actions
+- quality depends heavily on reviewed labels and time coverage
 
-Use `--log-level DEBUG` for request-level bridge diagnostics. Relative `models/...` and `data/...` paths are resolved from the current directory first, then from the project root, so the bridge still works if you start it from a subdirectory such as `scripts/`.
-
-## Model Plan
-
-1. Keep the current TF-IDF classifier small and inspectable.
-2. Label real subreddit examples and tune for high-confidence precision before any downstream automation.
-3. Use the browser loop and auto-retrain to tighten the model over time.
-
-This repo currently stops at training and checking. Any later moderation actions should sit on top of the `/check` response rather than inside the bridge.
+Future moderation tools should sit on top of `/check`, not inside the bridge.
