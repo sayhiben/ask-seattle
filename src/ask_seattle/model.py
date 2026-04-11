@@ -214,12 +214,13 @@ def split_labeled_posts(
 def threshold_sweep(
     y_true: list[int],
     probabilities: list[float],
-    thresholds: tuple[float, ...] = DEFAULT_THRESHOLD_GRID,
+    thresholds: tuple[float, ...] | None = None,
 ) -> list[dict[str, float | int]]:
+    resolved_thresholds = _resolve_thresholds(probabilities, thresholds)
     return [
         {"threshold": threshold}
         | _binary_metrics(y_true, [1 if probability >= threshold else 0 for probability in probabilities])
-        for threshold in thresholds
+        for threshold in resolved_thresholds
     ]
 
 
@@ -228,7 +229,7 @@ def select_threshold(
     probabilities: list[float],
     *,
     min_precision: float = 0.95,
-    thresholds: tuple[float, ...] = DEFAULT_THRESHOLD_GRID,
+    thresholds: tuple[float, ...] | None = None,
 ) -> ThresholdSelection:
     sweep = threshold_sweep(y_true, probabilities, thresholds)
     ready = [row for row in sweep if float(row["precision"]) >= min_precision]
@@ -258,7 +259,7 @@ def select_decision_thresholds(
     probabilities: list[float],
     *,
     auto_precision_target: float,
-    thresholds: tuple[float, ...] = DEFAULT_THRESHOLD_GRID,
+    thresholds: tuple[float, ...] | None = None,
 ) -> DecisionThresholds:
     high_threshold_selection = select_threshold(
         y_true,
@@ -587,8 +588,17 @@ def _time_split(
     test_count = max(1, ceil(len(ordered_posts) * test_size))
     calibration_count = max(1, ceil(len(ordered_posts) * calibration_size))
     train_count = len(ordered_posts) - calibration_count - test_count
-    if train_count < 1:
-        raise ValueError("Not enough dated examples for the requested time-based split sizes")
+    minimum_train_count = _minimum_train_count_with_both_classes(ordered_posts)
+
+    while train_count < minimum_train_count and (calibration_count > 0 or test_count > 0):
+        if calibration_count >= test_count and calibration_count > 0:
+            calibration_count -= 1
+        elif test_count > 0:
+            test_count -= 1
+        train_count = len(ordered_posts) - calibration_count - test_count
+
+    if train_count < minimum_train_count:
+        raise ValueError("Not enough dated examples to keep both labels in the chronological train split")
 
     train_posts = ordered_posts[:train_count]
     calibration_posts = ordered_posts[train_count : train_count + calibration_count]
@@ -634,6 +644,18 @@ def _timestamp_to_iso(timestamp: float | int | None) -> str | None:
     return datetime.fromtimestamp(float(timestamp), tz=UTC).isoformat()
 
 
+def _resolve_thresholds(
+    probabilities: list[float],
+    thresholds: tuple[float, ...] | None,
+) -> tuple[float, ...]:
+    if thresholds is not None:
+        return thresholds
+
+    derived = {0.0, 1.0, *DEFAULT_THRESHOLD_GRID}
+    derived.update(max(0.0, min(1.0, round(float(probability), 6))) for probability in probabilities)
+    return tuple(sorted(derived))
+
+
 def _binary_metrics(y_true: list[int], y_pred: list[int]) -> dict[str, float | int]:
     precision, recall, f1, _ = precision_recall_fscore_support(
         y_true,
@@ -663,3 +685,12 @@ def _feature_names(features: FeatureUnion) -> list[str]:
 
 def _default_min_df(posts: list[LabeledPost]) -> int:
     return 1 if len(posts) < 50 else 2
+
+
+def _minimum_train_count_with_both_classes(posts: list[LabeledPost]) -> int:
+    labels_seen: set[int] = set()
+    for index, post in enumerate(posts, start=1):
+        labels_seen.add(post.label)
+        if labels_seen == {0, 1}:
+            return index
+    raise ValueError("Dated examples must include both askseattle and not_askseattle labels")

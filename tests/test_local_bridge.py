@@ -7,7 +7,7 @@ from threading import Thread
 import threading
 from typing import Any
 
-from ask_seattle.data import load_jsonl_records
+from ask_seattle.data import load_jsonl_records, write_jsonl_records
 import ask_seattle.local_bridge as local_bridge
 from ask_seattle.local_bridge import (
     AutoRetrainManager,
@@ -228,6 +228,7 @@ def test_auto_retrain_note_label_saved_returns_status_without_deadlock(tmp_path:
     manager._last_summary = None
     manager._last_prepared_training_count = 5
     manager._last_retrain_training_count = 5
+    manager._last_triggered_training_count = 5
 
     scheduled_counts: list[int] = []
 
@@ -248,6 +249,72 @@ def test_auto_retrain_note_label_saved_returns_status_without_deadlock(tmp_path:
     assert status["in_progress"] is False
     assert status["training_records"] == 6
     assert status["labels_until_retrain"] == 4
+
+
+def test_auto_retrain_does_not_immediately_retry_failed_attempt(tmp_path: Path) -> None:
+    manager = AutoRetrainManager.__new__(AutoRetrainManager)
+    manager.bridge_config = FakeServer()
+    manager.retrain_every = 5
+    manager._state_lock = threading.Lock()
+    manager._running = False
+    manager._last_error = "training failed"
+    manager._last_reload_at = None
+    manager._last_summary = None
+    manager._last_prepared_training_count = 10
+    manager._last_retrain_training_count = 5
+    manager._last_triggered_training_count = 10
+
+    scheduled_counts: list[int] = []
+
+    def fake_start_retrain(training_records: int) -> None:
+        scheduled_counts.append(training_records)
+
+    manager._start_retrain_locked = fake_start_retrain  # type: ignore[method-assign]
+
+    manager._schedule_followup_if_needed()
+
+    assert scheduled_counts == []
+
+
+def test_auto_retrain_snapshot_uses_label_lock(tmp_path: Path) -> None:
+    labels = tmp_path / "labels.jsonl"
+    write_jsonl_records(
+        labels,
+        [
+            {
+                "id": "abc",
+                "title": "Where should I stay?",
+                "selftext": "Visiting",
+                "label": "askseattle",
+            }
+        ],
+    )
+
+    class CountingLock:
+        def __init__(self) -> None:
+            self.entries = 0
+
+        def __enter__(self) -> None:
+            self.entries += 1
+            return None
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    lock = CountingLock()
+
+    manager = AutoRetrainManager.__new__(AutoRetrainManager)
+    manager.bridge_config = FakeServer()
+    manager.bridge_config.label_path = labels
+    manager.bridge_config.label_lock = lock
+    manager.output_dir = tmp_path / "models"
+
+    snapshot_path = manager._snapshot_label_file()
+    try:
+        assert lock.entries == 1
+        assert load_jsonl_records(snapshot_path) == load_jsonl_records(labels)
+    finally:
+        snapshot_path.unlink(missing_ok=True)
 
 
 def test_upsert_label_record_matches_permalink_when_id_missing(tmp_path: Path) -> None:

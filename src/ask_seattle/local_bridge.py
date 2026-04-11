@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 import threading
 from dataclasses import asdict
 from http import HTTPStatus
@@ -329,6 +330,7 @@ class AutoRetrainManager:
         prepared = self._prepare_outputs()
         self._last_prepared_training_count = prepared["training_records"]
         self._last_retrain_training_count = prepared["training_records"]
+        self._last_triggered_training_count = prepared["training_records"]
         LOGGER.info(
             "auto retrain enabled every=%s label_path=%s baseline_training_rows=%s",
             self.retrain_every,
@@ -343,7 +345,7 @@ class AutoRetrainManager:
             self._last_prepared_training_count = training_records
             if self._running:
                 return self._status_snapshot_locked(scheduled=False)
-            delta = training_records - self._last_retrain_training_count
+            delta = training_records - self._last_triggered_training_count
             if delta < self.retrain_every:
                 return self._status_snapshot_locked(scheduled=False)
             self._start_retrain_locked(training_records)
@@ -354,7 +356,7 @@ class AutoRetrainManager:
             return self._status_snapshot_locked(scheduled=scheduled)
 
     def _status_snapshot_locked(self, *, scheduled: bool) -> dict[str, Any]:
-        delta = self._last_prepared_training_count - self._last_retrain_training_count
+        delta = self._last_prepared_training_count - self._last_triggered_training_count
         labels_until_retrain = max(self.retrain_every - max(delta, 0), 0)
         if self._running:
             labels_until_retrain = 0
@@ -365,6 +367,7 @@ class AutoRetrainManager:
             "retrain_every": self.retrain_every,
             "training_records": self._last_prepared_training_count,
             "last_retrain_training_records": self._last_retrain_training_count,
+            "last_triggered_training_records": self._last_triggered_training_count,
             "labels_until_retrain": labels_until_retrain,
             "label_path": str(self.bridge_config.label_path),
             "output_dir": str(self.output_dir),
@@ -382,6 +385,7 @@ class AutoRetrainManager:
     def _start_retrain_locked(self, training_records: int) -> None:
         self._running = True
         self._last_error = None
+        self._last_triggered_training_count = training_records
         thread = threading.Thread(
             target=self._run_retrain,
             args=(training_records,),
@@ -396,9 +400,10 @@ class AutoRetrainManager:
             training_records,
             self.output_dir,
         )
+        snapshot_path = self._snapshot_label_file()
         try:
             summary = train_model_bundle_from_labels(
-                self.bridge_config.label_path,
+                snapshot_path,
                 self.output_dir,
             )
             self.bridge_config.bundle = load_model(self.reload_model_path)
@@ -419,14 +424,31 @@ class AutoRetrainManager:
             with self._state_lock:
                 self._last_error = str(exc)
                 self._running = False
+        finally:
+            snapshot_path.unlink(missing_ok=True)
         self._schedule_followup_if_needed()
 
     def _schedule_followup_if_needed(self) -> None:
         with self._state_lock:
-            delta = self._last_prepared_training_count - self._last_retrain_training_count
+            delta = self._last_prepared_training_count - self._last_triggered_training_count
             if self._running or delta < self.retrain_every:
                 return
             self._start_retrain_locked(self._last_prepared_training_count)
+
+    def _snapshot_label_file(self) -> Path:
+        snapshot_dir = self.output_dir / ".snapshots"
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix="ask-seattle-auto-retrain-",
+            suffix=".jsonl",
+            dir=snapshot_dir,
+            delete=False,
+        ) as handle:
+            snapshot_path = Path(handle.name)
+
+        with self.bridge_config.label_lock:
+            write_jsonl_records(snapshot_path, load_jsonl_records(self.bridge_config.label_path))
+        return snapshot_path
 
 
 def resolve_bridge_path(path: str | Path, *, must_exist: bool) -> Path:
@@ -463,6 +485,8 @@ def resolve_bridge_path(path: str | Path, *, must_exist: bool) -> Path:
         raise FileNotFoundError(f"Could not find {path!s}. Checked: {checked_paths}")
 
     return resolved
+
+
 def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value

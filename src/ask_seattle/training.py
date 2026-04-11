@@ -79,13 +79,19 @@ def train_model_bundle(
         decision_policy=threshold_policy,
     )
 
-    production_ready = calibration.available and thresholds.high_threshold_selection.production_ready
+    production_ready = (
+        calibration.available
+        and thresholds.high_threshold_selection.production_ready
+        and band_metrics.high_confidence_precision >= DEFAULT_HIGH_PRECISION_TARGET
+    )
     blocked_reason = None
     if not production_ready:
         if not calibration.available:
             blocked_reason = "calibration_unavailable"
+        elif band_metrics.high_confidence_precision < DEFAULT_HIGH_PRECISION_TARGET:
+            blocked_reason = "high_precision_target_not_met_on_test"
         else:
-            blocked_reason = "high_precision_target_not_met"
+            blocked_reason = "high_precision_target_not_met_on_calibration"
 
     summary = {
         "version": __version__,

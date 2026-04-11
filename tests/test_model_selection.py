@@ -52,6 +52,40 @@ def test_select_decision_thresholds_orders_low_and_high() -> None:
     assert thresholds.abstain_enabled is False
 
 
+def test_threshold_selection_uses_observed_probabilities_when_grid_is_too_coarse() -> None:
+    selection = select_threshold(
+        [1, 0],
+        [0.961, 0.95],
+        min_precision=1.0,
+    )
+
+    assert selection.production_ready is True
+    assert selection.threshold == 0.961
+    assert selection.precision == 1.0
+    assert selection.recall == 1.0
+
+
+def test_split_labeled_posts_shrinks_later_slices_to_keep_both_labels_in_train() -> None:
+    posts = [
+        LabeledPost(title=f"post {index}", selftext="body", label=0, post_id=f"p{index}", time_key=float(index))
+        for index in range(3)
+    ] + [
+        LabeledPost(title="post 3", selftext="body", label=1, post_id="p3", time_key=3.0),
+        LabeledPost(title="post 4", selftext="body", label=1, post_id="p4", time_key=4.0),
+    ]
+
+    split = split_labeled_posts(
+        posts,
+        calibration_size=0.2,
+        test_size=0.2,
+    )
+
+    assert {post.label for post in split.train} == {0, 1}
+    assert [post.post_id for post in split.train] == ["p0", "p1", "p2", "p3"]
+    assert [post.post_id for post in split.calibration] == []
+    assert [post.post_id for post in split.test] == ["p4"]
+
+
 class FakeModel:
     named_steps = {"classifier": None}
 

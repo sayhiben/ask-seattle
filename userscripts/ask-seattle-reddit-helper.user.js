@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.3
-// @description  Adds auto-checking, re-check, and binary labeling controls for the local Ask Seattle classifier bridge.
+// @version      0.1.4
+// @description  Adds auto-checking, skip, re-check, and binary labeling controls for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
 // @match        https://old.reddit.com/r/*
@@ -499,6 +499,7 @@
     row.style.gap = '8px';
     row.append(
       button('Seed queue', () => seedQueueFromPage(true)),
+      button('Skip', () => moveToNextPost()),
       button('Re-check', () => checkPost()),
       button('Train positive (P)', () => trainPost('askseattle')),
       button('Train negative (N)', () => trainPost('not_askseattle'))
