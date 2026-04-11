@@ -22,6 +22,41 @@ from ask_seattle import __version__
 from ask_seattle.data import LabeledPost, normalize_body, post_text
 
 DEFAULT_THRESHOLD_GRID = tuple(round(index / 100, 2) for index in range(5, 100, 5))
+WORD_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "been",
+        "being",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "it",
+        "its",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "these",
+        "this",
+        "those",
+        "to",
+        "was",
+        "were",
+        "with",
+        "without",
+    }
+)
+DEFAULT_EXTRA_WORD_STOPWORDS = frozenset()
+DEFAULT_CHAR_WEIGHT = 0.25
 
 
 class TextFieldExtractor(BaseEstimator, TransformerMixin):
@@ -43,6 +78,7 @@ class DatasetSplit:
     split_strategy: str
     excluded_for_time_split: int = 0
     time_coverage: dict[str, dict[str, Any]] | None = None
+    evaluation_subreddit: str | None = None
 
     @property
     def validation(self) -> list[LabeledPost]:
@@ -108,6 +144,20 @@ class CheckResult:
 
 
 def build_pipeline(*, min_df: int = 2) -> Pipeline:
+    return build_pipeline_with_config(
+        min_df=min_df,
+        extra_word_stopwords=DEFAULT_EXTRA_WORD_STOPWORDS,
+        char_weight=DEFAULT_CHAR_WEIGHT,
+    )
+
+
+def build_pipeline_with_config(
+    *,
+    min_df: int = 2,
+    extra_word_stopwords: set[str] | frozenset[str] | None = None,
+    char_weight: float = DEFAULT_CHAR_WEIGHT,
+) -> Pipeline:
+    word_stopwords = sorted(WORD_STOPWORDS | set(extra_word_stopwords or ()))
     features = FeatureUnion(
         [
             (
@@ -123,6 +173,7 @@ def build_pipeline(*, min_df: int = 2) -> Pipeline:
                                 min_df=min_df,
                                 max_df=0.95,
                                 strip_accents="unicode",
+                                stop_words=word_stopwords,
                                 sublinear_tf=True,
                             ),
                         ),
@@ -142,6 +193,7 @@ def build_pipeline(*, min_df: int = 2) -> Pipeline:
                                 min_df=min_df,
                                 max_df=0.98,
                                 strip_accents="unicode",
+                                stop_words=word_stopwords,
                                 sublinear_tf=True,
                             ),
                         ),
@@ -170,7 +222,7 @@ def build_pipeline(*, min_df: int = 2) -> Pipeline:
         transformer_weights={
             "title_word": 2.0,
             "body_word": 1.0,
-            "char_wb": 0.5,
+            "char_wb": char_weight,
         },
     )
 
@@ -189,9 +241,21 @@ def build_pipeline(*, min_df: int = 2) -> Pipeline:
     )
 
 
-def train_model(posts: list[LabeledPost]) -> Pipeline:
+def train_model(
+    posts: list[LabeledPost],
+    *,
+    extra_word_stopwords: set[str] | frozenset[str] | None = None,
+    char_weight: float = DEFAULT_CHAR_WEIGHT,
+) -> Pipeline:
     _validate_posts(posts)
-    model = build_pipeline(min_df=_default_min_df(posts))
+    effective_word_stopwords = (
+        DEFAULT_EXTRA_WORD_STOPWORDS if extra_word_stopwords is None else set(extra_word_stopwords)
+    )
+    model = build_pipeline_with_config(
+        min_df=_default_min_df(posts),
+        extra_word_stopwords=effective_word_stopwords,
+        char_weight=char_weight,
+    )
     model.fit(_rows(posts), _labels(posts))
     return model
 
@@ -201,6 +265,7 @@ def split_labeled_posts(
     *,
     calibration_size: float,
     test_size: float,
+    evaluation_subreddit: str | None = None,
 ) -> DatasetSplit:
     _validate_posts(posts)
     if not 0 < calibration_size < 1 or not 0 < test_size < 1:
@@ -208,7 +273,12 @@ def split_labeled_posts(
     if calibration_size + test_size >= 1:
         raise ValueError("calibration_size + test_size must be less than 1")
 
-    return _time_split(posts, calibration_size=calibration_size, test_size=test_size)
+    return _time_split(
+        posts,
+        calibration_size=calibration_size,
+        test_size=test_size,
+        evaluation_subreddit=evaluation_subreddit,
+    )
 
 
 def threshold_sweep(
@@ -364,22 +434,28 @@ def evaluate_decision_policy(
 def tfidf_feature_audit(model: Pipeline, *, limit: int = 20) -> dict[str, list[dict[str, float | str]]]:
     features = model.named_steps["features"]
     classifier = model.named_steps["classifier"]
-    coefficients = classifier.coef_[0]
-    feature_names = _feature_names(features)
-
-    ranked = list(enumerate(coefficients))
-    top_positive = sorted(ranked, key=lambda item: item[1], reverse=True)[:limit]
-    top_negative = sorted(ranked, key=lambda item: item[1])[:limit]
+    records = _feature_records(features, classifier.coef_[0])
 
     return {
-        "top_positive": [
-            {"feature": feature_names[index], "weight": round(float(weight), 6)}
-            for index, weight in top_positive
-        ],
-        "top_negative": [
-            {"feature": feature_names[index], "weight": round(float(weight), 6)}
-            for index, weight in top_negative
-        ],
+        "word_stopwords": _configured_word_stopwords(features),
+        "top_positive": _rank_feature_records(records, limit=limit, reverse=True),
+        "top_negative": _rank_feature_records(records, limit=limit, reverse=False),
+        "top_positive_by_channel": {
+            channel: _rank_feature_records(
+                [record for record in records if str(record["channel"]) == channel],
+                limit=limit,
+                reverse=True,
+            )
+            for channel, _transformer in features.transformer_list
+        },
+        "top_negative_by_channel": {
+            channel: _rank_feature_records(
+                [record for record in records if str(record["channel"]) == channel],
+                limit=limit,
+                reverse=False,
+            )
+            for channel, _transformer in features.transformer_list
+        },
     }
 
 
@@ -412,10 +488,12 @@ def save_model(
             "high_threshold": high_threshold,
             "calibration_method": decision_policy.get("calibration_method") if decision_policy else None,
             "split_strategy": decision_policy.get("split_strategy") if decision_policy else "manual",
+            "evaluation_subreddit": decision_policy.get("evaluation_subreddit") if decision_policy else None,
             "time_coverage": decision_policy.get("time_coverage") if decision_policy else None,
         },
         "calibration_method": decision_policy.get("calibration_method") if decision_policy else None,
         "split_strategy": decision_policy.get("split_strategy") if decision_policy else "manual",
+        "evaluation_subreddit": decision_policy.get("evaluation_subreddit") if decision_policy else None,
         "time_coverage": decision_policy.get("time_coverage") if decision_policy else None,
         "calibrator": calibrator,
         "positive_label": 1,
@@ -456,6 +534,11 @@ def load_model(path: str | Path) -> dict[str, Any]:
                 legacy_policy.get("split_strategy")
                 if isinstance(legacy_policy, dict)
                 else (bundle.get("split_strategy") or "manual")
+            ),
+            "evaluation_subreddit": (
+                legacy_policy.get("evaluation_subreddit")
+                if isinstance(legacy_policy, dict)
+                else bundle.get("evaluation_subreddit")
             ),
             "time_coverage": (
                 legacy_policy.get("time_coverage")
@@ -568,6 +651,7 @@ def _time_split(
     *,
     calibration_size: float,
     test_size: float,
+    evaluation_subreddit: str | None = None,
 ) -> DatasetSplit:
     eligible_posts = [
         post for post in posts if post.time_key is not None or post.created_utc is not None
@@ -575,14 +659,19 @@ def _time_split(
     if len(eligible_posts) < 3:
         raise ValueError("Need at least 3 dated examples for time-based train/calibration/test splits")
 
+    normalized_subreddit = _canonical_subreddit_name(evaluation_subreddit)
+    if normalized_subreddit:
+        return _time_split_for_evaluation_subreddit(
+            posts,
+            eligible_posts=eligible_posts,
+            calibration_size=calibration_size,
+            test_size=test_size,
+            evaluation_subreddit=normalized_subreddit,
+        )
+
     ordered_posts = sorted(
         eligible_posts,
-        key=lambda post: (
-            float(post.time_key if post.time_key is not None else post.created_utc or 0),
-            post.post_id or "",
-            post.permalink or "",
-            post.text_hash or "",
-        ),
+        key=_post_sort_key,
     )
 
     test_count = max(1, ceil(len(ordered_posts) * test_size))
@@ -617,6 +706,71 @@ def _time_split(
     )
 
 
+def _time_split_for_evaluation_subreddit(
+    posts: list[LabeledPost],
+    *,
+    eligible_posts: list[LabeledPost],
+    calibration_size: float,
+    test_size: float,
+    evaluation_subreddit: str,
+) -> DatasetSplit:
+    ordered_posts = sorted(eligible_posts, key=_post_sort_key)
+    evaluation_posts = [
+        post for post in ordered_posts if _canonical_subreddit_name(post.subreddit) == evaluation_subreddit
+    ]
+    if len(evaluation_posts) < 3:
+        raise ValueError(
+            f"Need at least 3 dated examples in subreddit {evaluation_subreddit!r} "
+            "for time-based train/calibration/test splits"
+        )
+
+    test_count = max(1, ceil(len(evaluation_posts) * test_size))
+    calibration_count = max(1, ceil(len(evaluation_posts) * calibration_size))
+
+    while True:
+        evaluation_train_count = len(evaluation_posts) - calibration_count - test_count
+        if evaluation_train_count < 0:
+            calibration_count, test_count = _shrink_later_split_counts(calibration_count, test_count)
+            continue
+
+        calibration_posts = evaluation_posts[
+            evaluation_train_count : evaluation_train_count + calibration_count
+        ]
+        test_posts = evaluation_posts[evaluation_train_count + calibration_count :]
+        first_holdout = calibration_posts[0] if calibration_posts else (test_posts[0] if test_posts else None)
+        if first_holdout is None:
+            raise ValueError(
+                f"Not enough dated examples in subreddit {evaluation_subreddit!r} "
+                "to build chronological evaluation slices"
+            )
+
+        train_cutoff = _post_sort_key(first_holdout)
+        train_posts = [post for post in ordered_posts if _post_sort_key(post) < train_cutoff]
+        if {post.label for post in train_posts} == {0, 1}:
+            return DatasetSplit(
+                train=train_posts,
+                calibration=calibration_posts,
+                test=test_posts,
+                split_strategy="time_eval_subreddit",
+                excluded_for_time_split=len(posts) - len(ordered_posts),
+                time_coverage={
+                    "train": _time_coverage(train_posts),
+                    "calibration": _time_coverage(calibration_posts),
+                    "test": _time_coverage(test_posts),
+                },
+                evaluation_subreddit=evaluation_subreddit,
+            )
+
+        if calibration_count == 0 and test_count == 0:
+            break
+        calibration_count, test_count = _shrink_later_split_counts(calibration_count, test_count)
+
+    raise ValueError(
+        f"Not enough dated examples before the {evaluation_subreddit!r} evaluation window "
+        "to keep both labels in the chronological train split"
+    )
+
+
 def _time_coverage(posts: list[LabeledPost]) -> dict[str, Any]:
     if not posts:
         return {"count": 0, "first_time_key": None, "last_time_key": None, "first_at": None, "last_at": None}
@@ -642,6 +796,15 @@ def _timestamp_to_iso(timestamp: float | int | None) -> str | None:
     if timestamp in (None, ""):
         return None
     return datetime.fromtimestamp(float(timestamp), tz=UTC).isoformat()
+
+
+def _post_sort_key(post: LabeledPost) -> tuple[float, str, str, str]:
+    return (
+        float(post.time_key if post.time_key is not None else post.created_utc or 0),
+        post.post_id or "",
+        post.permalink or "",
+        post.text_hash or "",
+    )
 
 
 def _resolve_thresholds(
@@ -681,6 +844,59 @@ def _feature_names(features: FeatureUnion) -> list[str]:
             branch_names = transformer.get_feature_names_out()
         names.extend(f"{branch_name}:{feature_name}" for feature_name in branch_names)
     return names
+
+
+def _configured_word_stopwords(features: FeatureUnion) -> list[str]:
+    configured: set[str] = set()
+    for channel, transformer in features.transformer_list:
+        if channel not in {"title_word", "body_word"}:
+            continue
+        if not isinstance(transformer, Pipeline):
+            continue
+        vectorizer = transformer.named_steps["vectorizer"]
+        configured.update(str(word) for word in vectorizer.get_stop_words() or ())
+    return sorted(configured)
+
+
+def _canonical_subreddit_name(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower().lstrip("/")
+    if normalized.startswith("r/"):
+        normalized = normalized[2:]
+    return normalized or None
+
+
+def _shrink_later_split_counts(calibration_count: int, test_count: int) -> tuple[int, int]:
+    if calibration_count >= test_count and calibration_count > 0:
+        return calibration_count - 1, test_count
+    if test_count > 0:
+        return calibration_count, test_count - 1
+    return calibration_count, test_count
+
+
+def _feature_records(features: FeatureUnion, coefficients: list[float] | Any) -> list[dict[str, float | str]]:
+    records: list[dict[str, float | str]] = []
+    for full_feature, weight in zip(_feature_names(features), coefficients, strict=True):
+        channel, feature = full_feature.split(":", 1)
+        records.append(
+            {
+                "channel": channel,
+                "feature": feature,
+                "full_feature": full_feature,
+                "weight": round(float(weight), 6),
+            }
+        )
+    return records
+
+
+def _rank_feature_records(
+    records: list[dict[str, float | str]],
+    *,
+    limit: int,
+    reverse: bool,
+) -> list[dict[str, float | str]]:
+    return sorted(records, key=lambda record: float(record["weight"]), reverse=reverse)[:limit]
 
 
 def _default_min_df(posts: list[LabeledPost]) -> int:

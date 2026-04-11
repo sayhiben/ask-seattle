@@ -1,5 +1,14 @@
 from ask_seattle.data import LabeledPost
-from ask_seattle.model import classify_post, select_decision_thresholds, select_threshold, split_labeled_posts
+from ask_seattle.model import (
+    build_inference_row,
+    build_pipeline,
+    classify_post,
+    select_decision_thresholds,
+    select_threshold,
+    split_labeled_posts,
+    tfidf_feature_audit,
+    train_model,
+)
 
 
 def test_threshold_selection_prefers_recall_above_precision_gate() -> None:
@@ -84,6 +93,132 @@ def test_split_labeled_posts_shrinks_later_slices_to_keep_both_labels_in_train()
     assert [post.post_id for post in split.train] == ["p0", "p1", "p2", "p3"]
     assert [post.post_id for post in split.calibration] == []
     assert [post.post_id for post in split.test] == ["p4"]
+
+
+def test_split_labeled_posts_can_train_on_mixed_data_and_evaluate_on_one_subreddit() -> None:
+    posts = [
+        LabeledPost(
+            title="Moving advice",
+            selftext="Need recommendations",
+            label=1,
+            post_id="ask0",
+            subreddit="askseattle",
+            time_key=0.0,
+        ),
+        LabeledPost(
+            title="Traffic update",
+            selftext="Road closure downtown",
+            label=0,
+            post_id="sea1",
+            subreddit="seattle",
+            time_key=1.0,
+        ),
+        LabeledPost(
+            title="Neighborhood advice",
+            selftext="Where should I live?",
+            label=1,
+            post_id="sea2",
+            subreddit="seattle",
+            time_key=2.0,
+        ),
+        LabeledPost(
+            title="Best coffee",
+            selftext="Need recommendations",
+            label=1,
+            post_id="sea3",
+            subreddit="seattle",
+            time_key=3.0,
+        ),
+        LabeledPost(
+            title="Late askseattle positive",
+            selftext="Visiting next week",
+            label=1,
+            post_id="ask4",
+            subreddit="askseattle",
+            time_key=4.0,
+        ),
+        LabeledPost(
+            title="City budget update",
+            selftext="Council discussion",
+            label=0,
+            post_id="sea4",
+            subreddit="seattle",
+            time_key=5.0,
+        ),
+        LabeledPost(
+            title="Weekend itinerary help",
+            selftext="What should I do?",
+            label=1,
+            post_id="sea5",
+            subreddit="seattle",
+            time_key=6.0,
+        ),
+    ]
+
+    split = split_labeled_posts(
+        posts,
+        calibration_size=0.2,
+        test_size=0.2,
+        evaluation_subreddit="seattle",
+    )
+
+    assert split.split_strategy == "time_eval_subreddit"
+    assert split.evaluation_subreddit == "seattle"
+    assert [post.post_id for post in split.train] == ["ask0", "sea1", "sea2", "sea3", "ask4"]
+    assert [post.post_id for post in split.calibration] == ["sea4"]
+    assert [post.post_id for post in split.test] == ["sea5"]
+
+
+def test_build_pipeline_excludes_common_function_words_from_word_vocab() -> None:
+    rows = [
+        build_inference_row(
+            title="The best pizza and coffee",
+            selftext="The recommendations are in and the food is good with some just one choice",
+        ),
+        build_inference_row(
+            title="The city council and transit update",
+            selftext="The discussion is about policy and local news with some just one followup",
+        ),
+    ]
+    model = build_pipeline(min_df=1)
+    model.fit(rows, [1, 0])
+
+    features = model.named_steps["features"]
+    title_vectorizer = features.transformer_list[0][1].named_steps["vectorizer"]
+    body_vectorizer = features.transformer_list[1][1].named_steps["vectorizer"]
+
+    assert "some" not in title_vectorizer.get_stop_words()
+    assert "just" not in title_vectorizer.get_stop_words()
+    assert "one" not in title_vectorizer.get_stop_words()
+    assert "some" not in body_vectorizer.get_stop_words()
+    assert "just" not in body_vectorizer.get_stop_words()
+    assert "one" not in body_vectorizer.get_stop_words()
+    assert "the" not in title_vectorizer.vocabulary_
+    assert "and" not in title_vectorizer.vocabulary_
+    assert "the" not in body_vectorizer.vocabulary_
+    assert "is" not in body_vectorizer.vocabulary_
+    assert "best" in title_vectorizer.vocabulary_
+    assert "recommendations" in body_vectorizer.vocabulary_
+
+
+def test_tfidf_feature_audit_includes_channel_breakdown_and_stopwords() -> None:
+    posts = [
+        LabeledPost(title="Where should I stay?", selftext="Visiting soon", label=1, post_id="a1"),
+        LabeledPost(title="Best coffee near Fremont", selftext="Need recommendations", label=1, post_id="a2"),
+        LabeledPost(title="City council budget update", selftext="Local policy discussion", label=0, post_id="n1"),
+        LabeledPost(title="Traffic alert downtown", selftext="Lane closures this morning", label=0, post_id="n2"),
+    ]
+
+    audit = tfidf_feature_audit(train_model(posts), limit=3)
+
+    assert "word_stopwords" in audit
+    assert "the" in audit["word_stopwords"]
+    assert "some" not in audit["word_stopwords"]
+    assert "just" not in audit["word_stopwords"]
+    assert "one" not in audit["word_stopwords"]
+    assert set(audit["top_positive_by_channel"]) == {"title_word", "body_word", "char_wb"}
+    assert set(audit["top_negative_by_channel"]) == {"title_word", "body_word", "char_wb"}
+    assert all("channel" in row and "full_feature" in row for row in audit["top_positive"])
 
 
 class FakeModel:

@@ -8,6 +8,7 @@ Use it when you need to understand the current system, make changes safely, or f
 
 - Want the system overview: [Architecture](architecture.md)
 - Want to work on the code locally: [Development workflow](development.md)
+- Want maintainer-specific guardrails and repo rules: [AGENTS.md](../AGENTS.md)
 - Want to label posts in the browser: [How to label posts](how-to/label-posts.md)
 - Want to retrain the model: [How to retrain](how-to/retrain.md)
 - Need the exact CLI surface: [CLI reference](reference/cli.md)
@@ -23,6 +24,8 @@ The project is a local-only review and classification loop. A Tampermonkey users
 ## Documentation Map
 
 The docs are organized by intent.
+
+Repository-level maintainer rules live in [AGENTS.md](../AGENTS.md). Read that alongside these docs when changing public behavior, project scope, or model defaults.
 
 ### How-to
 

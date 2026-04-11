@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.4
+// @version      0.1.5
 // @description  Adds auto-checking, skip, re-check, and binary labeling controls for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
@@ -21,6 +21,7 @@
   const PANEL_ID = 'ask-seattle-local-helper';
   const QUEUE_KEY = 'askSeattlePostQueue';
   const AUTO_NEXT_KEY = 'askSeattleAutoNext';
+  const HOTKEY_SKIP = 's';
   const HOTKEY_POSITIVE = 'p';
   const HOTKEY_NEGATIVE = 'n';
   const AUTO_CHECK_RETRIES = 8;
@@ -459,7 +460,10 @@
     if (event.metaKey || event.ctrlKey || event.altKey) return;
 
     const key = String(event.key || '').toLowerCase();
-    if (key === HOTKEY_POSITIVE) {
+    if (key === HOTKEY_SKIP) {
+      event.preventDefault();
+      moveToNextPost();
+    } else if (key === HOTKEY_POSITIVE) {
       event.preventDefault();
       trainPost('askseattle');
     } else if (key === HOTKEY_NEGATIVE) {
@@ -499,7 +503,7 @@
     row.style.gap = '8px';
     row.append(
       button('Seed queue', () => seedQueueFromPage(true)),
-      button('Skip', () => moveToNextPost()),
+      button('Skip (S)', () => moveToNextPost()),
       button('Re-check', () => checkPost()),
       button('Train positive (P)', () => trainPost('askseattle')),
       button('Train negative (N)', () => trainPost('not_askseattle'))

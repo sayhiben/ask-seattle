@@ -51,7 +51,7 @@ The lower status line also shows score and threshold details.
 
 Available controls:
 
-- `Skip`: move to the next queued post without saving a label
+- `Skip (S)`: move to the next queued post without saving a label
 - `Re-check`: run `/check` again
 - `Train positive`: save the current post as `askseattle`
 - `Train negative`: save the current post as `not_askseattle`
@@ -59,6 +59,7 @@ Available controls:
 
 Hotkeys:
 
+- `S` for `Skip`
 - `P` for `Train positive`
 - `N` for `Train negative`
 

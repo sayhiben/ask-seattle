@@ -30,6 +30,12 @@ That helps because:
 - bodies add context when present
 - character features help with phrasing variants, spelling variation, and short recurring templates
 
+The word channels use a small custom stopword list for obvious filler words such as `the`, `and`, `is`, and `was`.
+
+That is intentionally conservative. Earlier experiments with adding `just`, `one`, and `some` as extra stopwords reduced recall on the `/r/seattle` benchmark, so they remain available as a benchmark variant rather than part of the default model.
+
+The character channel is also intentionally downweighted relative to the original baseline. It still helps with phrasing variants and short templates, but it now has less influence when it starts overfitting generic fragments.
+
 ## What TF-IDF Means Here
 
 TF-IDF is a way to turn text into weighted numeric features.
@@ -53,6 +59,14 @@ That gives a model that is:
 - well-suited to sparse text features
 
 It does not deeply understand meaning. It mostly learns wording patterns and their correlations with the label.
+
+The training summary includes a feature audit with:
+
+- overall top positive and negative features
+- top positive and negative features by channel
+- the custom word stopword list used in training
+
+That makes it easier to spot when the model is learning intent-bearing phrases versus low-value filler terms.
 
 ## Raw Score vs Calibrated Score
 
@@ -130,6 +144,8 @@ The chronological split keeps the evaluation closer to the real review loop:
 - train on older posts
 - calibrate on newer posts
 - test on the newest held-out posts
+
+When needed, the training command can also use mixed reviewed data for training while restricting calibration and test evaluation to one target subreddit such as `seattle`. That is useful when `/r/askseattle` provides representative positive examples, but `/r/seattle` is the actual deployment domain you care about.
 
 ## What To Improve Before Adding Complexity
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import logging
 from pathlib import Path
 from threading import Thread
 import threading
@@ -218,6 +219,7 @@ def test_auto_retrain_note_label_saved_returns_status_without_deadlock(tmp_path:
     manager = AutoRetrainManager.__new__(AutoRetrainManager)
     manager.bridge_config = FakeServer()
     manager.bridge_config.label_path = tmp_path / "labels.jsonl"
+    manager.evaluation_subreddit = None
     manager.retrain_every = 5
     manager.output_dir = tmp_path / "models"
     manager.reload_model_path = manager.output_dir / "tfidf_logreg.joblib"
@@ -251,9 +253,42 @@ def test_auto_retrain_note_label_saved_returns_status_without_deadlock(tmp_path:
     assert status["labels_until_retrain"] == 4
 
 
+def test_auto_retrain_note_label_saved_logs_status(tmp_path: Path, caplog) -> None:
+    manager = AutoRetrainManager.__new__(AutoRetrainManager)
+    manager.bridge_config = FakeServer()
+    manager.bridge_config.label_path = tmp_path / "labels.jsonl"
+    manager.evaluation_subreddit = None
+    manager.retrain_every = 5
+    manager.output_dir = tmp_path / "models"
+    manager.reload_model_path = manager.output_dir / "tfidf_logreg.joblib"
+    manager._state_lock = threading.Lock()
+    manager._running = False
+    manager._last_error = None
+    manager._last_reload_at = None
+    manager._last_summary = None
+    manager._last_prepared_training_count = 5
+    manager._last_retrain_training_count = 5
+    manager._last_triggered_training_count = 5
+
+    def fake_prepare_outputs() -> dict[str, int]:
+        return {"training_records": 6}
+
+    manager._prepare_outputs = fake_prepare_outputs  # type: ignore[method-assign]
+
+    caplog.set_level(logging.INFO, logger="ask_seattle.local_bridge")
+    status = manager.note_label_saved()
+
+    assert status["scheduled"] is False
+    assert any(
+        "auto retrain status event=label_saved_waiting_for_retrain" in record.message
+        for record in caplog.records
+    )
+
+
 def test_auto_retrain_does_not_immediately_retry_failed_attempt(tmp_path: Path) -> None:
     manager = AutoRetrainManager.__new__(AutoRetrainManager)
     manager.bridge_config = FakeServer()
+    manager.evaluation_subreddit = None
     manager.retrain_every = 5
     manager._state_lock = threading.Lock()
     manager._running = False
@@ -307,6 +342,7 @@ def test_auto_retrain_snapshot_uses_label_lock(tmp_path: Path) -> None:
     manager.bridge_config = FakeServer()
     manager.bridge_config.label_path = labels
     manager.bridge_config.label_lock = lock
+    manager.evaluation_subreddit = None
     manager.output_dir = tmp_path / "models"
 
     snapshot_path = manager._snapshot_label_file()
@@ -315,6 +351,62 @@ def test_auto_retrain_snapshot_uses_label_lock(tmp_path: Path) -> None:
         assert load_jsonl_records(snapshot_path) == load_jsonl_records(labels)
     finally:
         snapshot_path.unlink(missing_ok=True)
+
+
+def test_auto_retrain_logs_training_summary(tmp_path: Path, monkeypatch, caplog) -> None:
+    snapshot_path = tmp_path / "snapshot.jsonl"
+    snapshot_path.write_text("{}\n", encoding="utf-8")
+
+    manager = AutoRetrainManager.__new__(AutoRetrainManager)
+    manager.bridge_config = FakeServer()
+    manager.bridge_config.label_path = tmp_path / "labels.jsonl"
+    manager.bridge_config.label_lock = threading.Lock()
+    manager.retrain_every = 5
+    manager.evaluation_subreddit = "seattle"
+    manager.output_dir = tmp_path / "models"
+    manager.reload_model_path = manager.output_dir / "tfidf_logreg.joblib"
+    manager._state_lock = threading.Lock()
+    manager._running = True
+    manager._last_error = None
+    manager._last_reload_at = None
+    manager._last_summary = None
+    manager._last_prepared_training_count = 12
+    manager._last_retrain_training_count = 8
+    manager._last_triggered_training_count = 12
+
+    summary = {
+        "prepared_data": {"training_records": 12},
+        "split": {"train": 8, "calibration": 2, "test": 2, "split_strategy": "time"},
+        "calibration": {"available": True},
+        "metrics": {
+            "high_confidence_precision": 0.97,
+            "high_confidence_recall": 0.75,
+            "high_confidence_f1": 0.84,
+        },
+        "threshold_policy": {"low_threshold": 0.55, "high_threshold": 0.9},
+        "production_ready": True,
+        "production_ready_blocked_reason": None,
+    }
+
+    def fake_train_model_bundle_from_labels(*args, **kwargs):
+        assert kwargs["evaluation_subreddit"] == "seattle"
+        return summary
+
+    monkeypatch.setattr(manager, "_snapshot_label_file", lambda: snapshot_path)
+    monkeypatch.setattr(local_bridge, "train_model_bundle_from_labels", fake_train_model_bundle_from_labels)
+    monkeypatch.setattr(local_bridge, "load_model", lambda *args, **kwargs: {"model_name": "fake"})
+
+    caplog.set_level(logging.INFO, logger="ask_seattle.local_bridge")
+    manager._run_retrain(training_records=12)
+
+    assert any("starting auto retrain training_records=12" in record.message for record in caplog.records)
+    assert any("auto retrain complete training_records=12" in record.message for record in caplog.records)
+    assert any(
+        "auto retrain summary training_records=12" in record.message
+        and "high_confidence_precision=0.97" in record.message
+        and "production_ready=True" in record.message
+        for record in caplog.records
+    )
 
 
 def test_upsert_label_record_matches_permalink_when_id_missing(tmp_path: Path) -> None:

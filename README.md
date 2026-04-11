@@ -70,6 +70,48 @@ make retrain
 make bridge
 ```
 
+If you want to train on mixed reviewed data but benchmark only on `/r/seattle`, use:
+
+```bash
+make retrain EVAL_SUBREDDIT=seattle
+make bridge EVAL_SUBREDDIT=seattle
+```
+
+### Run A Benchmark Without Replacing The Bridge Model
+
+```bash
+make benchmark
+```
+
+This runs the same training and held-out evaluation path as `make retrain`, but writes artifacts to:
+
+- `models/benchmark/`
+
+That makes it useful when you want fresh metrics without immediately replacing the model bundle your bridge is using.
+
+Use a target-subreddit benchmark like this:
+
+```bash
+make benchmark EVAL_SUBREDDIT=seattle
+```
+
+### Compare A Few Lightweight Variants On The Same Split
+
+```bash
+make benchmark-variants EVAL_SUBREDDIT=seattle
+```
+
+This writes side-by-side benchmark artifacts under:
+
+- `models/benchmark-variants/`
+
+The current comparison set is:
+
+- legacy baseline
+- extra stopwords only
+- lower `char_wb` weight only
+- recommended default
+
 ### Run A One-Off Local Check
 
 ```bash
@@ -96,6 +138,7 @@ The reviewed post text used for training must originate in the browser helper. T
 - the userscript can auto-check, re-check, skip through a seeded queue, and save binary labels
 - the bridge only accepts browser-originated text and local file paths
 - `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs chronological training, calibration, and test evaluation
+- the default TF-IDF model keeps the conservative core stopword list and uses a lower `char_wb` weight than the legacy baseline
 - training writes artifacts even when a run is not production-ready
 
 For the detailed operator flow, see [How to label posts](docs/how-to/label-posts.md) and [How to retrain](docs/how-to/retrain.md).
@@ -116,6 +159,8 @@ Default model output directory:
 
 ```bash
 make retrain
+make benchmark
+make benchmark-variants EVAL_SUBREDDIT=seattle
 make bridge
 make bridge RETRAIN_EVERY=25
 python3 -m ruff check src tests
@@ -127,6 +172,7 @@ PYTHONPATH=src python3 -m pytest
 Start here:
 
 - [Documentation home](docs/index.md)
+- [Maintainer guidance](AGENTS.md)
 - [Labeling policy](docs/labeling_policy.md)
 
 How-to guides:

@@ -122,6 +122,7 @@ Important sections:
   - counts after normalization and dedupe
 - `split`
   - train, calibration, and test counts
+  - optional `evaluation_subreddit` when calibration/test were restricted to one subreddit
   - time coverage
 - `calibration`
   - calibrator availability and metrics
@@ -131,6 +132,8 @@ Important sections:
   - held-out high-confidence precision, recall, F1, and band counts
 - `feature_audit`
   - top positive and negative TF-IDF features
+  - top positive and negative features by channel
+  - the custom word stopword list used by the title/body vectorizers
 - `production_ready`
 - `production_ready_blocked_reason`
 

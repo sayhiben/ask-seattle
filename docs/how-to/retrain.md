@@ -16,6 +16,58 @@ PYTHONPATH=src python3 -m ask_seattle.cli train \
   --output-dir models/real-labels-precision-refresh
 ```
 
+If you want to train on mixed reviewed labels but calibrate and test only on one subreddit, add `EVAL_SUBREDDIT`:
+
+```bash
+make retrain EVAL_SUBREDDIT=seattle
+```
+
+## Run A Benchmark Without Replacing The Main Model
+
+```bash
+make benchmark
+```
+
+That expands to:
+
+```bash
+PYTHONPATH=src python3 -m ask_seattle.cli train \
+  --data data/processed/tampermonkey_labels.jsonl \
+  --output-dir models/benchmark
+```
+
+Use this when you want a fresh held-out evaluation run and `training_summary.json`, but do not want to overwrite the default bridge model artifact.
+
+Target only one subreddit for evaluation:
+
+```bash
+make benchmark EVAL_SUBREDDIT=seattle
+```
+
+## Compare Lightweight Variants
+
+```bash
+make benchmark-variants EVAL_SUBREDDIT=seattle
+```
+
+That expands to:
+
+```bash
+PYTHONPATH=src python3 -m ask_seattle.cli benchmark-variants \
+  --data data/processed/tampermonkey_labels.jsonl \
+  --output-dir models/benchmark-variants \
+  --eval-subreddit seattle
+```
+
+Use this when you want to compare:
+
+- the legacy baseline
+- extra stopwords only
+- lower `char_wb` weight only
+- the current recommended default
+
+All variants run on the exact same split.
+
 ## What Training Does
 
 The training command:
@@ -31,6 +83,12 @@ The training command:
 9. writes:
    - `tfidf_logreg.joblib`
    - `training_summary.json`
+
+If `EVAL_SUBREDDIT` is set, training still uses mixed reviewed data before the evaluation window, but the calibration and test slices are restricted to the named subreddit.
+
+The current default model applies one conservative refinement relative to the legacy baseline:
+
+- lower `char_wb` feature weight
 
 ## Output Location
 
@@ -60,6 +118,12 @@ Start the bridge with background retraining:
 
 ```bash
 make bridge RETRAIN_EVERY=25
+```
+
+To keep the same target-domain evaluation policy during bridge auto-retrain:
+
+```bash
+make bridge RETRAIN_EVERY=25 EVAL_SUBREDDIT=seattle
 ```
 
 That means:

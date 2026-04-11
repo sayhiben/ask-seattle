@@ -32,9 +32,11 @@ class BridgeConfig:
         model_path: Path,
         label_path: Path,
         retrain_every: int = 0,
+        evaluation_subreddit: str | None = None,
     ) -> None:
         self.model_path = resolve_bridge_path(model_path, must_exist=True)
         self.label_path = resolve_bridge_path(label_path, must_exist=False)
+        self.evaluation_subreddit = evaluation_subreddit
         self.label_lock = threading.Lock()
         LOGGER.info("loading model from %s", self.model_path)
         self.bundle = load_model(self.model_path)
@@ -55,12 +57,14 @@ def run_bridge(
     label_path: str | Path,
     log_level: str = "INFO",
     retrain_every: int = 0,
+    evaluation_subreddit: str | None = None,
 ) -> None:
     configure_logging(log_level)
     config = BridgeConfig(
         model_path=Path(model_path),
         label_path=Path(label_path),
         retrain_every=retrain_every,
+        evaluation_subreddit=evaluation_subreddit,
     )
 
     class RequestHandler(LocalBridgeRequestHandler):
@@ -68,11 +72,12 @@ def run_bridge(
 
     server = ThreadingHTTPServer((host, port), RequestHandler)
     LOGGER.info(
-        "starting local bridge host=%s port=%s model_path=%s label_path=%s",
+        "starting local bridge host=%s port=%s model_path=%s label_path=%s evaluation_subreddit=%s",
         host,
         port,
         config.model_path,
         config.label_path,
+        config.evaluation_subreddit or "",
     )
     print(
         "local_bridge="
@@ -82,6 +87,7 @@ def run_bridge(
                 "port": port,
                 "model_path": str(config.model_path),
                 "label_path": str(config.label_path),
+                "evaluation_subreddit": config.evaluation_subreddit,
                 "auto_retrain": config.auto_retrain.status_snapshot() if config.auto_retrain else None,
             },
             sort_keys=True,
@@ -111,6 +117,7 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "model_path": str(self.bridge_config.model_path),
                     "label_path": str(self.bridge_config.label_path),
+                    "evaluation_subreddit": self.bridge_config.evaluation_subreddit,
                     "auto_retrain": (
                         self.bridge_config.auto_retrain.status_snapshot()
                         if self.bridge_config.auto_retrain
@@ -321,6 +328,7 @@ class AutoRetrainManager:
             if self.bridge_config.model_path.is_dir()
             else self.bridge_config.model_path.parent
         )
+        self.evaluation_subreddit = bridge_config.evaluation_subreddit
         self.reload_model_path = self.output_dir / "tfidf_logreg.joblib"
         self._state_lock = threading.Lock()
         self._running = False
@@ -344,12 +352,18 @@ class AutoRetrainManager:
         with self._state_lock:
             self._last_prepared_training_count = training_records
             if self._running:
-                return self._status_snapshot_locked(scheduled=False)
+                status = self._status_snapshot_locked(scheduled=False)
+                self._log_status("label_saved_while_retrain_in_progress", status)
+                return status
             delta = training_records - self._last_triggered_training_count
             if delta < self.retrain_every:
-                return self._status_snapshot_locked(scheduled=False)
+                status = self._status_snapshot_locked(scheduled=False)
+                self._log_status("label_saved_waiting_for_retrain", status)
+                return status
             self._start_retrain_locked(training_records)
-            return self._status_snapshot_locked(scheduled=True)
+            status = self._status_snapshot_locked(scheduled=True)
+            self._log_status("label_saved_triggered_retrain", status)
+            return status
 
     def status_snapshot(self, *, scheduled: bool = False) -> dict[str, Any]:
         with self._state_lock:
@@ -372,6 +386,7 @@ class AutoRetrainManager:
             "label_path": str(self.bridge_config.label_path),
             "output_dir": str(self.output_dir),
             "reload_model_path": str(self.reload_model_path),
+            "evaluation_subreddit": self.evaluation_subreddit,
             "last_reload_at": self._last_reload_at,
             "last_error": self._last_error,
             "last_summary_path": str(self.output_dir / "training_summary.json"),
@@ -395,16 +410,18 @@ class AutoRetrainManager:
         thread.start()
 
     def _run_retrain(self, training_records: int) -> None:
+        snapshot_path = self._snapshot_label_file()
         LOGGER.info(
-            "starting auto retrain training_records=%s output_dir=%s",
+            "starting auto retrain training_records=%s output_dir=%s snapshot_path=%s",
             training_records,
             self.output_dir,
+            snapshot_path,
         )
-        snapshot_path = self._snapshot_label_file()
         try:
             summary = train_model_bundle_from_labels(
                 snapshot_path,
                 self.output_dir,
+                evaluation_subreddit=self.evaluation_subreddit,
             )
             self.bridge_config.bundle = load_model(self.reload_model_path)
             self.bridge_config.model_path = self.reload_model_path
@@ -415,12 +432,19 @@ class AutoRetrainManager:
                 self._last_error = None
                 self._running = False
             LOGGER.info(
-                "auto retrain complete training_records=%s reloaded_model=%s",
+                "auto retrain complete training_records=%s reloaded_model=%s summary_path=%s",
                 training_records,
                 self.reload_model_path,
+                self.output_dir / "training_summary.json",
             )
+            self._log_training_summary(summary, training_records=training_records)
         except Exception as exc:
-            LOGGER.exception("auto retrain failed")
+            LOGGER.exception(
+                "auto retrain failed training_records=%s output_dir=%s snapshot_path=%s",
+                training_records,
+                self.output_dir,
+                snapshot_path,
+            )
             with self._state_lock:
                 self._last_error = str(exc)
                 self._running = False
@@ -449,6 +473,51 @@ class AutoRetrainManager:
         with self.bridge_config.label_lock:
             write_jsonl_records(snapshot_path, load_jsonl_records(self.bridge_config.label_path))
         return snapshot_path
+
+    def _log_status(self, event: str, status: dict[str, Any]) -> None:
+        LOGGER.info(
+            "auto retrain status event=%s scheduled=%s in_progress=%s training_records=%s "
+            "last_retrain_training_records=%s last_triggered_training_records=%s labels_until_retrain=%s "
+            "evaluation_subreddit=%s last_error=%s",
+            event,
+            status.get("scheduled"),
+            status.get("in_progress"),
+            status.get("training_records"),
+            status.get("last_retrain_training_records"),
+            status.get("last_triggered_training_records"),
+            status.get("labels_until_retrain"),
+            status.get("evaluation_subreddit") or "",
+            status.get("last_error") or "",
+        )
+
+    def _log_training_summary(self, summary: dict[str, Any], *, training_records: int) -> None:
+        prepared_data = summary.get("prepared_data") or {}
+        split = summary.get("split") or {}
+        calibration = summary.get("calibration") or {}
+        metrics = summary.get("metrics") or {}
+        threshold_policy = summary.get("threshold_policy") or {}
+        LOGGER.info(
+            "auto retrain summary training_records=%s prepared_training_records=%s "
+            "split_train=%s split_calibration=%s split_test=%s split_strategy=%s "
+            "calibration_available=%s high_confidence_precision=%s high_confidence_recall=%s "
+            "high_confidence_f1=%s low_threshold=%s high_threshold=%s evaluation_subreddit=%s production_ready=%s "
+            "blocked_reason=%s",
+            training_records,
+            prepared_data.get("training_records"),
+            split.get("train"),
+            split.get("calibration"),
+            split.get("test"),
+            split.get("split_strategy"),
+            calibration.get("available"),
+            metrics.get("high_confidence_precision"),
+            metrics.get("high_confidence_recall"),
+            metrics.get("high_confidence_f1"),
+            threshold_policy.get("low_threshold"),
+            threshold_policy.get("high_threshold"),
+            threshold_policy.get("evaluation_subreddit") or "",
+            summary.get("production_ready"),
+            summary.get("production_ready_blocked_reason"),
+        )
 
 
 def resolve_bridge_path(path: str | Path, *, must_exist: bool) -> Path:

@@ -2,6 +2,8 @@
 
 Use this page when you need to run the project locally, change code safely, or know which files to update for a given type of change.
 
+For repository-wide guardrails, scope limits, and documentation update rules, also read [AGENTS.md](../AGENTS.md).
+
 ## Local Setup
 
 ```bash
@@ -93,6 +95,8 @@ Update docs when any of these change:
 - current project scope or invariants
 
 The docs are intentionally split by type. Avoid stuffing new operational instructions into architecture pages or new rationale into reference pages.
+
+`AGENTS.md` is the stricter source for maintainer rules. If this page and `AGENTS.md` ever disagree, fix the docs in the same change rather than letting them drift.
 
 ## Repo Hygiene
 
