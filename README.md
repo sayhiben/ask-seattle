@@ -55,6 +55,12 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
+If you want to run the semantic embedding and transformer benchmark suite, install the optional model dependencies too:
+
+```bash
+python -m pip install -e ".[dev,models]"
+```
+
 Then choose the path that matches your current state.
 
 ### Start The Bridge With An Existing Model
@@ -112,6 +118,24 @@ The current comparison set is:
 - lower `char_wb` weight only
 - recommended default
 
+### Compare TF-IDF, Semantic, And Transformer Paths
+
+```bash
+make benchmark-suite EVAL_SUBREDDIT=seattle
+```
+
+This writes comparable benchmark artifacts under:
+
+- `models/benchmark-suite/`
+
+The suite currently compares:
+
+- the recommended TF-IDF baseline
+- a semantic embedding path using `sentence-transformers/all-MiniLM-L6-v2` plus logistic regression
+- a transformer sequence classifier using `microsoft/deberta-v3-small`
+
+If the benchmark suite artifacts exist, `make bridge` also loads the semantic and transformer benchmark models for side-by-side `/check` comparisons in the userscript UI.
+
 ### Run A One-Off Local Check
 
 ```bash
@@ -136,9 +160,27 @@ The reviewed post text used for training must originate in the browser helper. T
 ## Core Behavior
 
 - the userscript can auto-check, re-check, skip through a seeded queue, and save binary labels
+- when benchmark-suite artifacts exist, the userscript also shows side-by-side TF-IDF, semantic, and transformer result cards for the current post so all three verdicts are visible at a glance
 - the bridge only accepts browser-originated text and local file paths
-- `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs chronological training, calibration, and test evaluation
+- `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs a deterministic random train, calibration, and test split by default
+- the same split object is reused across all benchmark evaluators so TF-IDF, semantic, and transformer comparisons are apples-to-apples
+- if you later want future-facing evaluation on a longer collection window, you can opt into `SPLIT_STRATEGY=time`
+- the shared model text now includes normalized content metadata when available, such as post type, content domain, crosspost status, and whether the post has body text
+- the shared model text also includes light structural cues such as title/body length buckets, question-mark presence, and a sparse-media marker for image/link posts with very little text
 - the default TF-IDF model keeps the conservative core stopword list and uses a lower `char_wb` weight than the legacy baseline
+- the training harness now reports cohort coverage and applies conservative slice-aware positive weighting so sparse-media and low-text positives get more influence without changing the capture flow
+- `ask-seattle benchmark-suite` compares the TF-IDF baseline against one semantic embedding path and one small transformer path on the same split
+- the transformer benchmark uses title/body pair encoding, a longer max length, and class-weighted loss
+- all benchmark summaries now include the same operating metrics for:
+  - the strict `high` bucket
+  - the broader `low-or-higher` review queue
+  - queue size and queue rate
+- sparse image/link posts are treated more conservatively in the `high` bucket, so they need a stronger score to land in high confidence
+- benchmark summaries now also break performance out by:
+  - post type
+  - low-text vs richer-text posts
+  - sparse-media vs non-sparse-media posts
+- `production_ready` now also requires a minimum number of held-out `high` bucket predictions, so a model does not clear the gate on one or two easy test examples
 - training writes artifacts even when a run is not production-ready
 
 For the detailed operator flow, see [How to label posts](docs/how-to/label-posts.md) and [How to retrain](docs/how-to/retrain.md).
@@ -161,8 +203,10 @@ Default model output directory:
 make retrain
 make benchmark
 make benchmark-variants EVAL_SUBREDDIT=seattle
+make benchmark-suite EVAL_SUBREDDIT=seattle
 make bridge
 make bridge RETRAIN_EVERY=25
+make benchmark EVAL_SUBREDDIT=seattle SPLIT_STRATEGY=time
 python3 -m ruff check src tests
 PYTHONPATH=src python3 -m pytest
 ```

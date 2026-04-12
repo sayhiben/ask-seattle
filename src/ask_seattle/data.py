@@ -12,6 +12,8 @@ from typing import Any
 POSITIVE_LABELS = {"1", "true", "yes", "ask", "askseattle", "ask_seattle"}
 NEGATIVE_LABELS = {"0", "false", "no", "not", "not_askseattle", "not_ask_seattle"}
 DELETED_TEXT_MARKERS = {"[deleted]", "[removed]", "[deleted by user]"}
+MEDIA_POST_TYPES = frozenset({"image", "link"})
+LOW_TEXT_BODY_CHAR_THRESHOLD = 80
 
 
 @dataclass(frozen=True)
@@ -22,6 +24,9 @@ class LabeledPost:
     post_id: str | None = None
     subreddit: str | None = None
     permalink: str | None = None
+    post_type: str | None = None
+    content_domain: str | None = None
+    is_crosspost: bool | None = None
     created_utc: float | None = None
     time_key: float | None = None
     time_source: str | None = None
@@ -63,10 +68,66 @@ def normalize_review_label(value: Any) -> str:
     raise ValueError(msg)
 
 
-def post_text(title: str, selftext: str | None = None) -> str:
-    body = normalize_body(selftext)
+def post_metadata_text(
+    *,
+    title: str | None = None,
+    selftext: str | None = None,
+    post_type: str | None = None,
+    content_domain: str | None = None,
+    is_crosspost: Any = None,
+) -> str:
+    normalized_title = str(title or "").strip()
+    normalized_body = normalize_body(selftext).strip()
+    tokens = [
+        f"HAS_BODY:{'yes' if normalized_body else 'no'}",
+        f"TITLE_LEN_BUCKET:{title_length_bucket(normalized_title)}",
+        f"BODY_LEN_BUCKET:{body_length_bucket(normalized_body)}",
+        f"HAS_QUESTION_MARK:{'yes' if has_question_mark(normalized_title, normalized_body) else 'no'}",
+        f"LOW_TEXT:{'yes' if is_low_text_body(normalized_body) else 'no'}",
+    ]
 
-    return f"TITLE: {str(title).strip()}\nBODY: {body.strip()}".strip()
+    normalized_post_type = _normalize_metadata_token(post_type)
+    if normalized_post_type:
+        tokens.append(f"POST_TYPE:{normalized_post_type}")
+
+    normalized_domain = _normalize_metadata_token(content_domain)
+    if normalized_domain:
+        if normalized_domain.startswith("www_"):
+            normalized_domain = normalized_domain[4:]
+        tokens.append(f"CONTENT_DOMAIN:{normalized_domain}")
+
+    normalized_crosspost = _normalize_boolean_token(is_crosspost)
+    if normalized_crosspost is not None:
+        tokens.append(f"CROSSPOST:{normalized_crosspost}")
+
+    if is_sparse_media_post(post_type=post_type, selftext=normalized_body):
+        tokens.append("SPARSE_MEDIA:yes")
+
+    return " ".join(tokens)
+
+
+def post_text(
+    title: str,
+    selftext: str | None = None,
+    *,
+    post_type: str | None = None,
+    content_domain: str | None = None,
+    is_crosspost: Any = None,
+) -> str:
+    body = normalize_body(selftext).strip()
+    metadata = post_metadata_text(
+        title=title,
+        selftext=body,
+        post_type=post_type,
+        content_domain=content_domain,
+        is_crosspost=is_crosspost,
+    )
+
+    parts = [f"TITLE: {str(title).strip()}"]
+    if metadata:
+        parts.append(metadata)
+    parts.append(f"BODY: {body}")
+    return "\n".join(parts).strip()
 
 
 def label_name(label: int) -> str:
@@ -78,6 +139,39 @@ def normalize_body(value: str | None) -> str:
     if body.strip().lower() in DELETED_TEXT_MARKERS:
         return ""
     return body
+
+
+def title_length_bucket(title: str | None) -> str:
+    length = _normalized_text_length(title)
+    if length < 40:
+        return "short"
+    if length < 90:
+        return "medium"
+    return "long"
+
+
+def body_length_bucket(selftext: str | None) -> str:
+    length = _normalized_text_length(normalize_body(selftext))
+    if length == 0:
+        return "none"
+    if length < LOW_TEXT_BODY_CHAR_THRESHOLD:
+        return "short"
+    if length < 280:
+        return "medium"
+    return "long"
+
+
+def is_low_text_body(selftext: str | None) -> bool:
+    return body_length_bucket(selftext) in {"none", "short"}
+
+
+def has_question_mark(title: str | None, selftext: str | None = None) -> bool:
+    return "?" in str(title or "") or "?" in normalize_body(selftext)
+
+
+def is_sparse_media_post(*, post_type: str | None = None, selftext: str | None = None) -> bool:
+    normalized_post_type = _normalize_metadata_token(post_type)
+    return bool(normalized_post_type in MEDIA_POST_TYPES and is_low_text_body(selftext))
 
 
 def exact_text_hash(title: str, selftext: str | None = None) -> str:
@@ -129,6 +223,9 @@ def _post_from_mapping(row: dict[str, Any], source: str) -> LabeledPost:
         post_id=str(row["id"]) if row.get("id") else None,
         subreddit=str(row["subreddit"]) if row.get("subreddit") else None,
         permalink=str(row["permalink"]) if row.get("permalink") else None,
+        post_type=str(row["post_type"]) if row.get("post_type") else None,
+        content_domain=str(row["content_domain"]) if row.get("content_domain") else None,
+        is_crosspost=_bool_or_none(row.get("is_crosspost")),
         created_utc=_float_or_none(row.get("created_utc")),
         time_key=time_key,
         time_source=time_source,
@@ -289,6 +386,11 @@ def _normalize_text_for_hash(title: str, selftext: str | None = None) -> str:
     return f"title:{collapse(str(title))}\nbody:{collapse(normalize_body(selftext))}"
 
 
+def _normalized_text_length(value: str | None) -> int:
+    collapsed = re.sub(r"\s+", " ", str(value or "").strip())
+    return len(collapsed)
+
+
 def _identity_keys(record: dict[str, Any]) -> set[str]:
     keys: set[str] = set()
     record_id = str(record.get("id") or "").strip()
@@ -339,6 +441,34 @@ def _float_or_none(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    if value in ("", None):
+        return None
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y"}:
+        return True
+    if normalized in {"0", "false", "no", "n"}:
+        return False
+    return bool(value)
+
+
+def _normalize_boolean_token(value: Any) -> str | None:
+    normalized = _bool_or_none(value)
+    if normalized is None:
+        return None
+    return "yes" if normalized else "no"
+
+
+def _normalize_metadata_token(value: Any) -> str | None:
+    if value in ("", None):
+        return None
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower())
+    normalized = re.sub(r"_+", "_", normalized).strip("_")
+    return normalized or None
 
 
 def _parse_timestamp(value: Any) -> float | None:

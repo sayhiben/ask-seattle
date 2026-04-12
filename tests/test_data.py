@@ -7,6 +7,7 @@ from ask_seattle.data import (
     load_labeled_posts,
     normalize_label,
     prepare_training_posts,
+    post_metadata_text,
     post_text,
     write_jsonl_records,
 )
@@ -23,7 +24,42 @@ def test_normalize_label_rejects_unknown_label() -> None:
 
 
 def test_post_text_drops_removed_body() -> None:
-    assert post_text("Question", "[removed]") == "TITLE: Question\nBODY:"
+    assert (
+        post_text("Question", "[removed]")
+        == "TITLE: Question\n"
+        "HAS_BODY:no TITLE_LEN_BUCKET:short BODY_LEN_BUCKET:none "
+        "HAS_QUESTION_MARK:no LOW_TEXT:yes\n"
+        "BODY:"
+    )
+
+
+def test_post_text_includes_normalized_metadata_tokens() -> None:
+    assert (
+        post_text(
+            "Question",
+            "",
+            post_type="Image",
+            content_domain="www.Instagram.com",
+            is_crosspost=True,
+        )
+        == "TITLE: Question\n"
+        "HAS_BODY:no TITLE_LEN_BUCKET:short BODY_LEN_BUCKET:none "
+        "HAS_QUESTION_MARK:no LOW_TEXT:yes POST_TYPE:image "
+        "CONTENT_DOMAIN:instagram_com CROSSPOST:yes SPARSE_MEDIA:yes\n"
+        "BODY:"
+    )
+    assert (
+        post_metadata_text(
+            title="Question",
+            selftext="Body here",
+            post_type="link",
+            content_domain="example.org",
+            is_crosspost=False,
+        )
+        == "HAS_BODY:yes TITLE_LEN_BUCKET:short BODY_LEN_BUCKET:short "
+        "HAS_QUESTION_MARK:no LOW_TEXT:yes POST_TYPE:link CONTENT_DOMAIN:example_org "
+        "CROSSPOST:no SPARSE_MEDIA:yes"
+    )
 
 
 def test_load_jsonl(tmp_path: Path) -> None:
@@ -52,6 +88,9 @@ def test_prepare_training_posts_derives_time_key(tmp_path: Path) -> None:
                 "selftext": "Visiting soon",
                 "label": "askseattle",
                 "collected_at": "2026-04-10T20:00:00+00:00",
+                "post_type": "text",
+                "content_domain": "reddit.com",
+                "is_crosspost": False,
             },
             {
                 "id": "b",
@@ -68,6 +107,9 @@ def test_prepare_training_posts_derives_time_key(tmp_path: Path) -> None:
     assert result["missing_time_key"] == 0
     assert posts[0].time_source == "collected_at"
     assert posts[0].time_key is not None
+    assert posts[0].post_type == "text"
+    assert posts[0].content_domain == "reddit.com"
+    assert posts[0].is_crosspost is False
 
 
 def test_prepare_training_posts_last_write_wins_and_text_hash_dedupes(tmp_path: Path) -> None:

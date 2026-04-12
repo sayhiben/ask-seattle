@@ -31,15 +31,29 @@ class BridgeConfig:
         *,
         model_path: Path,
         label_path: Path,
+        comparison_suite_path: Path | None = None,
         retrain_every: int = 0,
+        split_strategy: str = "random",
+        split_seed: int = 13,
         evaluation_subreddit: str | None = None,
     ) -> None:
         self.model_path = resolve_bridge_path(model_path, must_exist=True)
         self.label_path = resolve_bridge_path(label_path, must_exist=False)
+        self.comparison_suite_path = (
+            resolve_bridge_path(comparison_suite_path, must_exist=False)
+            if comparison_suite_path is not None
+            else None
+        )
+        self.split_strategy = split_strategy
+        self.split_seed = split_seed
         self.evaluation_subreddit = evaluation_subreddit
         self.label_lock = threading.Lock()
         LOGGER.info("loading model from %s", self.model_path)
         self.bundle = load_model(self.model_path)
+        self.comparison_models = _load_comparison_models(
+            primary_bundle=self.bundle,
+            comparison_suite_path=self.comparison_suite_path,
+        )
         LOGGER.info("labels will append to %s", self.label_path)
         self.auto_retrain = None
         if retrain_every > 0:
@@ -55,15 +69,21 @@ def run_bridge(
     port: int,
     model_path: str | Path,
     label_path: str | Path,
+    comparison_suite_path: str | Path | None = None,
     log_level: str = "INFO",
     retrain_every: int = 0,
+    split_strategy: str = "random",
+    split_seed: int = 13,
     evaluation_subreddit: str | None = None,
 ) -> None:
     configure_logging(log_level)
     config = BridgeConfig(
         model_path=Path(model_path),
         label_path=Path(label_path),
+        comparison_suite_path=Path(comparison_suite_path) if comparison_suite_path else None,
         retrain_every=retrain_every,
+        split_strategy=split_strategy,
+        split_seed=split_seed,
         evaluation_subreddit=evaluation_subreddit,
     )
 
@@ -72,12 +92,15 @@ def run_bridge(
 
     server = ThreadingHTTPServer((host, port), RequestHandler)
     LOGGER.info(
-        "starting local bridge host=%s port=%s model_path=%s label_path=%s evaluation_subreddit=%s",
+        "starting local bridge host=%s port=%s model_path=%s label_path=%s split_strategy=%s split_seed=%s evaluation_subreddit=%s comparison_models=%s",
         host,
         port,
         config.model_path,
         config.label_path,
+        config.split_strategy,
+        config.split_seed,
         config.evaluation_subreddit or "",
+        len(config.comparison_models),
     )
     print(
         "local_bridge="
@@ -87,6 +110,12 @@ def run_bridge(
                 "port": port,
                 "model_path": str(config.model_path),
                 "label_path": str(config.label_path),
+                "comparison_suite_path": (
+                    str(config.comparison_suite_path) if config.comparison_suite_path else None
+                ),
+                "comparison_models": _comparison_model_summaries(config.comparison_models),
+                "split_strategy": config.split_strategy,
+                "split_seed": config.split_seed,
                 "evaluation_subreddit": config.evaluation_subreddit,
                 "auto_retrain": config.auto_retrain.status_snapshot() if config.auto_retrain else None,
             },
@@ -117,6 +146,14 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
                     "ok": True,
                     "model_path": str(self.bridge_config.model_path),
                     "label_path": str(self.bridge_config.label_path),
+                    "comparison_suite_path": (
+                        str(self.bridge_config.comparison_suite_path)
+                        if self.bridge_config.comparison_suite_path
+                        else None
+                    ),
+                    "comparison_models": _comparison_model_summaries(self.bridge_config.comparison_models),
+                    "split_strategy": self.bridge_config.split_strategy,
+                    "split_seed": self.bridge_config.split_seed,
                     "evaluation_subreddit": self.bridge_config.evaluation_subreddit,
                     "auto_retrain": (
                         self.bridge_config.auto_retrain.status_snapshot()
@@ -165,6 +202,9 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             self.bridge_config.bundle,
             title=title,
             selftext=selftext,
+            post_type=_optional_string(payload, "post_type"),
+            content_domain=_optional_string(payload, "content_domain"),
+            is_crosspost=_optional_bool(payload, "is_crosspost"),
             post_id=_optional_string(payload, "id"),
             permalink=_optional_string(payload, "permalink"),
             time_source=_request_time_source(payload),
@@ -177,7 +217,28 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             result.score,
             result.high_threshold,
         )
-        self._send_json({"ok": True, "result": asdict(result)})
+        comparisons = [
+            {
+                "name": comparison["name"],
+                "model_family": comparison["model_family"],
+                "model_id": comparison.get("model_id"),
+                "result": asdict(
+                    classify_post(
+                        comparison["bundle"],
+                        title=title,
+                        selftext=selftext,
+                        post_type=_optional_string(payload, "post_type"),
+                        content_domain=_optional_string(payload, "content_domain"),
+                        is_crosspost=_optional_bool(payload, "is_crosspost"),
+                        post_id=_optional_string(payload, "id"),
+                        permalink=_optional_string(payload, "permalink"),
+                        time_source=_request_time_source(payload),
+                    )
+                ),
+            }
+            for comparison in self.bridge_config.comparison_models
+        ]
+        self._send_json({"ok": True, "result": asdict(result), "comparisons": comparisons})
 
     def _handle_train(self, payload: dict[str, Any]) -> None:
         title = _required_string(payload, "title")
@@ -291,6 +352,20 @@ def _optional_string(payload: dict[str, Any], key: str) -> str | None:
     return value or None
 
 
+def _optional_bool(payload: dict[str, Any], key: str) -> bool | None:
+    value = payload.get(key)
+    if value in ("", None):
+        return None
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y"}:
+        return True
+    if normalized in {"0", "false", "no", "n"}:
+        return False
+    return bool(value)
+
+
 def _request_time_source(payload: dict[str, Any]) -> str | None:
     explicit = _optional_string(payload, "time_source")
     if explicit:
@@ -328,6 +403,8 @@ class AutoRetrainManager:
             if self.bridge_config.model_path.is_dir()
             else self.bridge_config.model_path.parent
         )
+        self.split_strategy = bridge_config.split_strategy
+        self.split_seed = bridge_config.split_seed
         self.evaluation_subreddit = bridge_config.evaluation_subreddit
         self.reload_model_path = self.output_dir / "tfidf_logreg.joblib"
         self._state_lock = threading.Lock()
@@ -340,9 +417,11 @@ class AutoRetrainManager:
         self._last_retrain_training_count = prepared["training_records"]
         self._last_triggered_training_count = prepared["training_records"]
         LOGGER.info(
-            "auto retrain enabled every=%s label_path=%s baseline_training_rows=%s",
+            "auto retrain enabled every=%s label_path=%s split_strategy=%s split_seed=%s baseline_training_rows=%s",
             self.retrain_every,
             self.bridge_config.label_path,
+            self.split_strategy,
+            self.split_seed,
             self._last_retrain_training_count,
         )
 
@@ -386,6 +465,8 @@ class AutoRetrainManager:
             "label_path": str(self.bridge_config.label_path),
             "output_dir": str(self.output_dir),
             "reload_model_path": str(self.reload_model_path),
+            "split_strategy": self.split_strategy,
+            "split_seed": self.split_seed,
             "evaluation_subreddit": self.evaluation_subreddit,
             "last_reload_at": self._last_reload_at,
             "last_error": self._last_error,
@@ -412,15 +493,19 @@ class AutoRetrainManager:
     def _run_retrain(self, training_records: int) -> None:
         snapshot_path = self._snapshot_label_file()
         LOGGER.info(
-            "starting auto retrain training_records=%s output_dir=%s snapshot_path=%s",
+            "starting auto retrain training_records=%s output_dir=%s split_strategy=%s split_seed=%s snapshot_path=%s",
             training_records,
             self.output_dir,
+            self.split_strategy,
+            self.split_seed,
             snapshot_path,
         )
         try:
             summary = train_model_bundle_from_labels(
                 snapshot_path,
                 self.output_dir,
+                split_strategy=self.split_strategy,
+                split_seed=self.split_seed,
                 evaluation_subreddit=self.evaluation_subreddit,
             )
             self.bridge_config.bundle = load_model(self.reload_model_path)
@@ -478,7 +563,7 @@ class AutoRetrainManager:
         LOGGER.info(
             "auto retrain status event=%s scheduled=%s in_progress=%s training_records=%s "
             "last_retrain_training_records=%s last_triggered_training_records=%s labels_until_retrain=%s "
-            "evaluation_subreddit=%s last_error=%s",
+            "split_strategy=%s split_seed=%s evaluation_subreddit=%s last_error=%s",
             event,
             status.get("scheduled"),
             status.get("in_progress"),
@@ -486,6 +571,8 @@ class AutoRetrainManager:
             status.get("last_retrain_training_records"),
             status.get("last_triggered_training_records"),
             status.get("labels_until_retrain"),
+            status.get("split_strategy"),
+            status.get("split_seed"),
             status.get("evaluation_subreddit") or "",
             status.get("last_error") or "",
         )
@@ -495,23 +582,27 @@ class AutoRetrainManager:
         split = summary.get("split") or {}
         calibration = summary.get("calibration") or {}
         metrics = summary.get("metrics") or {}
+        operating_metrics = summary.get("operating_metrics") or {}
+        auto_band = operating_metrics.get("auto_band") or {}
         threshold_policy = summary.get("threshold_policy") or {}
         LOGGER.info(
             "auto retrain summary training_records=%s prepared_training_records=%s "
-            "split_train=%s split_calibration=%s split_test=%s split_strategy=%s "
+            "split_train=%s split_calibration=%s split_test=%s split_strategy=%s split_seed=%s "
             "calibration_available=%s high_confidence_precision=%s high_confidence_recall=%s "
-            "high_confidence_f1=%s low_threshold=%s high_threshold=%s evaluation_subreddit=%s production_ready=%s "
-            "blocked_reason=%s",
+            "high_confidence_f1=%s high_confidence_predictions=%s low_threshold=%s high_threshold=%s "
+            "evaluation_subreddit=%s production_ready=%s blocked_reason=%s",
             training_records,
             prepared_data.get("training_records"),
             split.get("train"),
             split.get("calibration"),
             split.get("test"),
             split.get("split_strategy"),
+            split.get("split_seed"),
             calibration.get("available"),
             metrics.get("high_confidence_precision"),
             metrics.get("high_confidence_recall"),
             metrics.get("high_confidence_f1"),
+            auto_band.get("predicted_positive"),
             threshold_policy.get("low_threshold"),
             threshold_policy.get("high_threshold"),
             threshold_policy.get("evaluation_subreddit") or "",
@@ -560,6 +651,75 @@ def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 3] + "..."
+
+
+def _comparison_model_summaries(comparison_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": comparison["name"],
+            "model_family": comparison["model_family"],
+            "model_id": comparison.get("model_id"),
+            "artifact_path": comparison.get("artifact_path"),
+        }
+        for comparison in comparison_models
+    ]
+
+
+def _bundle_family(bundle: dict[str, Any]) -> str:
+    return str(bundle.get("model_family") or bundle.get("model_type") or "tfidf")
+
+
+def _load_comparison_models(
+    *,
+    primary_bundle: dict[str, Any],
+    comparison_suite_path: Path | None,
+) -> list[dict[str, Any]]:
+    if comparison_suite_path is None or not comparison_suite_path.exists():
+        return []
+
+    try:
+        suite_summary = json.loads(comparison_suite_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        LOGGER.warning("could not parse comparison suite summary at %s: %s", comparison_suite_path, exc)
+        return []
+
+    primary_family = _bundle_family(primary_bundle)
+    loaded: list[dict[str, Any]] = []
+    for entry in suite_summary.get("models") or []:
+        if entry.get("status") != "ok":
+            continue
+        family = str(entry.get("model_family") or "").strip()
+        artifact_path = entry.get("artifact_path")
+        if not family or not artifact_path or family == primary_family:
+            continue
+        try:
+            resolved_artifact = resolve_bridge_path(str(artifact_path), must_exist=True)
+            bundle = load_model(resolved_artifact)
+        except Exception as exc:  # pragma: no cover - defensive runtime fallback
+            LOGGER.warning(
+                "skipping comparison model name=%s family=%s artifact_path=%s error=%s",
+                entry.get("name") or "",
+                family,
+                artifact_path,
+                exc,
+            )
+            continue
+        loaded.append(
+            {
+                "name": str(entry.get("name") or bundle.get("model_name") or family),
+                "model_family": family,
+                "model_id": entry.get("model_id") or bundle.get("model_id"),
+                "artifact_path": str(resolved_artifact),
+                "bundle": bundle,
+            }
+        )
+    if loaded:
+        LOGGER.info(
+            "loaded comparison models comparison_suite_path=%s comparisons=%s",
+            comparison_suite_path,
+            ",".join(comparison["name"] for comparison in loaded),
+        )
+    return loaded
 
 
 def find_label_record(

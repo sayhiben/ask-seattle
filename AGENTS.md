@@ -69,11 +69,29 @@ Avoid adding:
 - Docker-only workflows
 - server-side Reddit integrations
 
+### Split policy is configurable, but random is the default
+
+The current default training and benchmark policy is:
+
+- `SPLIT_STRATEGY=random`
+- `SPLIT_SEED=13`
+
+That keeps comparisons reproducible without over-reading a short rolling labeling window.
+
+Use `SPLIT_STRATEGY=time` only when you intentionally want future-facing evaluation over a longer collection window. When you compare model families, make sure they reuse the same split settings.
+
 ### The benchmark gate is precision-first
 
 This project is moderation-adjacent. False positives are expensive.
 
 When changing defaults, evaluate the held-out high-confidence metrics first. Do not promote a change just because it feels more semantically correct.
+
+Also remember that the gate now depends on both:
+
+- high-confidence precision on the held-out test slice
+- a minimum number of held-out high-confidence predictions
+
+Do not treat a perfect score on one or two `high` examples as production evidence.
 
 ## Documentation rules
 
@@ -168,7 +186,7 @@ If the userscript changed, also run:
 node --check userscripts/ask-seattle-reddit-helper.user.js
 ```
 
-If model defaults, training policy, or lexical filtering changed, also run a benchmark that matches the actual deployment domain:
+If model defaults, training policy, weighting, or lexical filtering changed, also run a benchmark that matches the actual deployment domain:
 
 ```bash
 make benchmark EVAL_SUBREDDIT=seattle

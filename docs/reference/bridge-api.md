@@ -26,6 +26,23 @@ Example response:
   "ok": true,
   "model_path": "/abs/path/to/tfidf_logreg.joblib",
   "label_path": "/abs/path/to/tampermonkey_labels.jsonl",
+  "comparison_suite_path": "/abs/path/to/benchmark_suite_summary.json",
+  "split_strategy": "random",
+  "split_seed": 13,
+  "comparison_models": [
+    {
+      "name": "semantic_embedding",
+      "model_family": "semantic_embedding",
+      "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+      "artifact_path": "/abs/path/to/semantic_embedding_logreg.joblib"
+    },
+    {
+      "name": "transformer_sequence_classifier",
+      "model_family": "transformer_sequence_classifier",
+      "model_id": "microsoft/deberta-v3-small",
+      "artifact_path": "/abs/path/to/transformer_bundle.joblib"
+    }
+  ],
   "auto_retrain": null
 }
 ```
@@ -46,6 +63,9 @@ Optional request fields:
 - `created_utc`
 - `collected_at`
 - `time_source`
+- `post_type`
+- `content_domain`
+- `is_crosspost`
 
 Example request:
 
@@ -55,9 +75,16 @@ Example request:
   "permalink": "https://www.reddit.com/r/example/comments/abc123/example/",
   "title": "Where should I stay for a weekend trip?",
   "selftext": "Looking for hotel and food recommendations.",
-  "collected_at": "2026-04-10T20:00:00+00:00"
+  "collected_at": "2026-04-10T20:00:00+00:00",
+  "post_type": "image",
+  "content_domain": "instagram.com",
+  "is_crosspost": false
 }
 ```
+
+If those optional metadata fields are present, the bridge includes them in the model input for scoring.
+
+For sparse image and link posts, the bridge also applies a stricter effective high-confidence threshold. Those posts can still score positive, but they need a stronger score to return `confidence_band: "high"`.
 
 Example response:
 
@@ -80,7 +107,31 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
     "confidence_band": "high",
     "time_source": "collected_at",
     "created_at": "<varies>"
-  }
+  },
+  "comparisons": [
+    {
+      "name": "semantic_embedding",
+      "model_family": "semantic_embedding",
+      "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+      "result": {
+        "model_name": "semantic_embedding_logreg",
+        "score": "<varies>",
+        "label": "askseattle",
+        "confidence_band": "borderline"
+      }
+    },
+    {
+      "name": "transformer_sequence_classifier",
+      "model_family": "transformer_sequence_classifier",
+      "model_id": "microsoft/deberta-v3-small",
+      "result": {
+        "model_name": "transformer_sequence_classifier",
+        "score": "<varies>",
+        "label": "askseattle",
+        "confidence_band": "high"
+      }
+    }
+  ]
 }
 ```
 

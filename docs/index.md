@@ -11,6 +11,7 @@ Use it when you need to understand the current system, make changes safely, or f
 - Want maintainer-specific guardrails and repo rules: [AGENTS.md](../AGENTS.md)
 - Want to label posts in the browser: [How to label posts](how-to/label-posts.md)
 - Want to retrain the model: [How to retrain](how-to/retrain.md)
+- Want to compare TF-IDF against semantic and transformer benchmarks: [How to retrain](how-to/retrain.md)
 - Need the exact CLI surface: [CLI reference](reference/cli.md)
 - Need the bridge contract: [Bridge API reference](reference/bridge-api.md)
 - Need the reviewed label schema or artifact layout: [Data format reference](reference/data-format.md)
@@ -19,7 +20,7 @@ Use it when you need to understand the current system, make changes safely, or f
 
 ## Current System In One Paragraph
 
-The project is a local-only review and classification loop. A Tampermonkey userscript reads the visible Reddit post in the browser, sends title/body text to a localhost bridge for `/check`, and sends reviewed labels to the same bridge for `/train`. Training reads the reviewed JSONL file, normalizes and dedupes it, performs a chronological train/calibration/test split, fits a TF-IDF + logistic regression model, calibrates probabilities, and writes a `.joblib` model bundle plus `training_summary.json`.
+The project is a local-only review and classification loop. A Tampermonkey userscript reads the visible Reddit post in the browser, sends title/body text to a localhost bridge for `/check`, and sends reviewed labels to the same bridge for `/train`. Training reads the reviewed JSONL file, normalizes and dedupes it, performs a deterministic random train/calibration/test split by default, fits a TF-IDF + logistic regression model, calibrates probabilities, and writes a `.joblib` model bundle plus `training_summary.json`.
 
 ## Documentation Map
 

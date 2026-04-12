@@ -50,6 +50,22 @@ The browser helper may also send:
 - `capture_context`
 - `notes`
 
+Training and bridge inference reuse the content-facing subset of those fields when available:
+
+- `post_type`
+- `content_domain`
+- `is_crosspost`
+
+Those fields are folded into the shared model text as normalized metadata tokens such as `POST_TYPE:image` and `CONTENT_DOMAIN:instagram_com`.
+
+The shared text also includes lightweight structural tokens derived from the visible text:
+
+- `TITLE_LEN_BUCKET:short|medium|long`
+- `BODY_LEN_BUCKET:none|short|medium|long`
+- `HAS_QUESTION_MARK:yes|no`
+- `LOW_TEXT:yes|no`
+- `SPARSE_MEDIA:yes` for link or image posts with low body text
+
 ## Label Normalization
 
 Positive labels normalize to `askseattle`:
@@ -82,7 +98,7 @@ Before fitting the model, training applies these steps:
    - `permalink`
 5. dedupe again by exact text hash
 6. derive `time_key` and `time_source`
-7. sort records by time for chronological splitting
+7. build train, calibration, and test splits according to the requested split strategy
 
 The dedupe behavior is last-write-wins.
 
@@ -95,7 +111,7 @@ The dedupe behavior is last-write-wins.
 3. `collected_at`
 4. `retrieved_at`
 
-If no usable time field exists, the record cannot participate in the chronological split.
+If no usable time field exists, the record can still participate in the default random split. Missing time fields only block participation when you explicitly choose `SPLIT_STRATEGY=time`.
 
 ## Model Artifacts
 
@@ -103,6 +119,13 @@ Training writes these files into the output directory:
 
 - `tfidf_logreg.joblib`
 - `training_summary.json`
+
+The benchmark suite writes:
+
+- `tfidf_recommended/training_summary.json`
+- `semantic_embedding/training_summary.json`
+- `transformer_sequence_classifier/training_summary.json`
+- `benchmark_suite_summary.json`
 
 ## `tfidf_logreg.joblib`
 
@@ -122,20 +145,47 @@ Important sections:
   - counts after normalization and dedupe
 - `split`
   - train, calibration, and test counts
+  - `split_strategy` and `split_seed`
   - optional `evaluation_subreddit` when calibration/test were restricted to one subreddit
-  - time coverage
+  - time coverage when `split_strategy` is time-based
+  - `coverage` by cohort and label for:
+    - `post_type`
+    - `low_text`
+    - `sparse_media`
 - `calibration`
   - calibrator availability and metrics
+- `production_gate`
+  - the held-out production-readiness requirements, including the precision target and the minimum number of high-confidence test predictions
 - `threshold_selection`
   - low/high thresholds and threshold sweeps
 - `metrics`
   - held-out high-confidence precision, recall, F1, and band counts
+- `operating_metrics`
+  - stable cross-model metrics for the strict auto bucket, the broader review queue, and queue rates
+  - includes `slice_metrics` for:
+    - post type
+    - low-text vs richer-text posts
+    - sparse-media vs non-sparse-media posts
+- `training_balance`
+  - the slice-aware positive weighting strategy used during fitting
+  - bucket weights for underrepresented positive cohorts
+  - train-split positive cohort counts and sample-weight summary
 - `feature_audit`
   - top positive and negative TF-IDF features
   - top positive and negative features by channel
   - the custom word stopword list used by the title/body vectorizers
 - `production_ready`
 - `production_ready_blocked_reason`
+
+Neural benchmark summaries replace `feature_audit` with model-specific metadata such as `embedding_summary` or `training_args`, but keep the same `split`, `calibration`, `threshold_selection`, `metrics`, and `operating_metrics` structure so results can be compared consistently.
+
+Transformer benchmark summaries also include the current input and loss setup under `training_args`, including:
+
+- `input_format`
+- `max_length`
+- `body_includes_metadata_tokens`
+- `class_weighting`
+- `class_weights`
 
 ## Storage Rules
 

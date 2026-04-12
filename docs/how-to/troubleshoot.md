@@ -65,11 +65,13 @@ Training reports that there are not enough dated examples for the chronological 
 
 - reviewed records include `created_utc` or `collected_at`
 - the reviewed dataset contains enough dated examples overall
+- you actually started training with `SPLIT_STRATEGY=time`
 
 ### What To Do
 
 - keep labeling real posts through the browser helper
 - make sure the labels come from the current userscript, which sends `collected_at`
+- if you do not need future-facing evaluation yet, switch back to the default random split
 
 ## Training Writes Artifacts But `production_ready` Is False
 
@@ -79,6 +81,7 @@ This is not necessarily a crash. It usually means one of these:
 
 - the calibration slice did not contain both classes
 - the held-out test high-confidence precision missed the target
+- the held-out test high-confidence bucket was too small to trust yet
 
 Check:
 

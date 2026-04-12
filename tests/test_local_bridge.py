@@ -27,7 +27,11 @@ class FakeClassifier:
 class FakeModel:
     named_steps = {"classifier": FakeClassifier()}
 
+    def __init__(self) -> None:
+        self.last_rows: list[object] = []
+
     def predict_proba(self, texts: list[object]) -> list[list[float]]:
+        self.last_rows = list(texts)
         return [[0.2, 0.8] for _ in texts]
 
 
@@ -69,10 +73,13 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
     Handler.bridge_config = BridgeConfig.__new__(BridgeConfig)
     Handler.bridge_config.model_path = tmp_path / "fake.joblib"
     Handler.bridge_config.label_path = labels
+    Handler.bridge_config.comparison_suite_path = None
+    Handler.bridge_config.comparison_models = []
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = None
+    fake_model = FakeModel()
     Handler.bridge_config.bundle = {
-        "model": FakeModel(),
+        "model": fake_model,
         "model_name": "fake",
         "model_version": "test",
         "threshold": 0.7,
@@ -88,7 +95,14 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
             port,
             "POST",
             "/check",
-            {"id": "abc", "title": "Where should I stay?", "selftext": "Visiting"},
+            {
+                "id": "abc",
+                "title": "Where should I stay?",
+                "selftext": "Visiting",
+                "post_type": "image",
+                "content_domain": "reddit.com",
+                "is_crosspost": True,
+            },
         )
         train = request_json(
             port,
@@ -111,6 +125,10 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
     assert check["ok"] is True
     assert check["result"]["label"] == "askseattle"
     assert check["result"]["confidence_band"] == "high"
+    assert check["comparisons"] == []
+    assert "POST_TYPE:image" in fake_model.last_rows[0]["body"]
+    assert "CONTENT_DOMAIN:reddit_com" in fake_model.last_rows[0]["body"]
+    assert "CROSSPOST:yes" in fake_model.last_rows[0]["body"]
     assert train["ok"] is True
     assert train["saved"]["label"] == "askseattle"
     assert train["saved"]["post_type"] == "text"
@@ -131,6 +149,8 @@ def test_bridge_recorded_and_train_uses_last_label(tmp_path: Path) -> None:
     Handler.bridge_config = BridgeConfig.__new__(BridgeConfig)
     Handler.bridge_config.model_path = tmp_path / "fake.joblib"
     Handler.bridge_config.label_path = labels
+    Handler.bridge_config.comparison_suite_path = None
+    Handler.bridge_config.comparison_models = []
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = None
     Handler.bridge_config.bundle = {
@@ -180,6 +200,8 @@ def test_bridge_train_reports_auto_retrain_status(tmp_path: Path) -> None:
     Handler.bridge_config = BridgeConfig.__new__(BridgeConfig)
     Handler.bridge_config.model_path = tmp_path / "fake.joblib"
     Handler.bridge_config.label_path = labels
+    Handler.bridge_config.comparison_suite_path = None
+    Handler.bridge_config.comparison_models = []
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = FakeAutoRetrain()
     Handler.bridge_config.bundle = {
@@ -215,10 +237,95 @@ def test_bridge_train_reports_auto_retrain_status(tmp_path: Path) -> None:
     assert train["auto_retrain"]["in_progress"] is True
 
 
+def test_bridge_check_returns_comparison_results(tmp_path: Path) -> None:
+    from http.server import ThreadingHTTPServer
+
+    labels = tmp_path / "labels.jsonl"
+
+    class Handler(LocalBridgeRequestHandler):
+        bridge_config = FakeServer()
+
+    primary_model = FakeModel()
+    semantic_model = FakeModel()
+    transformer_model = FakeModel()
+
+    Handler.bridge_config = BridgeConfig.__new__(BridgeConfig)
+    Handler.bridge_config.model_path = tmp_path / "fake.joblib"
+    Handler.bridge_config.label_path = labels
+    Handler.bridge_config.comparison_suite_path = tmp_path / "benchmark_suite_summary.json"
+    Handler.bridge_config.label_lock = threading.Lock()
+    Handler.bridge_config.auto_retrain = None
+    Handler.bridge_config.bundle = {
+        "model": primary_model,
+        "model_family": "tfidf",
+        "model_name": "tfidf_logreg",
+        "model_version": "test",
+        "threshold": 0.7,
+    }
+    Handler.bridge_config.comparison_models = [
+        {
+            "name": "semantic_embedding",
+            "model_family": "semantic_embedding",
+            "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+            "artifact_path": str(tmp_path / "semantic.joblib"),
+            "bundle": {
+                "model": semantic_model,
+                "model_family": "tfidf",
+                "model_name": "semantic_embedding_logreg",
+                "model_version": "test",
+                "threshold": 0.7,
+            },
+        },
+        {
+            "name": "transformer_sequence_classifier",
+            "model_family": "transformer_sequence_classifier",
+            "model_id": "microsoft/deberta-v3-small",
+            "artifact_path": str(tmp_path / "transformer_bundle.joblib"),
+            "bundle": {
+                "model": transformer_model,
+                "model_family": "tfidf",
+                "model_name": "transformer_sequence_classifier",
+                "model_version": "test",
+                "threshold": 0.7,
+            },
+        },
+    ]
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+
+    try:
+        check = request_json(
+            port,
+            "POST",
+            "/check",
+            {
+                "id": "abc",
+                "title": "Where should I stay?",
+                "selftext": "Visiting",
+            },
+        )
+    finally:
+        server.shutdown()
+
+    assert check["ok"] is True
+    assert check["result"]["model_name"] == "tfidf_logreg"
+    assert [entry["name"] for entry in check["comparisons"]] == [
+        "semantic_embedding",
+        "transformer_sequence_classifier",
+    ]
+    assert check["comparisons"][0]["result"]["model_name"] == "semantic_embedding_logreg"
+    assert check["comparisons"][1]["result"]["model_name"] == "transformer_sequence_classifier"
+
+
 def test_auto_retrain_note_label_saved_returns_status_without_deadlock(tmp_path: Path) -> None:
     manager = AutoRetrainManager.__new__(AutoRetrainManager)
     manager.bridge_config = FakeServer()
     manager.bridge_config.label_path = tmp_path / "labels.jsonl"
+    manager.split_strategy = "random"
+    manager.split_seed = 13
     manager.evaluation_subreddit = None
     manager.retrain_every = 5
     manager.output_dir = tmp_path / "models"
@@ -257,6 +364,8 @@ def test_auto_retrain_note_label_saved_logs_status(tmp_path: Path, caplog) -> No
     manager = AutoRetrainManager.__new__(AutoRetrainManager)
     manager.bridge_config = FakeServer()
     manager.bridge_config.label_path = tmp_path / "labels.jsonl"
+    manager.split_strategy = "random"
+    manager.split_seed = 13
     manager.evaluation_subreddit = None
     manager.retrain_every = 5
     manager.output_dir = tmp_path / "models"
@@ -288,6 +397,8 @@ def test_auto_retrain_note_label_saved_logs_status(tmp_path: Path, caplog) -> No
 def test_auto_retrain_does_not_immediately_retry_failed_attempt(tmp_path: Path) -> None:
     manager = AutoRetrainManager.__new__(AutoRetrainManager)
     manager.bridge_config = FakeServer()
+    manager.split_strategy = "random"
+    manager.split_seed = 13
     manager.evaluation_subreddit = None
     manager.retrain_every = 5
     manager._state_lock = threading.Lock()
@@ -342,6 +453,8 @@ def test_auto_retrain_snapshot_uses_label_lock(tmp_path: Path) -> None:
     manager.bridge_config = FakeServer()
     manager.bridge_config.label_path = labels
     manager.bridge_config.label_lock = lock
+    manager.split_strategy = "random"
+    manager.split_seed = 13
     manager.evaluation_subreddit = None
     manager.output_dir = tmp_path / "models"
 
@@ -361,8 +474,12 @@ def test_auto_retrain_logs_training_summary(tmp_path: Path, monkeypatch, caplog)
     manager.bridge_config = FakeServer()
     manager.bridge_config.label_path = tmp_path / "labels.jsonl"
     manager.bridge_config.label_lock = threading.Lock()
+    manager.bridge_config.split_strategy = "random"
+    manager.bridge_config.split_seed = 13
     manager.retrain_every = 5
     manager.evaluation_subreddit = "seattle"
+    manager.split_strategy = "random"
+    manager.split_seed = 13
     manager.output_dir = tmp_path / "models"
     manager.reload_model_path = manager.output_dir / "tfidf_logreg.joblib"
     manager._state_lock = threading.Lock()
@@ -376,12 +493,15 @@ def test_auto_retrain_logs_training_summary(tmp_path: Path, monkeypatch, caplog)
 
     summary = {
         "prepared_data": {"training_records": 12},
-        "split": {"train": 8, "calibration": 2, "test": 2, "split_strategy": "time"},
+        "split": {"train": 8, "calibration": 2, "test": 2, "split_strategy": "random", "split_seed": 13},
         "calibration": {"available": True},
         "metrics": {
             "high_confidence_precision": 0.97,
             "high_confidence_recall": 0.75,
             "high_confidence_f1": 0.84,
+        },
+        "operating_metrics": {
+            "auto_band": {"predicted_positive": 7},
         },
         "threshold_policy": {"low_threshold": 0.55, "high_threshold": 0.9},
         "production_ready": True,
@@ -389,6 +509,8 @@ def test_auto_retrain_logs_training_summary(tmp_path: Path, monkeypatch, caplog)
     }
 
     def fake_train_model_bundle_from_labels(*args, **kwargs):
+        assert kwargs["split_strategy"] == "random"
+        assert kwargs["split_seed"] == 13
         assert kwargs["evaluation_subreddit"] == "seattle"
         return summary
 
@@ -404,6 +526,7 @@ def test_auto_retrain_logs_training_summary(tmp_path: Path, monkeypatch, caplog)
     assert any(
         "auto retrain summary training_records=12" in record.message
         and "high_confidence_precision=0.97" in record.message
+        and "high_confidence_predictions=7" in record.message
         and "production_ready=True" in record.message
         for record in caplog.records
     )

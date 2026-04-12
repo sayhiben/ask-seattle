@@ -68,6 +68,50 @@ Use this when you want to compare:
 
 All variants run on the exact same split.
 
+## Compare TF-IDF, Semantic, And Transformer Paths
+
+Install the optional model dependencies first:
+
+```bash
+python -m pip install -e ".[dev,models]"
+```
+
+Then run:
+
+```bash
+make benchmark-suite EVAL_SUBREDDIT=seattle
+```
+
+That expands to:
+
+```bash
+PYTHONPATH=src python3 -m ask_seattle.cli benchmark-suite \
+  --data data/processed/tampermonkey_labels.jsonl \
+  --output-dir models/benchmark-suite \
+  --split-strategy random \
+  --split-seed 13 \
+  --eval-subreddit seattle
+```
+
+The suite uses one shared split across all model families and writes:
+
+- `tfidf_recommended/training_summary.json`
+- `semantic_embedding/training_summary.json`
+- `transformer_sequence_classifier/training_summary.json`
+- `benchmark_suite_summary.json`
+
+The default semantic and transformer paths are:
+
+- `sentence-transformers/all-MiniLM-L6-v2`
+- `microsoft/deberta-v3-small`
+
+The transformer benchmark currently uses:
+
+- title/body pair encoding instead of one flattened text string
+- `max_length=384`
+- balanced class-weighted cross-entropy loss
+- the same shared metadata tokens in the body sequence
+
 ## What Training Does
 
 The training command:
@@ -76,7 +120,7 @@ The training command:
 2. normalizes labels
 3. dedupes by identity and exact text hash
 4. derives `time_key` and `time_source`
-5. performs a chronological train/calibration/test split
+5. performs a deterministic random train/calibration/test split by default
 6. fits the TF-IDF + logistic regression model
 7. fits a sigmoid probability calibrator
 8. selects low and high thresholds
@@ -84,11 +128,35 @@ The training command:
    - `tfidf_logreg.joblib`
    - `training_summary.json`
 
-If `EVAL_SUBREDDIT` is set, training still uses mixed reviewed data before the evaluation window, but the calibration and test slices are restricted to the named subreddit.
+If `EVAL_SUBREDDIT` is set, training still uses mixed reviewed data, but the calibration and test slices are restricted to the named subreddit.
+
+Default split policy:
+
+- `SPLIT_STRATEGY=random`
+- `SPLIT_SEED=13`
+
+Use `SPLIT_STRATEGY=time` when you intentionally want future-facing evaluation over a longer collection window:
+
+```bash
+make benchmark EVAL_SUBREDDIT=seattle SPLIT_STRATEGY=time
+```
 
 The current default model applies one conservative refinement relative to the legacy baseline:
 
 - lower `char_wb` feature weight
+- slice-aware positive weighting during training so underrepresented positive cohorts such as low-text or sparse-media posts count more
+
+The shared text representation also includes normalized content metadata when available:
+
+- `HAS_BODY`
+- `POST_TYPE`
+- `CONTENT_DOMAIN`
+- `CROSSPOST`
+- `TITLE_LEN_BUCKET`
+- `BODY_LEN_BUCKET`
+- `HAS_QUESTION_MARK`
+- `LOW_TEXT`
+- `SPARSE_MEDIA`
 
 ## Output Location
 
@@ -146,11 +214,36 @@ Important fields:
 
 - `prepared_data`
 - `split`
+- `split.coverage`
 - `calibration`
+- `production_gate`
 - `threshold_selection`
 - `metrics`
+- `operating_metrics`
+- `training_balance`
 - `production_ready`
 - `production_ready_blocked_reason`
+
+The `operating_metrics` block is the ongoing comparison surface across model families:
+
+- `auto_band`
+  - metrics for the strict `high` bucket only
+- `review_queue`
+  - metrics for everything at `low_threshold` or higher
+- `queue_counts`
+  - how many held-out posts land in `high`, `borderline`, and `low`
+- `queue_rates`
+  - what fraction of the held-out set falls into the auto band or review queue
+- `positive_prevalence`
+  - how common positives are in the held-out test set
+- `slice_metrics`
+  - the same operating metrics broken out by post type, low-text posts, and sparse-media posts
+
+The `split.coverage` block tells you how many positives and negatives you actually have in those cohorts for train, calibration, and test.
+
+The `training_balance` block tells you how the harness weighted underrepresented positive cohorts during fitting.
+
+One important interpretation detail: sparse image/link posts are intentionally treated more conservatively for the `high` bucket. They can still score positive overall, but they need a stronger score to count as high confidence.
 
 ## Failure Modes
 
@@ -158,7 +251,8 @@ Training can still write artifacts even when the run is not production-ready. Co
 
 - the calibration slice does not contain both classes
 - the held-out high-confidence test precision misses the target
-- there are not enough dated examples to make the chronological split
+- the held-out high-confidence test bucket contains too few predicted positives to trust the precision result
+- you chose `SPLIT_STRATEGY=time` but there are not enough dated examples to build the chronological split
 
 Next:
 

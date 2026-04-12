@@ -40,12 +40,25 @@ On post pages, the helper automatically runs `/check` once after the page loads.
 
 ### 3. Read The Verdict
 
-The verdict block shows either:
+The verdict block shows the active bridge model verdict:
 
 - `Looks like askseattle (...)`
 - `Does not look like askseattle`
 
-The lower status line also shows score and threshold details.
+If benchmark-suite artifacts are available, the panel also shows a `Model checks` section with three side-by-side cards so you can read all results at a glance for:
+
+- TF-IDF
+- semantic embedding
+- transformer
+
+Each card shows:
+
+- the model family
+- a direct `ASKSEATTLE` or `NOT ASKSEATTLE` verdict
+- the confidence band
+- the score
+
+The lower status line still shows the active bridge model score and threshold details.
 
 ### 4. Take An Action
 
@@ -89,6 +102,8 @@ The userscript sends the text already visible in the browser, plus available pag
 - `capture_context`
 
 The bridge does not fetch Reddit content separately.
+
+When available, the bridge also uses `post_type`, `content_domain`, and `is_crosspost` during `/check`, so browser-captured metadata now helps both training and inference.
 
 ## Notes
 

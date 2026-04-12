@@ -85,7 +85,7 @@ File:
 Responsibilities:
 
 - define the TF-IDF + logistic regression pipeline
-- split dated examples into train/calibration/test
+- build deterministic train/calibration/test splits
 - calibrate probabilities
 - select low and high thresholds
 - classify posts from a loaded bundle
@@ -128,9 +128,11 @@ The model is TF-IDF + logistic regression because it is fast, easy to inspect, c
 
 The training loop chooses thresholds to preserve a high-confidence band with a strict precision target. That is more aligned with moderation use than a single raw probability cut.
 
-### Time-aware evaluation
+### Shared deterministic splits
 
-Training evaluates on the newest held-out dated slice rather than only on a random split. That keeps the metrics closer to the actual future-review use case.
+Training uses one deterministic split object and reuses it across all evaluators. The default is a seeded random split because the reviewed corpus is typically a short rolling window, and that keeps the benchmark from overfitting to when posts happened to be labeled.
+
+Time-based splitting is still available as an explicit option when the collection horizon is long enough that future-facing drift is the thing you want to measure.
 
 ## Runtime Invariants
 

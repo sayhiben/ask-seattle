@@ -18,6 +18,13 @@ dev = [
   "pytest>=8.0",
   "ruff>=0.6",
 ]
+models = [
+  "accelerate>=0.33",
+  "datasets>=2.20",
+  "sentence-transformers>=3.0",
+  "torch>=2.2",
+  "transformers>=4.48",
+]
 
 [project.scripts]
 ask-seattle = "ask_seattle.cli:main"

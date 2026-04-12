@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.5
-// @description  Adds auto-checking, skip, re-check, and binary labeling controls for the local Ask Seattle classifier bridge.
+// @version      0.1.6
+// @description  Adds auto-checking, skip, re-check, binary labeling, and side-by-side model checks for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
 // @match        https://old.reddit.com/r/*
@@ -299,6 +299,111 @@
     }
   }
 
+  function displayNameForModel(entry) {
+    const raw = String(entry.name || entry.model_family || entry.model_name || '').toLowerCase();
+    if (raw.includes('tfidf')) return 'TF-IDF';
+    if (raw.includes('semantic')) return 'Semantic';
+    if (raw.includes('transformer')) return 'Transformer';
+    return entry.name || entry.model_name || 'Model';
+  }
+
+  function modelSortRank(entry) {
+    const label = displayNameForModel(entry);
+    if (label === 'TF-IDF') return 0;
+    if (label === 'Semantic') return 1;
+    if (label === 'Transformer') return 2;
+    return 99;
+  }
+
+  function resultTone(result) {
+    if (result.label === 'askseattle' && result.confidence_band === 'high') return 'flag';
+    if (result.label === 'askseattle') return 'pending';
+    return 'pass';
+  }
+
+  function setEvaluationResultsPending(message) {
+    const container = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations`);
+    if (!container) return;
+
+    const row = document.createElement('div');
+    row.textContent = message;
+    row.style.border = '1px solid #d0d0d0';
+    row.style.borderRadius = '6px';
+    row.style.padding = '6px 8px';
+    row.style.background = '#fff7e0';
+    row.style.color = '#6f5717';
+    container.replaceChildren(row);
+  }
+
+  function renderEvaluationResults(entries) {
+    const container = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations`);
+    if (!container) return;
+    container.replaceChildren();
+
+    const orderedEntries = [...entries].sort((left, right) => modelSortRank(left) - modelSortRank(right));
+
+    for (const entry of orderedEntries) {
+      const result = entry.result || {};
+      const row = document.createElement('div');
+      row.style.display = 'flex';
+      row.style.flexDirection = 'column';
+      row.style.gap = '6px';
+      row.style.border = '1px solid #d0d0d0';
+      row.style.borderRadius = '6px';
+      row.style.padding = '8px';
+      row.style.background = '#fff';
+      row.style.minHeight = '88px';
+
+      const tone = resultTone(result);
+      if (tone === 'flag') {
+        row.style.borderColor = '#b91c1c';
+        row.style.background = '#fde8e8';
+      } else if (tone === 'pending') {
+        row.style.borderColor = '#8a6d1d';
+        row.style.background = '#fff7e0';
+      } else {
+        row.style.borderColor = '#1f6f43';
+        row.style.background = '#e8f5ec';
+      }
+
+      const header = document.createElement('div');
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.style.justifyContent = 'space-between';
+      header.style.gap = '6px';
+
+      const modelLabel = document.createElement('div');
+      modelLabel.textContent = displayNameForModel(entry);
+      modelLabel.style.fontWeight = '600';
+      modelLabel.style.fontSize = '12px';
+      modelLabel.style.letterSpacing = '0';
+
+      const score = document.createElement('div');
+      const value = Number(result.score);
+      score.textContent = Number.isFinite(value) ? value.toFixed(3) : '-';
+      score.style.fontFamily = 'ui-monospace, SFMono-Regular, Menlo, monospace';
+      score.style.fontSize = '12px';
+      score.style.opacity = '0.85';
+
+      header.append(modelLabel, score);
+
+      const verdict = document.createElement('div');
+      verdict.style.fontWeight = '700';
+      verdict.style.fontSize = '13px';
+      verdict.style.lineHeight = '1.2';
+      verdict.textContent = result.label === 'askseattle' ? 'ASKSEATTLE' : 'NOT ASKSEATTLE';
+
+      const outcome = document.createElement('div');
+      const band = String(result.confidence_band || 'unknown').toUpperCase();
+      outcome.textContent = band === 'HIGH' ? 'high confidence' : band === 'BORDERLINE' ? 'borderline' : 'low confidence';
+      outcome.style.fontSize = '12px';
+      outcome.style.opacity = '0.85';
+
+      row.append(header, verdict, outcome);
+      container.append(row);
+    }
+  }
+
   function autoRetrainStatusText(autoRetrain) {
     if (!autoRetrain || autoRetrain.enabled !== true) return '';
     if (autoRetrain.scheduled) {
@@ -343,6 +448,7 @@
 
     setStatus(auto ? 'Auto-checking...' : 'Checking...');
     setDecisionState('Checking current post...', 'pending');
+    setEvaluationResultsPending('Checking TF-IDF, semantic, and transformer models...');
     try {
       const response = await bridgePost('/check', post);
       const result = response.result;
@@ -354,11 +460,13 @@
             : 'Looks like askseattle (borderline)'
           : 'Does not look like askseattle';
       setDecisionState(verdictMessage, result.label === 'askseattle' ? 'flag' : 'pass');
+      renderEvaluationResults([{ name: result.model_name, result }, ...(response.comparisons || [])]);
       setStatus(
         `${result.confidence_band} ${result.label} score=${result.score.toFixed(3)} low=${result.low_threshold} high=${result.high_threshold}`
       );
     } catch (error) {
       setDecisionState('Check failed', 'error');
+      setEvaluationResultsPending('Check failed.');
       setStatus(error.message, true);
     }
   }
@@ -484,7 +592,7 @@
     panel.style.display = 'flex';
     panel.style.flexDirection = 'column';
     panel.style.gap = '8px';
-    panel.style.width = '300px';
+    panel.style.width = '380px';
     panel.style.padding = '10px';
     panel.style.border = '1px solid #777';
     panel.style.borderRadius = '8px';
@@ -538,6 +646,16 @@
     verdict.style.color = '#333';
     verdict.style.fontWeight = '600';
 
+    const evaluationsTitle = document.createElement('div');
+    evaluationsTitle.textContent = 'Model checks';
+    evaluationsTitle.style.fontWeight = '600';
+
+    const evaluations = document.createElement('div');
+    evaluations.className = 'ask-seattle-evaluations';
+    evaluations.style.display = 'grid';
+    evaluations.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
+    evaluations.style.gap = '6px';
+
     const queueStatus = document.createElement('div');
     queueStatus.className = 'ask-seattle-queue';
     queueStatus.textContent = 'Queue: checking...';
@@ -550,8 +668,9 @@
     status.style.lineHeight = '1.35';
     status.style.wordBreak = 'break-word';
 
-    panel.append(title, row, autoNextLabel, queueStatus, recorded, verdict, status);
+    panel.append(title, row, autoNextLabel, queueStatus, recorded, verdict, evaluationsTitle, evaluations, status);
     document.body.append(panel);
+    setEvaluationResultsPending(isCommentPage() ? 'Waiting for auto-check...' : 'Open a post to check it');
     updateQueueStatus();
     refreshRecordedStatus();
     scheduleAutoCheck();
@@ -565,10 +684,12 @@
       if (!isCommentPage()) {
         seedQueueFromPage(false);
         setDecisionState('Open a post to check it');
+        setEvaluationResultsPending('Open a post to check it');
       }
       if (isCommentPage()) {
         mountPanel();
         setDecisionState('Waiting for auto-check...', 'pending');
+        setEvaluationResultsPending('Waiting for auto-check...');
         updateQueueStatus();
         refreshRecordedStatus();
         scheduleAutoCheck();
@@ -587,8 +708,10 @@
   if (!isCommentPage()) {
     seedQueueFromPage(false);
     setDecisionState('Open a post to check it');
+    setEvaluationResultsPending('Open a post to check it');
   } else {
     setDecisionState('Waiting for auto-check...', 'pending');
+    setEvaluationResultsPending('Waiting for auto-check...');
     scheduleAutoCheck();
   }
   document.addEventListener('keydown', handleHotkeys, true);

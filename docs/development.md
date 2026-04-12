@@ -13,6 +13,12 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
+If you need the semantic embedding and transformer benchmark paths:
+
+```bash
+python -m pip install -e ".[dev,models]"
+```
+
 ## Common Commands
 
 Run tests:
@@ -43,6 +49,12 @@ Retrain from reviewed labels:
 
 ```bash
 make retrain
+```
+
+Run the benchmark suite:
+
+```bash
+make benchmark-suite EVAL_SUBREDDIT=seattle
 ```
 
 ## Public Entry Points
