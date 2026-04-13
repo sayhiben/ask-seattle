@@ -29,6 +29,8 @@ From your MacBook, the RunPod helper:
 
 The helper does not keep Pods alive between runs. Only the retained cache volume can continue billing between runs, and that retention window is now bounded by default.
 
+Pod creation now goes through the official RunPod REST API directly. The helper still uses `runpodctl` for the simpler lifecycle calls such as SSH key registration, datacenter discovery, network volume management, and final cleanup. That split avoids the CLI-specific `pod create` hangs that were showing up during earlier runs.
+
 ## One-Time Bootstrap
 
 Run this first:

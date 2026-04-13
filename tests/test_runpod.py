@@ -9,6 +9,7 @@ from ask_seattle.runpod import (
     RunPodConfig,
     RunPodOrchestrationError,
     available_gpus_for_datacenter,
+    build_create_pod_payload,
     build_create_pod_command,
     build_remote_bootstrap_command,
     build_remote_make_args,
@@ -276,6 +277,51 @@ def test_build_create_pod_command_falls_back_to_image_when_template_missing() ->
     assert "--template-id" not in command
 
 
+def test_build_create_pod_payload_prefers_template_id() -> None:
+    config = RunPodConfig(
+        repo_root=Path("/tmp/repo"),
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=Path("/tmp/id.pub"),
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=Path("/tmp/labels.jsonl"),
+        benchmark_meta_dir=Path("/tmp/meta"),
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
+    )
+
+    payload = build_create_pod_payload(
+        config,
+        pod_name="ask-seattle-test",
+        gpu_id="NVIDIA RTX A5000",
+        data_center_id="EU-RO-1",
+        network_volume_id="vol-123",
+    )
+
+    assert payload["templateId"] == "runpod-torch-v240"
+    assert "imageName" not in payload
+    assert payload["gpuTypeIds"] == ["NVIDIA RTX A5000"]
+    assert payload["dataCenterIds"] == ["EU-RO-1"]
+    assert payload["networkVolumeId"] == "vol-123"
+
+
 def test_extract_ssh_endpoint_reads_runtime_port_mapping() -> None:
     endpoint = extract_ssh_endpoint(
         {
@@ -484,9 +530,9 @@ def test_create_pod_reconciles_by_name_after_create_timeout(monkeypatch: pytest.
     )
 
     def timeout_capture(*args, **kwargs):
-        raise subprocess.TimeoutExpired(("runpodctl", "pod", "create"), timeout=10)
+        raise subprocess.TimeoutExpired(("POST", "/pods"), timeout=10)
 
-    monkeypatch.setattr(runpod, "run_command_capture", timeout_capture)
+    monkeypatch.setattr(runpod, "create_pod_via_api", timeout_capture)
     monkeypatch.setattr(
         runpod,
         "reconcile_pod_by_name",

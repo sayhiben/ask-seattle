@@ -13,7 +13,10 @@ import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+import tomllib
 from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 
 RUNPOD_REQUIRED_FEATURES: tuple[tuple[str, ...], ...] = (
@@ -34,6 +37,7 @@ REMOTE_CACHE_ROOT = "/workspace/.cache"
 RSYNC_FLAGS = ("-rlptz",)
 DEFAULT_RUNPOD_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
 DEFAULT_RUNPOD_TEMPLATE_ID = "runpod-torch-v240"
+DEFAULT_RUNPOD_REST_API_URL = "https://rest.runpod.io/v1"
 DEFAULT_RUNPOD_VOLUME_MOUNT_PATH = "/workspace"
 DEFAULT_RUNPOD_CONTAINER_DISK_GB = 50
 DEFAULT_RUNPOD_VOLUME_SIZE_GB = 100
@@ -537,15 +541,14 @@ def create_pod(
     data_center_id: str,
     network_volume_id: str,
 ) -> PodInfo:
-    command = build_create_pod_command(
-        config,
-        pod_name=pod_name,
-        gpu_id=gpu_id,
-        data_center_id=data_center_id,
-        network_volume_id=network_volume_id,
-    )
     try:
-        output = run_command_capture(command, timeout=config.pod_create_timeout_seconds)
+        payload = create_pod_via_api(
+            config,
+            pod_name=pod_name,
+            gpu_id=gpu_id,
+            data_center_id=data_center_id,
+            network_volume_id=network_volume_id,
+        )
     except subprocess.TimeoutExpired as exc:
         reconciled = reconcile_pod_by_name(
             pod_name,
@@ -554,13 +557,36 @@ def create_pod(
         if reconciled is not None:
             return reconciled
         raise RunPodOrchestrationError(
-            f"runpodctl pod create timed out after {config.pod_create_timeout_seconds} seconds for pod {pod_name} "
+            f"RunPod pod creation timed out after {config.pod_create_timeout_seconds} seconds for pod {pod_name} "
             f"in {data_center_id} with GPU {gpu_id}, and no matching pod could be reconciled afterward"
         ) from exc
-    pod = parse_pod_info(json.loads(output))
+    pod = parse_pod_info(payload)
     if not pod.pod_id:
-        raise RunPodOrchestrationError("failed to parse pod id from runpodctl pod create output")
+        raise RunPodOrchestrationError("failed to parse pod id from RunPod pod create output")
     return pod
+
+
+def create_pod_via_api(
+    config: RunPodConfig,
+    *,
+    pod_name: str,
+    gpu_id: str,
+    data_center_id: str,
+    network_volume_id: str,
+) -> dict[str, Any]:
+    return runpod_api_request_json(
+        method="POST",
+        path="/pods",
+        api_token=load_runpod_api_token(),
+        payload=build_create_pod_payload(
+            config,
+            pod_name=pod_name,
+            gpu_id=gpu_id,
+            data_center_id=data_center_id,
+            network_volume_id=network_volume_id,
+        ),
+        timeout=config.pod_create_timeout_seconds,
+    )
 
 
 def wait_for_pod_ready(config: RunPodConfig, pod_id: str, *, pod_name: str) -> PodInfo:
@@ -942,6 +968,36 @@ def build_create_pod_command(
     return tuple(command)
 
 
+def build_create_pod_payload(
+    config: RunPodConfig,
+    *,
+    pod_name: str,
+    gpu_id: str,
+    data_center_id: str,
+    network_volume_id: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "cloudType": "SECURE",
+        "computeType": "GPU",
+        "containerDiskInGb": config.container_disk_gb,
+        "dataCenterIds": [data_center_id],
+        "dataCenterPriority": "custom",
+        "globalNetworking": True,
+        "gpuCount": 1,
+        "gpuTypeIds": [gpu_id],
+        "gpuTypePriority": "custom",
+        "name": pod_name,
+        "networkVolumeId": network_volume_id,
+        "ports": ["22/tcp"],
+        "volumeMountPath": config.volume_mount_path,
+    }
+    if config.template_id:
+        payload["templateId"] = config.template_id
+    else:
+        payload["imageName"] = config.image
+    return payload
+
+
 def build_run_id(target: str) -> str:
     return f"{target}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
 
@@ -983,6 +1039,61 @@ def list_datacenters() -> list[dict[str, Any]]:
     if not isinstance(payload, list):
         raise RunPodOrchestrationError("unexpected runpodctl datacenter list output")
     return payload
+
+
+def load_runpod_api_token() -> str:
+    env_value = os.environ.get("RUNPOD_API_KEY", "").strip()
+    if env_value:
+        return env_value
+    config_path = Path.home() / ".runpod" / "config.toml"
+    if config_path.exists():
+        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+        api_key = str(payload.get("apikey") or "").strip()
+        if api_key:
+            return api_key
+    raise RunPodOrchestrationError(
+        "RunPod API key not found. Set RUNPOD_API_KEY or configure runpodctl first."
+    )
+
+
+def runpod_api_request_json(
+    *,
+    method: str,
+    path: str,
+    api_token: str,
+    payload: dict[str, Any] | None = None,
+    timeout: float | None = None,
+) -> dict[str, Any]:
+    body = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib_request.Request(
+        url=f"{DEFAULT_RUNPOD_REST_API_URL}{path}",
+        data=body,
+        method=method,
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib_request.urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+    except urllib_error.HTTPError as exc:
+        error_text = exc.read().decode("utf-8", errors="replace")
+        raise subprocess.CalledProcessError(
+            exc.code,
+            (method, path),
+            output=error_text,
+            stderr=error_text,
+        ) from exc
+    except urllib_error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, TimeoutError):
+            raise subprocess.TimeoutExpired((method, path), timeout or 0) from exc
+        raise RunPodOrchestrationError(f"RunPod REST request failed for {method} {path}: {reason}") from exc
+    payload_json = json.loads(raw or "{}")
+    if not isinstance(payload_json, dict):
+        raise RunPodOrchestrationError(f"unexpected RunPod REST response for {method} {path}")
+    return payload_json
 
 
 def list_network_volumes() -> list[NetworkVolume]:
