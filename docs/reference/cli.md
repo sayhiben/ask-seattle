@@ -17,6 +17,7 @@ ask-seattle
 The normal operator entry points are still the repository make targets:
 
 - `make runpod-bootstrap`
+- `make runpod-cleanup`
 - `make retrain`
 - `make benchmark`
 - `make benchmark-variants`
@@ -41,6 +42,7 @@ Examples:
 make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark-variants REMOTE=runpod EVAL_SUBREDDIT=seattle
+make runpod-cleanup
 make retrain REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
 ```

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -35,6 +36,7 @@ DEFAULT_RUNPOD_TEMPLATE_ID = "runpod-torch-v240"
 DEFAULT_RUNPOD_VOLUME_MOUNT_PATH = "/workspace"
 DEFAULT_RUNPOD_CONTAINER_DISK_GB = 50
 DEFAULT_RUNPOD_VOLUME_SIZE_GB = 100
+DEFAULT_RUNPOD_VOLUME_RETENTION_SECONDS = 3 * 24 * 60 * 60
 DEFAULT_RUNPOD_POD_CREATE_ATTEMPTS = 3
 DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS = 20
 DEFAULT_RUNPOD_GPU_TYPES = (
@@ -62,6 +64,7 @@ class RunPodConfig:
     ssh_key_path: Path
     volume_name: str
     volume_size_gb: int
+    volume_retention_seconds: int
     gpu_types: tuple[str, ...]
     data_center_ids: tuple[str, ...]
     template_id: str | None
@@ -86,6 +89,7 @@ class RunPodConfig:
     pod_ready_timeout_seconds: int = 1800
     pod_create_attempts: int = DEFAULT_RUNPOD_POD_CREATE_ATTEMPTS
     pod_create_retry_delay_seconds: int = DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS
+    evict_volume_on_capacity_failure: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,10 @@ def main(argv: list[str] | None = None) -> int:
     _add_common_arguments(bootstrap_parser, include_target=False)
     bootstrap_parser.set_defaults(func=bootstrap_command)
 
+    cleanup_parser = subparsers.add_parser("cleanup", help="Delete the retained RunPod cache volume for this config.")
+    _add_common_arguments(cleanup_parser, include_target=False)
+    cleanup_parser.set_defaults(func=cleanup_command)
+
     run_parser = subparsers.add_parser("run", help="Run a make target on an ephemeral RunPod Pod.")
     _add_common_arguments(run_parser, include_target=True)
     run_parser.set_defaults(func=run_command)
@@ -141,6 +149,14 @@ def bootstrap_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def cleanup_command(args: argparse.Namespace) -> int:
+    config = config_from_args(args)
+    ensure_local_prerequisites()
+    ensure_runpodctl_features()
+    delete_cached_volume(config)
+    return 0
+
+
 def run_command(args: argparse.Namespace) -> int:
     config = config_from_args(args)
     target = str(args.target)
@@ -152,6 +168,7 @@ def run_command(args: argparse.Namespace) -> int:
     remote_origin_url = remote_clone_url(origin_url)
     ensure_runpod_ssh_key(config.ssh_key_path)
     commit_sha = push_current_head(config.repo_root)
+    cleanup_expired_cached_volume(config)
 
     pod_name = build_pod_name(target=target, commit_sha=commit_sha)
     volume, gpu_id, data_center_id, pod = provision_volume_and_pod(config, pod_name=pod_name)
@@ -195,6 +212,7 @@ def run_command(args: argparse.Namespace) -> int:
         pull_remote_logs(config, ssh_endpoint=ready_pod.ssh_endpoint, run_id=run_id)
         if not config.no_pull_artifacts:
             pull_artifacts(config, ssh_endpoint=ready_pod.ssh_endpoint, target=target)
+        record_volume_retention(config, volume)
         local_metadata["finished_at"] = utc_now()
         local_metadata["status"] = "success"
         write_json(log_dir / "run_metadata.local.json", local_metadata)
@@ -219,6 +237,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
     parser.add_argument("--ssh-key-path", default="~/.ssh/id_ed25519.pub")
     parser.add_argument("--volume-name", required=True)
     parser.add_argument("--volume-size-gb", type=int, default=DEFAULT_RUNPOD_VOLUME_SIZE_GB)
+    parser.add_argument("--volume-retention-seconds", type=int, default=DEFAULT_RUNPOD_VOLUME_RETENTION_SECONDS)
     parser.add_argument("--gpu-types", default=",".join(DEFAULT_RUNPOD_GPU_TYPES))
     parser.add_argument("--data-center-ids", default=",".join(DEFAULT_RUNPOD_DATA_CENTER_IDS))
     parser.add_argument("--template-id", default=DEFAULT_RUNPOD_TEMPLATE_ID)
@@ -247,6 +266,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
         type=int,
         default=DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS,
     )
+    parser.add_argument("--evict-volume-on-capacity-failure", action="store_true")
     if include_target:
         parser.add_argument(
             "--target",
@@ -262,6 +282,7 @@ def config_from_args(args: argparse.Namespace) -> RunPodConfig:
         ssh_key_path=Path(os.path.expanduser(str(args.ssh_key_path))).resolve(),
         volume_name=str(args.volume_name),
         volume_size_gb=int(args.volume_size_gb),
+        volume_retention_seconds=int(args.volume_retention_seconds),
         gpu_types=_comma_list(args.gpu_types),
         data_center_ids=_comma_list(args.data_center_ids),
         template_id=str(args.template_id).strip() or None,
@@ -286,6 +307,7 @@ def config_from_args(args: argparse.Namespace) -> RunPodConfig:
         pod_ready_timeout_seconds=int(args.pod_ready_timeout_seconds),
         pod_create_attempts=int(args.pod_create_attempts),
         pod_create_retry_delay_seconds=int(args.pod_create_retry_delay_seconds),
+        evict_volume_on_capacity_failure=bool(args.evict_volume_on_capacity_failure),
     )
 
 
@@ -384,7 +406,15 @@ def provision_volume_and_pod(config: RunPodConfig, *, pod_name: str) -> tuple[Ne
             except subprocess.CalledProcessError as exc:
                 if not is_retryable_pod_create_error(exc):
                     raise
+                if not config.evict_volume_on_capacity_failure:
+                    raise RunPodOrchestrationError(
+                        "cached RunPod volume is pinned to a datacenter that could not allocate the requested GPU. "
+                        "The cache volume was preserved to honor the retention policy. "
+                        "Retry later or rerun with volume eviction enabled to relocate it. "
+                        f"Provider output: {summarize_called_process_error(exc)}"
+                    ) from exc
                 delete_network_volume(existing_volume.volume_id)
+                delete_volume_lease(config)
                 last_error = exc
 
         for data_center_id in candidate_datacenters(datacenters, config.gpu_types, config.data_center_ids):
@@ -412,7 +442,8 @@ def provision_volume_and_pod(config: RunPodConfig, *, pod_name: str) -> tuple[Ne
 
     if last_error is not None:
         raise RunPodOrchestrationError(
-            "no acceptable RunPod datacenter could create a pod with the requested GPU preferences after retries"
+            "no acceptable RunPod datacenter could create a pod with the requested GPU preferences after retries. "
+            f"Last provider output: {summarize_exception(last_error)}"
         ) from last_error
     raise RunPodOrchestrationError(
         "no acceptable RunPod datacenter had the requested GPU availability for the configured preference list"
@@ -450,7 +481,10 @@ def create_pod_in_datacenter(
         except subprocess.CalledProcessError as exc:
             last_error = exc
             if not is_retryable_pod_create_error(exc):
-                raise
+                raise RunPodOrchestrationError(
+                    f"RunPod could not create a pod in {data_center_id} with GPU {gpu_id}. "
+                    f"Provider output: {summarize_called_process_error(exc)}"
+                ) from exc
     if last_error is not None:
         raise last_error
     raise RunPodOrchestrationError(
@@ -953,6 +987,70 @@ def delete_network_volume(volume_id: str) -> None:
     subprocess.run(("runpodctl", "network-volume", "delete", volume_id), check=False, capture_output=True, text=True)
 
 
+def cleanup_expired_cached_volume(config: RunPodConfig) -> None:
+    existing_volume = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
+    lease = load_volume_lease(config)
+    if existing_volume is None:
+        if lease is not None:
+            delete_volume_lease(config)
+        return
+    if lease is None:
+        record_volume_retention(config, existing_volume)
+        return
+    expires_at = parse_utc_timestamp(str(lease.get("expires_at") or ""))
+    if expires_at is None:
+        record_volume_retention(config, existing_volume)
+        return
+    if datetime.now(UTC) >= expires_at:
+        delete_network_volume(existing_volume.volume_id)
+        delete_volume_lease(config)
+
+
+def delete_cached_volume(config: RunPodConfig) -> None:
+    existing_volume = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
+    if existing_volume is not None:
+        delete_network_volume(existing_volume.volume_id)
+    delete_volume_lease(config)
+
+
+def record_volume_retention(config: RunPodConfig, volume: NetworkVolume) -> None:
+    expires_at = datetime.now(UTC).timestamp() + config.volume_retention_seconds
+    write_json(
+        volume_lease_path(config),
+        {
+            "data_center_id": volume.data_center_id,
+            "expires_at": utc_timestamp(expires_at),
+            "last_used_at": utc_now(),
+            "retention_seconds": config.volume_retention_seconds,
+            "size_gb": volume.size_gb,
+            "volume_id": volume.volume_id,
+            "volume_name": volume.name,
+        },
+    )
+
+
+def load_volume_lease(config: RunPodConfig) -> dict[str, Any] | None:
+    path = volume_lease_path(config)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def delete_volume_lease(config: RunPodConfig) -> None:
+    path = volume_lease_path(config)
+    if path.exists():
+        path.unlink()
+
+
+def volume_lease_path(config: RunPodConfig) -> Path:
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "_", config.volume_name).strip("._") or "default"
+    return config.benchmark_meta_dir / "volumes" / f"{slug}.json"
+
+
 def candidate_datacenters(
     datacenters: list[dict[str, Any]],
     preferred_gpu_ids: tuple[str, ...],
@@ -1121,6 +1219,30 @@ def utc_now() -> str:
     return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def utc_timestamp(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def parse_utc_timestamp(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC)
+    except ValueError:
+        return None
+
+
+def summarize_called_process_error(exc: subprocess.CalledProcessError) -> str:
+    parts = [part.strip() for part in (exc.stdout, exc.stderr) if part and part.strip()]
+    return " | ".join(parts) if parts else f"exit code {exc.returncode}"
+
+
+def summarize_exception(exc: Exception) -> str:
+    if isinstance(exc, subprocess.CalledProcessError):
+        return summarize_called_process_error(exc)
+    return str(exc).strip() or exc.__class__.__name__
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -1142,5 +1264,15 @@ def run_command_capture(
     cwd: Path | None = None,
     check: bool = True,
 ) -> str:
-    result = subprocess.run(command, cwd=cwd, check=check, capture_output=True, text=True)
+    try:
+        result = subprocess.run(command, cwd=cwd, check=check, capture_output=True, text=True)
+    except subprocess.CalledProcessError as exc:
+        if check:
+            raise subprocess.CalledProcessError(
+                exc.returncode,
+                exc.cmd,
+                output=exc.stdout,
+                stderr=exc.stderr,
+            ) from exc
+        raise
     return result.stdout

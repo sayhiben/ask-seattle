@@ -194,7 +194,8 @@ The default RunPod settings are now reliability-first and cost-biased:
    - `US-GA-2`
 
 The RunPod helper now also performs a hard GPU smoke test before syncing labels or starting training, so it fails fast if CUDA is not actually usable inside the pod.
-If a cached RunPod volume gets pinned to a region that no longer has usable capacity, the helper can now recreate that cache volume in the next preferred datacenter instead of staying stuck on the old region.
+Successful RunPod cache volumes are now retained for 3 days by default so the next run can reuse the checkout, virtualenv, and model caches, but pods are still deleted at the end of every run.
+If a retained cache volume gets pinned to a region that no longer has usable capacity, the helper now preserves that cache by default and fails clearly. Opt into relocation with `RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE=1`, or delete the cache explicitly with `make runpod-cleanup`.
 
 If you want to avoid cloud spend entirely, use a separate Windows 11 GPU box over SSH via WSL:
 

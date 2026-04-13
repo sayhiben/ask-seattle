@@ -10,6 +10,7 @@ This path keeps the existing project boundary intact:
 - reviewed labels stay local to each contributor
 - the label file is synced to the Pod for one run, then used as a normal local input there
 - the Pod is ephemeral; persistence comes from a contributor-specific network volume
+- successful cache volumes are retained for 3 days by default, then cleaned up on the next RunPod command
 
 ## What The RunPod Path Does
 
@@ -25,6 +26,8 @@ From your MacBook, the RunPod helper:
 8. runs the existing `make` target remotely
 9. pulls artifacts and logs back to your ignored local `models/` paths
 10. deletes the Pod
+
+The helper does not keep Pods alive between runs. Only the retained cache volume can continue billing between runs, and that retention window is now bounded by default.
 
 ## One-Time Bootstrap
 
@@ -105,7 +108,20 @@ That means the expensive reusable state stays remote between runs:
 
 But the Pod itself is deleted after each run.
 
-If a persistent volume is pinned to a datacenter that can no longer allocate one of the requested GPUs, the helper now recreates that cache volume in the next preferred datacenter instead of getting stuck on the old region forever.
+By default, a successful cache volume is retained for 72 hours so the next run can reuse:
+
+- the repo checkout
+- the virtualenv
+- model downloads
+- Hugging Face and pip caches
+
+Expired cache volumes are deleted opportunistically at the start of the next RunPod command.
+
+If a retained cache volume is pinned to a datacenter that no longer has the requested GPU capacity, the helper preserves that volume by default and fails clearly instead of silently discarding cached state. If you want to relocate the cache to another datacenter, opt in with:
+
+```bash
+make retrain REMOTE=runpod RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE=1 EVAL_SUBREDDIT=seattle
+```
 
 If the remote target exceeds its timeout, the helper terminates that target and the local orchestrator then tears the Pod down. The Pod-ready phase still has its own separate timeout.
 
@@ -116,6 +132,7 @@ Defaults are controlled through Make variables:
 - `RUNPOD_REPO`
 - `RUNPOD_VOLUME_NAME`
 - `RUNPOD_VOLUME_SIZE_GB`
+- `RUNPOD_VOLUME_RETENTION_SECONDS`
 - `RUNPOD_GPU_TYPES`
 - `RUNPOD_DATA_CENTER_IDS`
 - `RUNPOD_TEMPLATE_ID`
@@ -133,6 +150,16 @@ The default template is:
 - `runpod-torch-v240`
 
 The helper still accepts a raw image override, but the default is now template-first because that has been more reliable than direct image selection on RunPod.
+
+The default cache retention is:
+
+- `RUNPOD_VOLUME_RETENTION_SECONDS=259200`
+
+Delete the retained cache volume immediately with:
+
+```bash
+make runpod-cleanup
+```
 
 The default datacenter preference order is:
 

@@ -1,4 +1,4 @@
-.PHONY: help runpod-bootstrap retrain benchmark benchmark-variants benchmark-suite bridge
+.PHONY: help runpod-bootstrap runpod-cleanup retrain benchmark benchmark-variants benchmark-suite bridge
 
 ASK_SEATTLE ?= PYTHONPATH=src python3 -m ask_seattle.cli
 RUNPOD_TRAIN ?= PYTHONPATH=src python3 scripts/runpod_train.py
@@ -34,6 +34,8 @@ REMOTE_WSL_TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu128
 RUNPOD_REPO ?= sayhiben/ask-seattle
 RUNPOD_VOLUME_NAME ?= ask-seattle-train-$(shell gh api user -q .login 2>/dev/null || echo default)
 RUNPOD_VOLUME_SIZE_GB ?= 100
+RUNPOD_VOLUME_RETENTION_SECONDS ?= 259200
+RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE ?= 0
 RUNPOD_GPU_TYPES ?= NVIDIA RTX A5000,NVIDIA GeForce RTX 4090,NVIDIA A40
 RUNPOD_DATA_CENTER_IDS ?= EU-RO-1,US-NC-1,US-KS-2,US-IL-1,US-GA-2
 RUNPOD_SSH_KEY_PATH ?= ~/.ssh/id_ed25519.pub
@@ -51,6 +53,7 @@ RUNPOD_COMMON_ARGS := \
 	--ssh-key-path $(RUNPOD_SSH_KEY_PATH) \
 	--volume-name $(RUNPOD_VOLUME_NAME) \
 	--volume-size-gb $(RUNPOD_VOLUME_SIZE_GB) \
+	--volume-retention-seconds $(RUNPOD_VOLUME_RETENTION_SECONDS) \
 	--gpu-types '$(RUNPOD_GPU_TYPES)' \
 	--data-center-ids '$(RUNPOD_DATA_CENTER_IDS)' \
 	--template-id '$(RUNPOD_TEMPLATE_ID)' \
@@ -70,6 +73,11 @@ RUNPOD_COMMON_ARGS := \
 	--causal-lm-model-id $(CAUSAL_LM_MODEL_ID) \
 	--remote-run-timeout-seconds $(REMOTE_RUN_TIMEOUT) \
 	--pod-ready-timeout-seconds $(RUNPOD_READY_TIMEOUT)
+ifeq ($(filter 1 true yes,$(RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE)),)
+RUNPOD_EVICT_ARG :=
+else
+RUNPOD_EVICT_ARG := --evict-volume-on-capacity-failure
+endif
 RUNPOD_EVAL_ARG := $(if $(EVAL_SUBREDDIT), --eval-subreddit $(EVAL_SUBREDDIT))
 RUNPOD_NOTES_ARG := $(if $(BENCHMARK_NOTES), --benchmark-notes '$(BENCHMARK_NOTES)')
 WSL_EVAL_ARG := $(if $(EVAL_SUBREDDIT), --eval-subreddit $(EVAL_SUBREDDIT))
@@ -98,6 +106,7 @@ WSL_NOTES_ARG := $(if $(BENCHMARK_NOTES), --make-arg BENCHMARK_NOTES='$(BENCHMAR
 help:
 	@printf '%s\n' \
 		'make runpod-bootstrap   Verify GitHub/RunPod prerequisites, create origin when missing, and register the local SSH key with RunPod' \
+		'make runpod-cleanup     Delete the retained RunPod cache volume for the current contributor settings' \
 		'make retrain           Retrain the operational TF-IDF model and all suite models without benchmarking' \
 		'make benchmark         Benchmark trained suite models only; warn and skip any untrained models' \
 		'make benchmark-variants Compare lightweight TF-IDF variants on the same split' \
@@ -108,6 +117,8 @@ help:
 		'  REMOTE=wsl              Run retrain or benchmark targets on a remote Windows WSL box over SSH' \
 		'  REMOTE=runpod           Run retrain or benchmark targets on an ephemeral RunPod Pod' \
 		'  RUNPOD_TEMPLATE_ID=runpod-torch-v240  Preferred official RunPod template for remote GPU runs' \
+		'  RUNPOD_VOLUME_RETENTION_SECONDS=259200  Keep the successful RunPod cache volume for 3 days by default' \
+		'  RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE=1  Allow the helper to relocate a retained cache volume when its region has no capacity' \
 		'  REMOTE_RUN_TIMEOUT=21600  Max remote target runtime in seconds before it is terminated' \
 		'  EVAL_SUBREDDIT=seattle  Restrict calibration/test evaluation to /r/seattle' \
 		'  SPLIT_STRATEGY=random|time  Control the train/calibration/test split policy' \
@@ -117,15 +128,18 @@ help:
 runpod-bootstrap:
 	$(RUNPOD_TRAIN) bootstrap $(RUNPOD_COMMON_ARGS)
 
+runpod-cleanup:
+	$(RUNPOD_TRAIN) cleanup $(RUNPOD_COMMON_ARGS)
+
 ifeq ($(REMOTE),runpod)
 retrain:
-	$(RUNPOD_TRAIN) run --target retrain $(RUNPOD_COMMON_ARGS)$(RUNPOD_EVAL_ARG)
+	$(RUNPOD_TRAIN) run --target retrain $(RUNPOD_COMMON_ARGS) $(RUNPOD_EVICT_ARG)$(RUNPOD_EVAL_ARG)
 
 benchmark:
-	$(RUNPOD_TRAIN) run --target benchmark $(RUNPOD_COMMON_ARGS)$(RUNPOD_EVAL_ARG)$(RUNPOD_NOTES_ARG)
+	$(RUNPOD_TRAIN) run --target benchmark $(RUNPOD_COMMON_ARGS) $(RUNPOD_EVICT_ARG)$(RUNPOD_EVAL_ARG)$(RUNPOD_NOTES_ARG)
 
 benchmark-variants:
-	$(RUNPOD_TRAIN) run --target benchmark-variants $(RUNPOD_COMMON_ARGS)$(RUNPOD_EVAL_ARG)
+	$(RUNPOD_TRAIN) run --target benchmark-variants $(RUNPOD_COMMON_ARGS) $(RUNPOD_EVICT_ARG)$(RUNPOD_EVAL_ARG)
 else ifeq ($(REMOTE),wsl)
 retrain:
 	$(WSL_TRAIN) $(WSL_COMMON_ARGS) $(WSL_EVAL_ARG) --target retrain
@@ -173,6 +187,8 @@ benchmark-suite:
 		RUNPOD_REPO='$(RUNPOD_REPO)' \
 		RUNPOD_VOLUME_NAME='$(RUNPOD_VOLUME_NAME)' \
 		RUNPOD_VOLUME_SIZE_GB='$(RUNPOD_VOLUME_SIZE_GB)' \
+		RUNPOD_VOLUME_RETENTION_SECONDS='$(RUNPOD_VOLUME_RETENTION_SECONDS)' \
+		RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE='$(RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE)' \
 		RUNPOD_GPU_TYPES='$(RUNPOD_GPU_TYPES)' \
 		RUNPOD_DATA_CENTER_IDS='$(RUNPOD_DATA_CENTER_IDS)' \
 		RUNPOD_TEMPLATE_ID='$(RUNPOD_TEMPLATE_ID)' \

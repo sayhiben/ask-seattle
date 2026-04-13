@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,11 +13,13 @@ from ask_seattle.runpod import (
     build_remote_bootstrap_command,
     build_remote_make_args,
     candidate_datacenters,
+    cleanup_expired_cached_volume,
     datacenter_has_gpu,
     ensure_clean_worktree,
     extract_ssh_endpoint,
     first_available_gpu_for_datacenter,
     artifact_dirs_for_target,
+    provision_volume_and_pod,
     remote_clone_url,
     select_datacenter,
 )
@@ -131,6 +134,7 @@ def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> Non
         ssh_key_path=Path("/tmp/id.pub"),
         volume_name="ask-seattle-train-sayhiben",
         volume_size_gb=100,
+        volume_retention_seconds=300,
         gpu_types=("NVIDIA GeForce RTX 4090",),
         data_center_ids=("US-KS-2",),
         template_id="runpod-torch-v240",
@@ -191,6 +195,7 @@ def test_build_create_pod_command_prefers_template_id() -> None:
         ssh_key_path=Path("/tmp/id.pub"),
         volume_name="ask-seattle-train-sayhiben",
         volume_size_gb=100,
+        volume_retention_seconds=300,
         gpu_types=("NVIDIA RTX A5000",),
         data_center_ids=("EU-RO-1",),
         template_id="runpod-torch-v240",
@@ -233,6 +238,7 @@ def test_build_create_pod_command_falls_back_to_image_when_template_missing() ->
         ssh_key_path=Path("/tmp/id.pub"),
         volume_name="ask-seattle-train-sayhiben",
         volume_size_gb=100,
+        volume_retention_seconds=300,
         gpu_types=("NVIDIA RTX A5000",),
         data_center_ids=("EU-RO-1",),
         template_id=None,
@@ -314,3 +320,130 @@ def test_ensure_clean_worktree_raises_for_dirty_repo(monkeypatch: pytest.MonkeyP
 
     with pytest.raises(RunPodOrchestrationError):
         ensure_clean_worktree(tmp_path)
+
+
+def test_cleanup_expired_cached_volume_deletes_volume_and_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from ask_seattle import runpod
+
+    config = RunPodConfig(
+        repo_root=tmp_path,
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=tmp_path / "id.pub",
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=tmp_path / "labels.jsonl",
+        benchmark_meta_dir=tmp_path / "meta",
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+    )
+    lease_path = config.benchmark_meta_dir / "volumes" / "ask-seattle-train-sayhiben.json"
+    lease_path.parent.mkdir(parents=True, exist_ok=True)
+    lease_path.write_text(
+        '{"expires_at":"2020-01-01T00:00:00Z","volume_id":"vol-123","volume_name":"ask-seattle-train-sayhiben"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runpod,
+        "list_network_volumes",
+        lambda: [
+            runpod.NetworkVolume(
+                volume_id="vol-123",
+                name="ask-seattle-train-sayhiben",
+                data_center_id="EU-RO-1",
+                size_gb=100,
+            )
+        ],
+    )
+    deleted: list[str] = []
+    monkeypatch.setattr(runpod, "delete_network_volume", lambda volume_id: deleted.append(volume_id))
+
+    cleanup_expired_cached_volume(config)
+
+    assert deleted == ["vol-123"]
+    assert not lease_path.exists()
+
+
+def test_provision_volume_and_pod_preserves_existing_cache_without_eviction(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from ask_seattle import runpod
+
+    config = RunPodConfig(
+        repo_root=tmp_path,
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=tmp_path / "id.pub",
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=tmp_path / "labels.jsonl",
+        benchmark_meta_dir=tmp_path / "meta",
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        evict_volume_on_capacity_failure=False,
+    )
+
+    monkeypatch.setattr(runpod, "list_datacenters", lambda: [])
+    monkeypatch.setattr(
+        runpod,
+        "list_network_volumes",
+        lambda: [
+            runpod.NetworkVolume(
+                volume_id="vol-123",
+                name="ask-seattle-train-sayhiben",
+                data_center_id="EU-RO-1",
+                size_gb=100,
+            )
+        ],
+    )
+
+    def fail_create(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            1,
+            ("runpodctl", "pod", "create"),
+            output="",
+            stderr="no longer any instances available",
+        )
+
+    monkeypatch.setattr(runpod, "create_pod_in_datacenter", fail_create)
+    deleted: list[str] = []
+    monkeypatch.setattr(runpod, "delete_network_volume", lambda volume_id: deleted.append(volume_id))
+
+    with pytest.raises(RunPodOrchestrationError, match="preserved to honor the retention policy"):
+        provision_volume_and_pod(config, pod_name="ask-seattle-test")
+
+    assert deleted == []
