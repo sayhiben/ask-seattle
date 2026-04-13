@@ -35,6 +35,8 @@ DEFAULT_RUNPOD_TEMPLATE_ID = "runpod-torch-v240"
 DEFAULT_RUNPOD_VOLUME_MOUNT_PATH = "/workspace"
 DEFAULT_RUNPOD_CONTAINER_DISK_GB = 50
 DEFAULT_RUNPOD_VOLUME_SIZE_GB = 100
+DEFAULT_RUNPOD_POD_CREATE_ATTEMPTS = 3
+DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS = 20
 DEFAULT_RUNPOD_GPU_TYPES = (
     "NVIDIA RTX A5000",
     "NVIDIA GeForce RTX 4090",
@@ -82,6 +84,8 @@ class RunPodConfig:
     no_pull_artifacts: bool = False
     remote_run_timeout_seconds: int = 21600
     pod_ready_timeout_seconds: int = 1800
+    pod_create_attempts: int = DEFAULT_RUNPOD_POD_CREATE_ATTEMPTS
+    pod_create_retry_delay_seconds: int = DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS
 
 
 @dataclass(frozen=True)
@@ -237,6 +241,12 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
     parser.add_argument("--no-pull-artifacts", action="store_true")
     parser.add_argument("--remote-run-timeout-seconds", type=int, default=21600)
     parser.add_argument("--pod-ready-timeout-seconds", type=int, default=1800)
+    parser.add_argument("--pod-create-attempts", type=int, default=DEFAULT_RUNPOD_POD_CREATE_ATTEMPTS)
+    parser.add_argument(
+        "--pod-create-retry-delay-seconds",
+        type=int,
+        default=DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS,
+    )
     if include_target:
         parser.add_argument(
             "--target",
@@ -274,6 +284,8 @@ def config_from_args(args: argparse.Namespace) -> RunPodConfig:
         no_pull_artifacts=bool(args.no_pull_artifacts),
         remote_run_timeout_seconds=int(args.remote_run_timeout_seconds),
         pod_ready_timeout_seconds=int(args.pod_ready_timeout_seconds),
+        pod_create_attempts=int(args.pod_create_attempts),
+        pod_create_retry_delay_seconds=int(args.pod_create_retry_delay_seconds),
     )
 
 
@@ -355,47 +367,52 @@ def ensure_label_path_exists(label_path: Path) -> None:
 
 
 def provision_volume_and_pod(config: RunPodConfig, *, pod_name: str) -> tuple[NetworkVolume, str, str, PodInfo]:
-    datacenters = list_datacenters()
-    existing_volume = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
-    if existing_volume is not None:
-        try:
-            gpu_id, pod = create_pod_in_datacenter(
-                config,
-                datacenters=datacenters,
-                pod_name=pod_name,
-                data_center_id=existing_volume.data_center_id,
-                network_volume_id=existing_volume.volume_id,
-            )
-            return existing_volume, gpu_id, existing_volume.data_center_id, pod
-        except subprocess.CalledProcessError as exc:
-            if not is_retryable_pod_create_error(exc):
-                raise
-            delete_network_volume(existing_volume.volume_id)
-            datacenters = list_datacenters()
-
     last_error: Exception | None = None
-    for data_center_id in candidate_datacenters(datacenters, config.gpu_types, config.data_center_ids):
-        volume = create_network_volume(config.volume_name, config.volume_size_gb, data_center_id)
-        try:
-            gpu_id, pod = create_pod_in_datacenter(
-                config,
-                datacenters=datacenters,
-                pod_name=pod_name,
-                data_center_id=data_center_id,
-                network_volume_id=volume.volume_id,
-            )
-            return volume, gpu_id, data_center_id, pod
-        except subprocess.CalledProcessError as exc:
-            delete_network_volume(volume.volume_id)
-            last_error = exc
-            if not is_retryable_pod_create_error(exc):
+    for attempt_index in range(config.pod_create_attempts):
+        datacenters = list_datacenters()
+        existing_volume = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
+        if existing_volume is not None:
+            try:
+                gpu_id, pod = create_pod_in_datacenter(
+                    config,
+                    datacenters=datacenters,
+                    pod_name=pod_name,
+                    data_center_id=existing_volume.data_center_id,
+                    network_volume_id=existing_volume.volume_id,
+                )
+                return existing_volume, gpu_id, existing_volume.data_center_id, pod
+            except subprocess.CalledProcessError as exc:
+                if not is_retryable_pod_create_error(exc):
+                    raise
+                delete_network_volume(existing_volume.volume_id)
+                last_error = exc
+
+        for data_center_id in candidate_datacenters(datacenters, config.gpu_types, config.data_center_ids):
+            volume = create_network_volume(config.volume_name, config.volume_size_gb, data_center_id)
+            try:
+                gpu_id, pod = create_pod_in_datacenter(
+                    config,
+                    datacenters=datacenters,
+                    pod_name=pod_name,
+                    data_center_id=data_center_id,
+                    network_volume_id=volume.volume_id,
+                )
+                return volume, gpu_id, data_center_id, pod
+            except subprocess.CalledProcessError as exc:
+                delete_network_volume(volume.volume_id)
+                last_error = exc
+                if not is_retryable_pod_create_error(exc):
+                    raise
+            except Exception:
+                delete_network_volume(volume.volume_id)
                 raise
-        except Exception:
-            delete_network_volume(volume.volume_id)
-            raise
+
+        if attempt_index + 1 < config.pod_create_attempts:
+            time.sleep(config.pod_create_retry_delay_seconds)
+
     if last_error is not None:
         raise RunPodOrchestrationError(
-            "no acceptable RunPod datacenter could create a pod with the requested GPU preferences"
+            "no acceptable RunPod datacenter could create a pod with the requested GPU preferences after retries"
         ) from last_error
     raise RunPodOrchestrationError(
         "no acceptable RunPod datacenter had the requested GPU availability for the configured preference list"
