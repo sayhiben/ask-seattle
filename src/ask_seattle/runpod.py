@@ -35,6 +35,10 @@ REMOTE_LABEL_ROOT = "/workspace/runpod-inputs"
 REMOTE_VENV_DIR = "/workspace/.venv"
 REMOTE_CACHE_ROOT = "/workspace/.cache"
 RSYNC_FLAGS = ("-rlptz",)
+ARTIFACT_RSYNC_FLAGS = ("-rlpt", "--partial", "--inplace")
+RETRYABLE_RSYNC_EXIT_CODES = frozenset({10, 11, 12, 30, 35, 255})
+DEFAULT_ARTIFACT_RSYNC_ATTEMPTS = 2
+DEFAULT_ARTIFACT_RSYNC_RETRY_DELAY_SECONDS = 5
 DEFAULT_RUNPOD_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
 DEFAULT_RUNPOD_TEMPLATE_ID = "runpod-torch-v240"
 DEFAULT_RUNPOD_REST_API_URL = "https://rest.runpod.io/v1"
@@ -846,16 +850,10 @@ def pull_artifacts(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, target
                 f"remote artifact directory missing after {target}: {remote_path}"
             )
         remote_dir = f"{ssh_endpoint.user}@{ssh_endpoint.host}:{remote_path}/"
-        _run_subprocess(
-            (
-                "rsync",
-                *RSYNC_FLAGS,
-                "--delete",
-                "-e",
-                f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
-                remote_dir,
-                str(local_dir.parent / Path(relative_dir).name),
-            )
+        run_artifact_rsync(
+            ssh_endpoint=ssh_endpoint,
+            remote_dir=remote_dir,
+            local_dir=local_dir.parent / Path(relative_dir).name,
         )
 
 
@@ -874,6 +872,40 @@ def pull_remote_logs(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, run_
         ),
         check=False,
     )
+
+
+def run_artifact_rsync(
+    *,
+    ssh_endpoint: PodSshEndpoint,
+    remote_dir: str,
+    local_dir: Path,
+    attempts: int = DEFAULT_ARTIFACT_RSYNC_ATTEMPTS,
+) -> None:
+    command = (
+        "rsync",
+        *ARTIFACT_RSYNC_FLAGS,
+        "--delete",
+        "-e",
+        f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
+        remote_dir,
+        str(local_dir),
+    )
+    last_error: subprocess.CalledProcessError | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            _run_subprocess(command)
+            return
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if exc.returncode not in RETRYABLE_RSYNC_EXIT_CODES or attempt >= attempts:
+                break
+            time.sleep(DEFAULT_ARTIFACT_RSYNC_RETRY_DELAY_SECONDS)
+    if last_error is None:
+        raise RunPodOrchestrationError(f"failed to pull remote artifact directory {remote_dir}")
+    raise RunPodOrchestrationError(
+        "failed to pull remote artifacts from RunPod after retrying. "
+        f"Rsync exited with code {last_error.returncode}: {summarize_called_process_error(last_error)}"
+    ) from last_error
 
 
 def remote_directory_exists(*, ssh_endpoint: PodSshEndpoint, remote_path: str) -> bool:

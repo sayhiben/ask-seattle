@@ -22,6 +22,8 @@ from ask_seattle.runpod import (
     extract_ssh_endpoint,
     first_available_gpu_for_datacenter,
     artifact_dirs_for_target,
+    PodSshEndpoint,
+    pull_artifacts,
     wait_for_pod_ready,
     provision_volume_and_pod,
     remote_clone_url,
@@ -505,6 +507,120 @@ def test_cleanup_expired_cached_volume_deletes_volume_and_lease(
 
     assert deleted == ["vol-123"]
     assert not lease_path.exists()
+
+
+def test_pull_artifacts_uses_uncompressed_rsync_for_large_directories(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from ask_seattle import runpod
+
+    config = RunPodConfig(
+        repo_root=tmp_path,
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=tmp_path / "id.pub",
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        fallback_gpu_types=("NVIDIA L4",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=tmp_path / "labels.jsonl",
+        benchmark_meta_dir=tmp_path / "meta",
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
+    )
+    monkeypatch.setattr(runpod, "remote_directory_exists", lambda **kwargs: True)
+    commands: list[tuple[str, ...]] = []
+
+    def fake_run(command: tuple[str, ...], *args: object, **kwargs: object) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(runpod, "_run_subprocess", fake_run)
+
+    pull_artifacts(
+        config,
+        ssh_endpoint=PodSshEndpoint(host="1.2.3.4", port=2222, user="root"),
+        target="benchmark",
+    )
+
+    rsync_commands = [command for command in commands if command[0] == "rsync"]
+    assert len(rsync_commands) == 1
+    assert "-rlpt" in rsync_commands[0]
+    assert "--partial" in rsync_commands[0]
+    assert "--inplace" in rsync_commands[0]
+    assert "-rlptz" not in rsync_commands[0]
+
+
+def test_pull_artifacts_retries_retryable_rsync_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from ask_seattle import runpod
+
+    config = RunPodConfig(
+        repo_root=tmp_path,
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=tmp_path / "id.pub",
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        fallback_gpu_types=("NVIDIA L4",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=tmp_path / "labels.jsonl",
+        benchmark_meta_dir=tmp_path / "meta",
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
+    )
+    monkeypatch.setattr(runpod, "remote_directory_exists", lambda **kwargs: True)
+    monkeypatch.setattr(runpod.time, "sleep", lambda seconds: None)
+    attempts = {"count": 0}
+
+    def fake_run(command: tuple[str, ...], *args: object, **kwargs: object) -> None:
+        if command[0] != "rsync":
+            return
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise subprocess.CalledProcessError(12, command, output="stream error", stderr="")
+
+    monkeypatch.setattr(runpod, "_run_subprocess", fake_run)
+
+    pull_artifacts(
+        config,
+        ssh_endpoint=PodSshEndpoint(host="1.2.3.4", port=2222, user="root"),
+        target="benchmark",
+    )
+
+    assert attempts["count"] == 2
 
 
 def test_provision_volume_and_pod_preserves_existing_cache_without_eviction(
