@@ -358,14 +358,20 @@ def provision_volume_and_pod(config: RunPodConfig, *, pod_name: str) -> tuple[Ne
     datacenters = list_datacenters()
     existing_volume = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
     if existing_volume is not None:
-        gpu_id, pod = create_pod_in_datacenter(
-            config,
-            datacenters=datacenters,
-            pod_name=pod_name,
-            data_center_id=existing_volume.data_center_id,
-            network_volume_id=existing_volume.volume_id,
-        )
-        return existing_volume, gpu_id, existing_volume.data_center_id, pod
+        try:
+            gpu_id, pod = create_pod_in_datacenter(
+                config,
+                datacenters=datacenters,
+                pod_name=pod_name,
+                data_center_id=existing_volume.data_center_id,
+                network_volume_id=existing_volume.volume_id,
+            )
+            return existing_volume, gpu_id, existing_volume.data_center_id, pod
+        except subprocess.CalledProcessError as exc:
+            if not is_retryable_pod_create_error(exc):
+                raise
+            delete_network_volume(existing_volume.volume_id)
+            datacenters = list_datacenters()
 
     last_error: Exception | None = None
     for data_center_id in candidate_datacenters(datacenters, config.gpu_types, config.data_center_ids):

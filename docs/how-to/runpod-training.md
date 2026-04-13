@@ -105,6 +105,8 @@ That means the expensive reusable state stays remote between runs:
 
 But the Pod itself is deleted after each run.
 
+If a persistent volume is pinned to a datacenter that can no longer allocate one of the requested GPUs, the helper now recreates that cache volume in the next preferred datacenter instead of getting stuck on the old region forever.
+
 If the remote target exceeds its timeout, the helper terminates that target and the local orchestrator then tears the Pod down. The Pod-ready phase still has its own separate timeout.
 
 ## Default RunPod Settings
