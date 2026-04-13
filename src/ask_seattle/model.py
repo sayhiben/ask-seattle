@@ -1707,7 +1707,7 @@ def _hf_embedding_runtime_embeddings(bundle: dict[str, Any], texts: list[str]) -
                 pooled = _last_token_pool(hidden, batch["attention_mask"])
             else:
                 pooled = _mean_pool(hidden, batch["attention_mask"])
-            outputs.append(pooled.detach().cpu().numpy().astype(np.float32))
+            outputs.append(_tensor_to_float32_numpy(pooled))
     embeddings = np.vstack(outputs) if outputs else np.zeros((0, 0), dtype=np.float32)
     if bool(bundle.get("normalize_embeddings")) and embeddings.size:
         norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
@@ -1728,6 +1728,12 @@ def _last_token_pool(hidden_states: Any, attention_mask: Any) -> Any:
     token_counts = attention_mask.sum(dim=1) - 1
     batch_indices = torch.arange(hidden_states.shape[0], device=hidden_states.device)
     return hidden_states[batch_indices, token_counts]
+
+
+def _tensor_to_float32_numpy(tensor: Any) -> np.ndarray:
+    import torch
+
+    return tensor.detach().to(dtype=torch.float32).cpu().numpy().astype(np.float32)
 
 
 def _move_token_batch_to_device(

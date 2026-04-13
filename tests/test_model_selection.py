@@ -1,7 +1,10 @@
+import pytest
+
 from ask_seattle.data import LabeledPost
 from ask_seattle.model import (
     _default_min_df,
     _bundle_runtime_device,
+    _tensor_to_float32_numpy,
     _move_token_batch_to_device,
     build_inference_row,
     build_pipeline,
@@ -114,6 +117,16 @@ def test_select_decision_thresholds_uses_review_precision_target_for_low_thresho
 
     assert thresholds.low_threshold == 0.45
     assert thresholds.low_threshold <= thresholds.high_threshold
+
+
+def test_tensor_to_float32_numpy_handles_bfloat16() -> None:
+    torch = pytest.importorskip("torch")
+
+    tensor = torch.tensor([[1.0, 2.0]], dtype=torch.bfloat16)
+    array = _tensor_to_float32_numpy(tensor)
+
+    assert array.dtype.name == "float32"
+    assert array.tolist() == [[1.0, 2.0]]
 
 
 def test_threshold_selection_uses_observed_probabilities_when_grid_is_too_coarse() -> None:

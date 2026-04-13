@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ask_seattle.model import (
     ConfidenceBandMetrics,
     DecisionThresholds,
@@ -109,6 +111,16 @@ def test_classification_metrics_handles_empty_slice() -> None:
         "predicted_positive": 0,
         "support": 0,
     }
+
+
+def test_tensor_to_float32_numpy_handles_bfloat16() -> None:
+    torch = pytest.importorskip("torch")
+
+    tensor = torch.tensor([[1.0, 2.0]], dtype=torch.bfloat16)
+    array = training._tensor_to_float32_numpy(tensor)
+
+    assert array.dtype.name == "float32"
+    assert array.tolist() == [[1.0, 2.0]]
 
 
 def test_train_model_bundle_requires_test_precision_for_production_ready(
