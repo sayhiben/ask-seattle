@@ -21,6 +21,13 @@ export HF_HOME="/workspace/.cache/huggingface"
 export PIP_CACHE_DIR="/workspace/.cache/pip"
 export TRANSFORMERS_CACHE="${HF_HOME}"
 
+cleanup_remote_inputs() {
+  rm -f "${REMOTE_LABELS_PATH}" || true
+  rmdir "$(dirname "${REMOTE_LABELS_PATH}")" 2>/dev/null || true
+}
+
+trap cleanup_remote_inputs EXIT
+
 write_metadata() {
   local status="$1"
   local finished_at="$2"

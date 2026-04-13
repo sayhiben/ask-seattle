@@ -169,6 +169,7 @@ def run_command(args: argparse.Namespace) -> int:
     ensure_runpod_ssh_key(config.ssh_key_path)
     commit_sha = push_current_head(config.repo_root)
     cleanup_expired_cached_volume(config)
+    existing_volume_before_run = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
 
     pod_name = build_pod_name(target=target, commit_sha=commit_sha)
     volume, gpu_id, data_center_id, pod = provision_volume_and_pod(config, pod_name=pod_name)
@@ -193,6 +194,7 @@ def run_command(args: argparse.Namespace) -> int:
     write_json(log_dir / "run_metadata.local.json", local_metadata)
 
     ready_pod: PodInfo | None = None
+    retain_volume = existing_volume_before_run is not None and existing_volume_before_run.volume_id == volume.volume_id
     try:
         ready_pod = wait_for_pod_ready(config, pod.pod_id, pod_name=pod.name)
         if ready_pod.ssh_endpoint is None:
@@ -200,6 +202,7 @@ def run_command(args: argparse.Namespace) -> int:
         run_remote_gpu_smoke(ready_pod.ssh_endpoint)
         ensure_remote_rsync(ready_pod.ssh_endpoint)
         remote_labels_path = sync_labels_to_pod(config, ready_pod.ssh_endpoint, run_id)
+        retain_volume = True
         run_remote_bootstrap(
             config,
             ssh_endpoint=ready_pod.ssh_endpoint,
@@ -212,7 +215,6 @@ def run_command(args: argparse.Namespace) -> int:
         pull_remote_logs(config, ssh_endpoint=ready_pod.ssh_endpoint, run_id=run_id)
         if not config.no_pull_artifacts:
             pull_artifacts(config, ssh_endpoint=ready_pod.ssh_endpoint, target=target)
-        record_volume_retention(config, volume)
         local_metadata["finished_at"] = utc_now()
         local_metadata["status"] = "success"
         write_json(log_dir / "run_metadata.local.json", local_metadata)
@@ -229,6 +231,11 @@ def run_command(args: argparse.Namespace) -> int:
         raise
     finally:
         delete_pod(pod.pod_id)
+        if retain_volume:
+            record_volume_retention(config, volume)
+        elif existing_volume_before_run is None:
+            delete_network_volume(volume.volume_id)
+            delete_volume_lease(config)
 
 
 def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bool) -> None:

@@ -86,6 +86,7 @@ The RunPod helper:
 - never commits or pushes it
 - never fetches any corpus from GitHub
 - only syncs labels after the Pod passes a GPU smoke test
+- removes the per-run remote label copy when the remote job exits
 
 Contributors should assume benchmark numbers are only comparable when they explicitly say:
 
