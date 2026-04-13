@@ -72,6 +72,7 @@ python -m pip install -e ".[dev,models]"
 
 STATUS="running"
 FINISHED_AT=""
+export STATUS FINISHED_AT
 write_metadata "${STATUS}" "${FINISHED_AT}"
 
 if make "${TARGET}" "${MAKE_ARGS[@]}"; then
