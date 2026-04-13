@@ -14,6 +14,7 @@ from ask_seattle.runpod import (
     extract_ssh_endpoint,
     first_available_gpu_for_datacenter,
     artifact_dirs_for_target,
+    remote_clone_url,
     select_datacenter,
 )
 
@@ -149,6 +150,29 @@ def test_extract_ssh_endpoint_reads_runtime_port_mapping() -> None:
     assert endpoint.host == "1.2.3.4"
     assert endpoint.port == 32511
     assert endpoint.user == "root"
+
+
+def test_extract_ssh_endpoint_reads_new_ssh_payload_shape() -> None:
+    endpoint = extract_ssh_endpoint(
+        {
+            "ssh": {
+                "ip": "203.57.40.238",
+                "port": 10132,
+            }
+        }
+    )
+
+    assert endpoint is not None
+    assert endpoint.host == "203.57.40.238"
+    assert endpoint.port == 10132
+    assert endpoint.user == "root"
+
+
+def test_remote_clone_url_rewrites_github_ssh_to_https() -> None:
+    assert (
+        remote_clone_url("git@github.com:sayhiben/ask-seattle.git")
+        == "https://github.com/sayhiben/ask-seattle.git"
+    )
 
 
 def test_ensure_clean_worktree_raises_for_dirty_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

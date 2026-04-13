@@ -140,6 +140,7 @@ def run_command(args: argparse.Namespace) -> int:
     ensure_clean_worktree(config.repo_root)
     ensure_label_path_exists(config.labels_path)
     origin_url = ensure_origin_remote(config.repo_root, config.repo_slug)
+    remote_origin_url = remote_clone_url(origin_url)
     ensure_runpod_ssh_key(config.ssh_key_path)
     commit_sha = push_current_head(config.repo_root)
 
@@ -168,6 +169,7 @@ def run_command(args: argparse.Namespace) -> int:
         "network_volume_id": volume.volume_id,
         "repo_slug": config.repo_slug,
         "origin_url": origin_url,
+        "remote_origin_url": remote_origin_url,
         "started_at": utc_now(),
     }
     write_json(log_dir / "run_metadata.local.json", local_metadata)
@@ -183,7 +185,7 @@ def run_command(args: argparse.Namespace) -> int:
             run_id=run_id,
             target=target,
             commit_sha=commit_sha,
-            origin_url=origin_url,
+            origin_url=remote_origin_url,
             remote_labels_path=remote_labels_path,
         )
         if not config.no_pull_artifacts:
@@ -775,9 +777,11 @@ def parse_pod_info(payload: dict[str, Any]) -> PodInfo:
 
 
 def extract_ssh_endpoint(payload: dict[str, Any]) -> PodSshEndpoint | None:
+    ssh = payload.get("ssh") if isinstance(payload.get("ssh"), dict) else {}
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     host = str(
-        runtime.get("publicIp")
+        ssh.get("ip")
+        or runtime.get("publicIp")
         or payload.get("publicIp")
         or payload.get("sshHost")
         or payload.get("ipAddress")
@@ -785,13 +789,16 @@ def extract_ssh_endpoint(payload: dict[str, Any]) -> PodSshEndpoint | None:
     ).strip()
     if not host:
         return None
-    port = extract_ssh_port(runtime) or extract_ssh_port(payload)
+    port = extract_ssh_port(ssh) or extract_ssh_port(runtime) or extract_ssh_port(payload)
     if port is None:
         return None
     return PodSshEndpoint(host=host, port=port, user="root")
 
 
 def extract_ssh_port(payload: dict[str, Any]) -> int | None:
+    direct_port = payload.get("port")
+    if direct_port is not None:
+        return int(direct_port)
     ports = payload.get("ports")
     if isinstance(ports, list):
         for item in ports:
@@ -812,6 +819,14 @@ def extract_ssh_port(payload: dict[str, Any]) -> int | None:
     if ssh_port is not None:
         return int(ssh_port)
     return None
+
+
+def remote_clone_url(origin_url: str) -> str:
+    stripped = origin_url.strip()
+    if stripped.startswith("git@github.com:") and stripped.endswith(".git"):
+        repo_slug = stripped.removeprefix("git@github.com:").removesuffix(".git")
+        return f"https://github.com/{repo_slug}.git"
+    return stripped
 
 
 def utc_now() -> str:
