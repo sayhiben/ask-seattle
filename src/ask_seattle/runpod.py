@@ -149,16 +149,8 @@ def run_command(args: argparse.Namespace) -> int:
     ensure_runpod_ssh_key(config.ssh_key_path)
     commit_sha = push_current_head(config.repo_root)
 
-    volume = ensure_network_volume(config)
-    gpu_id, data_center_id = select_gpu_and_datacenter(config, volume=volume)
     pod_name = build_pod_name(target=target, commit_sha=commit_sha)
-    pod = create_pod(
-        config,
-        pod_name=pod_name,
-        gpu_id=gpu_id,
-        data_center_id=data_center_id,
-        network_volume_id=volume.volume_id,
-    )
+    volume, gpu_id, data_center_id, pod = provision_volume_and_pod(config, pod_name=pod_name)
     run_id = build_run_id(target)
     log_dir = config.benchmark_meta_dir / run_id
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -361,49 +353,85 @@ def ensure_label_path_exists(label_path: Path) -> None:
         raise RunPodOrchestrationError(f"reviewed label file not found: {label_path}")
 
 
-def ensure_network_volume(config: RunPodConfig) -> NetworkVolume:
-    for item in list_network_volumes():
-        if item.name == config.volume_name:
-            return item
-    data_center_id = select_datacenter_for_new_volume(config)
-    return create_network_volume(config.volume_name, config.volume_size_gb, data_center_id)
-
-
-def select_datacenter_for_new_volume(config: RunPodConfig) -> str:
+def provision_volume_and_pod(config: RunPodConfig, *, pod_name: str) -> tuple[NetworkVolume, str, str, PodInfo]:
     datacenters = list_datacenters()
-    chosen = select_datacenter(datacenters, config.gpu_types, config.data_center_ids)
-    if chosen is None:
-        raise RunPodOrchestrationError(
-            "no acceptable RunPod datacenter had the requested GPU availability for the configured preference list"
+    existing_volume = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
+    if existing_volume is not None:
+        gpu_id, pod = create_pod_in_datacenter(
+            config,
+            datacenters=datacenters,
+            pod_name=pod_name,
+            data_center_id=existing_volume.data_center_id,
+            network_volume_id=existing_volume.volume_id,
         )
-    return chosen
+        return existing_volume, gpu_id, existing_volume.data_center_id, pod
 
-
-def select_gpu_and_datacenter(config: RunPodConfig, *, volume: NetworkVolume) -> tuple[str, str]:
-    datacenters = list_datacenters()
-    if volume.data_center_id:
-        available_gpu = first_available_gpu_for_datacenter(
-            datacenters,
-            data_center_id=volume.data_center_id,
-            preferred_gpu_ids=config.gpu_types,
-        )
-        if available_gpu is None:
-            raise RunPodOrchestrationError(
-                f"network volume {volume.name} is pinned to {volume.data_center_id}, but none of the requested GPUs "
-                "are currently available there"
+    last_error: Exception | None = None
+    for data_center_id in candidate_datacenters(datacenters, config.gpu_types, config.data_center_ids):
+        volume = create_network_volume(config.volume_name, config.volume_size_gb, data_center_id)
+        try:
+            gpu_id, pod = create_pod_in_datacenter(
+                config,
+                datacenters=datacenters,
+                pod_name=pod_name,
+                data_center_id=data_center_id,
+                network_volume_id=volume.volume_id,
             )
-        return available_gpu, volume.data_center_id
-    data_center_id = select_datacenter(datacenters, config.gpu_types, config.data_center_ids)
-    if data_center_id is None:
-        raise RunPodOrchestrationError("unable to select a datacenter for the requested GPU types")
-    available_gpu = first_available_gpu_for_datacenter(
+            return volume, gpu_id, data_center_id, pod
+        except subprocess.CalledProcessError as exc:
+            delete_network_volume(volume.volume_id)
+            last_error = exc
+            if not is_retryable_pod_create_error(exc):
+                raise
+        except Exception:
+            delete_network_volume(volume.volume_id)
+            raise
+    if last_error is not None:
+        raise RunPodOrchestrationError(
+            "no acceptable RunPod datacenter could create a pod with the requested GPU preferences"
+        ) from last_error
+    raise RunPodOrchestrationError(
+        "no acceptable RunPod datacenter had the requested GPU availability for the configured preference list"
+    )
+
+
+def create_pod_in_datacenter(
+    config: RunPodConfig,
+    *,
+    datacenters: list[dict[str, Any]],
+    pod_name: str,
+    data_center_id: str,
+    network_volume_id: str,
+) -> tuple[str, PodInfo]:
+    gpu_ids = available_gpus_for_datacenter(
         datacenters,
         data_center_id=data_center_id,
         preferred_gpu_ids=config.gpu_types,
     )
-    if available_gpu is None:
-        raise RunPodOrchestrationError(f"no requested GPU type was available in datacenter {data_center_id}")
-    return available_gpu, data_center_id
+    if not gpu_ids:
+        raise RunPodOrchestrationError(
+            f"no requested GPU type was available in datacenter {data_center_id}"
+        )
+    last_error: subprocess.CalledProcessError | None = None
+    for gpu_id in gpu_ids:
+        try:
+            pod = create_pod(
+                config,
+                pod_name=pod_name,
+                gpu_id=gpu_id,
+                data_center_id=data_center_id,
+                network_volume_id=network_volume_id,
+            )
+            return gpu_id, pod
+        except subprocess.CalledProcessError as exc:
+            last_error = exc
+            if not is_retryable_pod_create_error(exc):
+                raise
+    if last_error is not None:
+        raise last_error
+    raise RunPodOrchestrationError(
+        f"no requested GPU type could be provisioned in datacenter {data_center_id}"
+    )
 
 
 def create_pod(
@@ -866,6 +894,28 @@ def create_network_volume(name: str, size_gb: int, data_center_id: str) -> Netwo
     )
 
 
+def delete_network_volume(volume_id: str) -> None:
+    if not volume_id:
+        return
+    subprocess.run(("runpodctl", "network-volume", "delete", volume_id), check=False, capture_output=True, text=True)
+
+
+def candidate_datacenters(
+    datacenters: list[dict[str, Any]],
+    preferred_gpu_ids: tuple[str, ...],
+    candidate_data_center_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    ordered: list[str] = []
+    for data_center_id in candidate_data_center_ids:
+        if available_gpus_for_datacenter(
+            datacenters,
+            data_center_id=data_center_id,
+            preferred_gpu_ids=preferred_gpu_ids,
+        ):
+            ordered.append(data_center_id)
+    return tuple(ordered)
+
+
 def select_datacenter(
     datacenters: list[dict[str, Any]],
     preferred_gpu_ids: tuple[str, ...],
@@ -899,6 +949,33 @@ def first_available_gpu_for_datacenter(
         if datacenter_has_gpu(datacenter, gpu_id):
             return gpu_id
     return None
+
+
+def available_gpus_for_datacenter(
+    datacenters: list[dict[str, Any]],
+    *,
+    data_center_id: str,
+    preferred_gpu_ids: tuple[str, ...],
+) -> tuple[str, ...]:
+    datacenter = next(
+        (item for item in datacenters if str(item.get("id") or item.get("name") or "") == data_center_id),
+        None,
+    )
+    if datacenter is None:
+        return ()
+    return tuple(gpu_id for gpu_id in preferred_gpu_ids if datacenter_has_gpu(datacenter, gpu_id))
+
+
+def is_retryable_pod_create_error(exc: subprocess.CalledProcessError) -> bool:
+    text = f"{exc.stdout}\n{exc.stderr}".lower()
+    return any(
+        phrase in text
+        for phrase in (
+            "no longer any instances available",
+            "requested specifications",
+            "please refresh and try again",
+        )
+    )
 
 
 def datacenter_has_gpu(datacenter: dict[str, Any], gpu_id: str) -> bool:

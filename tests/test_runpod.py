@@ -7,9 +7,11 @@ import pytest
 from ask_seattle.runpod import (
     RunPodConfig,
     RunPodOrchestrationError,
+    available_gpus_for_datacenter,
     build_create_pod_command,
     build_remote_bootstrap_command,
     build_remote_make_args,
+    candidate_datacenters,
     datacenter_has_gpu,
     ensure_clean_worktree,
     extract_ssh_endpoint,
@@ -88,6 +90,38 @@ def test_datacenter_has_gpu_accepts_blank_stock_status_when_gpu_is_listed() -> N
     }
 
     assert datacenter_has_gpu(datacenter, "NVIDIA GeForce RTX 4090") is True
+
+
+def test_candidate_datacenters_keeps_preferred_order_with_available_gpus() -> None:
+    datacenters = [
+        {"id": "EU-RO-1", "gpuAvailability": [{"gpuId": "NVIDIA RTX A5000", "stockStatus": ""}]},
+        {"id": "US-NC-1", "gpuAvailability": [{"gpuId": "NVIDIA GeForce RTX 4090", "stockStatus": "High"}]},
+        {"id": "US-GA-2", "gpuAvailability": [{"gpuId": "NVIDIA L4", "stockStatus": "High"}]},
+    ]
+
+    assert candidate_datacenters(
+        datacenters,
+        preferred_gpu_ids=("NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"),
+        candidate_data_center_ids=("EU-RO-1", "US-NC-1", "US-GA-2"),
+    ) == ("EU-RO-1", "US-NC-1")
+
+
+def test_available_gpus_for_datacenter_returns_preference_order() -> None:
+    datacenters = [
+        {
+            "id": "US-NC-1",
+            "gpuAvailability": [
+                {"gpuId": "NVIDIA GeForce RTX 4090", "stockStatus": "High"},
+                {"gpuId": "NVIDIA RTX A5000", "stockStatus": "High"},
+            ],
+        }
+    ]
+
+    assert available_gpus_for_datacenter(
+        datacenters,
+        data_center_id="US-NC-1",
+        preferred_gpu_ids=("NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"),
+    ) == ("NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090")
 
 
 def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> None:
