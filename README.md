@@ -195,7 +195,7 @@ The default RunPod settings are now reliability-first and cost-biased:
 
 The RunPod helper now also performs a hard GPU smoke test before syncing labels or starting training, so it fails fast if CUDA is not actually usable inside the pod.
 Successful RunPod cache volumes are now retained for 3 days by default so the next run can reuse the checkout, virtualenv, and model caches, but pods are still deleted at the end of every run.
-If a retained cache volume gets pinned to a region that no longer has usable capacity, the helper now preserves that cache by default and fails clearly. Opt into relocation with `RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE=1`, or delete the cache explicitly with `make runpod-cleanup`.
+If a retained cache volume gets pinned to a region that no longer has your preferred GPU, the helper now tries a bounded same-datacenter fallback GPU list before giving up. If none of those GPUs can be allocated, it preserves the cache by default and fails clearly. Opt into relocation with `RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE=1`, or delete the cache explicitly with `make runpod-cleanup`.
 Pod creation now uses the official RunPod REST API directly, with `runpodctl` left in place for the simpler discovery, SSH, volume, and cleanup operations.
 
 If you want to avoid cloud spend entirely, use a separate Windows 11 GPU box over SSH via WSL:
@@ -305,6 +305,8 @@ Default model output directory:
 ## Common Commands
 
 ```bash
+make install-git-hooks
+make secret-scan
 make retrain
 make benchmark
 make benchmark-variants EVAL_SUBREDDIT=seattle
@@ -314,6 +316,12 @@ make bridge RETRAIN_EVERY=25
 make benchmark EVAL_SUBREDDIT=seattle SPLIT_STRATEGY=time
 python3 -m ruff check src tests
 PYTHONPATH=src python3 -m pytest
+```
+
+The repo can also install a local pre-commit hook that scans staged files for likely secrets before commit:
+
+```bash
+make install-git-hooks
 ```
 
 ## Documentation

@@ -18,6 +18,8 @@ The normal operator entry points are still the repository make targets:
 
 - `make runpod-bootstrap`
 - `make runpod-cleanup`
+- `make install-git-hooks`
+- `make secret-scan`
 - `make retrain`
 - `make benchmark`
 - `make benchmark-variants`
@@ -39,13 +41,28 @@ REMOTE=wsl
 Examples:
 
 ```bash
+make install-git-hooks
+make secret-scan
 make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark-variants REMOTE=runpod EVAL_SUBREDDIT=seattle
+make retrain REMOTE=runpod RUNPOD_FALLBACK_GPU_TYPES="NVIDIA L4,NVIDIA RTX A4000" EVAL_SUBREDDIT=seattle
 make runpod-cleanup
 make retrain REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
 ```
+
+Useful make variables for the RunPod path:
+
+- `RUNPOD_GPU_TYPES`
+  - primary GPU preference order used when choosing a new datacenter and volume
+- `RUNPOD_FALLBACK_GPU_TYPES`
+  - extra same-datacenter GPUs to try when reusing an existing retained volume
+- `RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE`
+  - set to `1` to relocate a retained cache volume when neither the preferred nor fallback GPU list can be allocated in its pinned datacenter
+- `REMOTE_RUN_TIMEOUT`
+  - max remote target runtime in seconds before it is terminated
+  - defaults to `21600` (6 hours)
 
 Useful make variables for the WSL path:
 
@@ -65,6 +82,38 @@ Useful make variables for the WSL path:
 - `REMOTE_RUN_TIMEOUT`
   - max remote target runtime in seconds before it is terminated
   - defaults to `21600` (6 hours)
+
+## `make install-git-hooks`
+
+Install the repository-managed Git pre-commit hook path.
+
+```bash
+make install-git-hooks
+```
+
+That command sets:
+
+- `git config core.hooksPath .githooks`
+
+The current pre-commit hook runs the staged secret scan before commit.
+
+## `make secret-scan`
+
+Scan tracked repository files for likely secrets.
+
+```bash
+make secret-scan
+```
+
+The scanner:
+
+- skips ignored local artifact areas such as `data/processed/` and `models/`
+- is used by the repository pre-commit hook on staged files
+- is also intended to run in CI
+
+If you need to suppress a false positive on a specific line, add:
+
+- `secret-scan: allow`
 
 ## `ask-seattle train`
 

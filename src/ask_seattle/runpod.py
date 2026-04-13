@@ -51,6 +51,15 @@ DEFAULT_RUNPOD_GPU_TYPES = (
     "NVIDIA GeForce RTX 4090",
     "NVIDIA A40",
 )
+DEFAULT_RUNPOD_FALLBACK_GPU_TYPES = (
+    "NVIDIA RTX A4500",
+    "NVIDIA RTX 4000 Ada Generation",
+    "NVIDIA L4",
+    "NVIDIA RTX A4000",
+    "NVIDIA GeForce RTX 5090",
+    "NVIDIA RTX 6000 Ada Generation",
+    "NVIDIA RTX A6000",
+)
 DEFAULT_RUNPOD_DATA_CENTER_IDS = (
     "EU-RO-1",
     "US-NC-1",
@@ -73,6 +82,7 @@ class RunPodConfig:
     volume_size_gb: int
     volume_retention_seconds: int
     gpu_types: tuple[str, ...]
+    fallback_gpu_types: tuple[str, ...]
     data_center_ids: tuple[str, ...]
     template_id: str | None
     image: str
@@ -278,6 +288,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
     parser.add_argument("--volume-size-gb", type=int, default=DEFAULT_RUNPOD_VOLUME_SIZE_GB)
     parser.add_argument("--volume-retention-seconds", type=int, default=DEFAULT_RUNPOD_VOLUME_RETENTION_SECONDS)
     parser.add_argument("--gpu-types", default=",".join(DEFAULT_RUNPOD_GPU_TYPES))
+    parser.add_argument("--fallback-gpu-types", default=",".join(DEFAULT_RUNPOD_FALLBACK_GPU_TYPES))
     parser.add_argument("--data-center-ids", default=",".join(DEFAULT_RUNPOD_DATA_CENTER_IDS))
     parser.add_argument("--template-id", default=DEFAULT_RUNPOD_TEMPLATE_ID)
     parser.add_argument("--image", default=DEFAULT_RUNPOD_IMAGE)
@@ -324,6 +335,7 @@ def config_from_args(args: argparse.Namespace) -> RunPodConfig:
         volume_size_gb=int(args.volume_size_gb),
         volume_retention_seconds=int(args.volume_retention_seconds),
         gpu_types=_comma_list(args.gpu_types),
+        fallback_gpu_types=_comma_list(args.fallback_gpu_types),
         data_center_ids=_comma_list(args.data_center_ids),
         template_id=str(args.template_id).strip() or None,
         image=str(args.image),
@@ -435,24 +447,29 @@ def provision_volume_and_pod(config: RunPodConfig, *, pod_name: str) -> tuple[Ne
         datacenters = list_datacenters()
         existing_volume = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
         if existing_volume is not None:
+            existing_gpu_ids = candidate_gpu_ids_for_existing_volume(
+                config,
+                datacenters=datacenters,
+                data_center_id=existing_volume.data_center_id,
+            )
             try:
                 gpu_id, pod = create_pod_in_datacenter(
                     config,
-                    datacenters=datacenters,
                     pod_name=pod_name,
                     data_center_id=existing_volume.data_center_id,
                     network_volume_id=existing_volume.volume_id,
+                    gpu_ids=existing_gpu_ids,
                 )
                 return existing_volume, gpu_id, existing_volume.data_center_id, pod
-            except subprocess.CalledProcessError as exc:
-                if not is_retryable_pod_create_error(exc):
+            except (subprocess.CalledProcessError, RunPodOrchestrationError) as exc:
+                if isinstance(exc, subprocess.CalledProcessError) and not is_retryable_pod_create_error(exc):
                     raise
                 if not config.evict_volume_on_capacity_failure:
                     raise RunPodOrchestrationError(
-                        "cached RunPod volume is pinned to a datacenter that could not allocate the requested GPU. "
-                        "The cache volume was preserved to honor the retention policy. "
+                        "cached RunPod volume is pinned to a datacenter that could not allocate a preferred or fallback GPU. "
+                        "The helper tried same-datacenter GPU fallback first, and the cache volume was preserved to honor the retention policy. "
                         "Retry later or rerun with volume eviction enabled to relocate it. "
-                        f"Provider output: {summarize_called_process_error(exc)}"
+                        f"Provider output: {summarize_exception(exc)}"
                     ) from exc
                 delete_network_volume(existing_volume.volume_id)
                 delete_volume_lease(config)
@@ -463,10 +480,10 @@ def provision_volume_and_pod(config: RunPodConfig, *, pod_name: str) -> tuple[Ne
             try:
                 gpu_id, pod = create_pod_in_datacenter(
                     config,
-                    datacenters=datacenters,
                     pod_name=pod_name,
                     data_center_id=data_center_id,
                     network_volume_id=volume.volume_id,
+                    gpu_ids=config.gpu_types,
                 )
                 return volume, gpu_id, data_center_id, pod
             except subprocess.CalledProcessError as exc:
@@ -494,19 +511,14 @@ def provision_volume_and_pod(config: RunPodConfig, *, pod_name: str) -> tuple[Ne
 def create_pod_in_datacenter(
     config: RunPodConfig,
     *,
-    datacenters: list[dict[str, Any]],
     pod_name: str,
     data_center_id: str,
     network_volume_id: str,
+    gpu_ids: tuple[str, ...],
 ) -> tuple[str, PodInfo]:
-    gpu_ids = available_gpus_for_datacenter(
-        datacenters,
-        data_center_id=data_center_id,
-        preferred_gpu_ids=config.gpu_types,
-    )
     if not gpu_ids:
         raise RunPodOrchestrationError(
-            f"no requested GPU type was available in datacenter {data_center_id}"
+            f"no configured GPU type was available in datacenter {data_center_id}"
         )
     last_error: subprocess.CalledProcessError | None = None
     for gpu_id in gpu_ids:
@@ -529,8 +541,33 @@ def create_pod_in_datacenter(
     if last_error is not None:
         raise last_error
     raise RunPodOrchestrationError(
-        f"no requested GPU type could be provisioned in datacenter {data_center_id}"
+        f"no configured GPU type could be provisioned in datacenter {data_center_id}"
     )
+
+
+def candidate_gpu_ids_for_existing_volume(
+    config: RunPodConfig,
+    *,
+    datacenters: list[dict[str, Any]],
+    data_center_id: str,
+) -> tuple[str, ...]:
+    return available_gpus_for_datacenter(
+        datacenters,
+        data_center_id=data_center_id,
+        preferred_gpu_ids=ordered_gpu_preferences(config.gpu_types, config.fallback_gpu_types),
+    )
+
+
+def ordered_gpu_preferences(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for gpu_id in group:
+            if gpu_id in seen:
+                continue
+            seen.add(gpu_id)
+            ordered.append(gpu_id)
+    return tuple(ordered)
 
 
 def create_pod(

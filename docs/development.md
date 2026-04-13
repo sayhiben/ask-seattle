@@ -40,6 +40,12 @@ Run lint:
 python3 -m ruff check src tests
 ```
 
+Run the repo secret scan:
+
+```bash
+make secret-scan
+```
+
 Check the userscript syntax:
 
 ```bash
@@ -138,6 +144,12 @@ Ignored local artifacts:
 
 Do not commit reviewed label files or local model bundles.
 
+To block accidental secret commits locally, install the repo-managed pre-commit hook:
+
+```bash
+make install-git-hooks
+```
+
 ## Before You Finish A Change
 
 Minimum verification for most code changes:
@@ -145,6 +157,7 @@ Minimum verification for most code changes:
 ```bash
 python3 -m ruff check src tests
 PYTHONPATH=src python3 -m pytest
+make secret-scan
 node --check userscripts/ask-seattle-reddit-helper.user.js
 ```
 

@@ -120,7 +120,9 @@ By default, a successful cache volume is retained for 72 hours so the next run c
 
 Expired cache volumes are deleted opportunistically at the start of the next RunPod command.
 
-If a retained cache volume is pinned to a datacenter that no longer has the requested GPU capacity, the helper preserves that volume by default and fails clearly instead of silently discarding cached state. If you want to relocate the cache to another datacenter, opt in with:
+If a retained cache volume is pinned to a datacenter that no longer has your preferred GPU capacity, the helper first tries a bounded same-datacenter fallback GPU list. That keeps the same network volume warm when a slightly weaker or slightly more expensive GPU is the only thing available in that region.
+
+If neither the preferred nor fallback GPU list can be allocated in that datacenter, the helper preserves that volume by default and fails clearly instead of silently discarding cached state. If you want to relocate the cache to another datacenter, opt in with:
 
 ```bash
 make retrain REMOTE=runpod RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE=1 EVAL_SUBREDDIT=seattle
@@ -137,6 +139,7 @@ Defaults are controlled through Make variables:
 - `RUNPOD_VOLUME_SIZE_GB`
 - `RUNPOD_VOLUME_RETENTION_SECONDS`
 - `RUNPOD_GPU_TYPES`
+- `RUNPOD_FALLBACK_GPU_TYPES`
 - `RUNPOD_DATA_CENTER_IDS`
 - `RUNPOD_TEMPLATE_ID`
 - `RUNPOD_SSH_KEY_PATH`
@@ -147,6 +150,16 @@ The default GPU preference order is:
 1. `NVIDIA RTX A5000`
 2. `NVIDIA GeForce RTX 4090`
 3. `NVIDIA A40`
+
+The default same-datacenter fallback order for retained volumes is:
+
+1. `NVIDIA RTX A4500`
+2. `NVIDIA RTX 4000 Ada Generation`
+3. `NVIDIA L4`
+4. `NVIDIA RTX A4000`
+5. `NVIDIA GeForce RTX 5090`
+6. `NVIDIA RTX 6000 Ada Generation`
+7. `NVIDIA RTX A6000`
 
 The default template is:
 
