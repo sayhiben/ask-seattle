@@ -88,7 +88,7 @@ PY
 fi
 
 if [[ ! -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
-  python3 -m venv --system-site-packages "${REMOTE_VENV_DIR}"
+  python3 -m venv "${REMOTE_VENV_DIR}"
 fi
 
 source "${REMOTE_VENV_DIR}/bin/activate"
