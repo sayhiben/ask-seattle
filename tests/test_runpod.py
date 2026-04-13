@@ -80,6 +80,15 @@ def test_datacenter_has_gpu_ignores_unavailable_stock() -> None:
     assert datacenter_has_gpu(datacenter, "NVIDIA GeForce RTX 4090") is False
 
 
+def test_datacenter_has_gpu_accepts_blank_stock_status_when_gpu_is_listed() -> None:
+    datacenter = {
+        "id": "EU-RO-1",
+        "gpuAvailability": [{"gpuId": "NVIDIA GeForce RTX 4090", "stockStatus": ""}],
+    }
+
+    assert datacenter_has_gpu(datacenter, "NVIDIA GeForce RTX 4090") is True
+
+
 def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> None:
     config = RunPodConfig(
         repo_root=Path("/tmp/repo"),

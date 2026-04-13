@@ -828,7 +828,7 @@ def datacenter_has_gpu(datacenter: dict[str, Any], gpu_id: str) -> bool:
         available_flag = item.get("available")
         if isinstance(available_flag, bool):
             return available_flag
-        return stock_status not in {"", "unavailable", "out", "outofstock", "none"}
+        return stock_status not in {"unavailable", "out", "outofstock", "none"}
     return False
 
 
