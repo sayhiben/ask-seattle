@@ -93,6 +93,23 @@ fi
 
 source "${REMOTE_VENV_DIR}/bin/activate"
 python -m pip install --upgrade pip
+if ! python - <<'PY'
+from importlib import import_module
+
+try:
+    torch = import_module("torch")
+except Exception:
+    raise SystemExit(1)
+
+version = torch.__version__.split("+", 1)[0]
+major, minor, *_ = [int(part) for part in version.split(".")]
+raise SystemExit(0 if (major, minor) >= (2, 6) else 1)
+PY
+then
+  python -m pip install --upgrade \
+    --index-url "https://download.pytorch.org/whl/cu124" \
+    "torch==2.6.0"
+fi
 python -m pip install -e ".[dev]"
 python -m pip install \
   "accelerate==1.13.0" \
