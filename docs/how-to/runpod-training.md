@@ -152,6 +152,8 @@ The default template is:
 
 The helper still accepts a raw image override, but the default is now template-first because that has been more reliable than direct image selection on RunPod.
 
+The remote bootstrap also installs a pinned, known-good Python model stack instead of floating to the latest Hugging Face releases on every run. That keeps the remote training environment aligned with the versions already validated in this repository.
+
 The default cache retention is:
 
 - `RUNPOD_VOLUME_RETENTION_SECONDS=259200`

@@ -95,12 +95,12 @@ source "${REMOTE_VENV_DIR}/bin/activate"
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 python -m pip install \
-  "accelerate>=0.33" \
-  "datasets>=2.20" \
-  "peft>=0.12" \
-  "sentence-transformers>=3.0" \
-  "trl>=0.10" \
-  "transformers>=4.48"
+  "accelerate==1.13.0" \
+  "datasets==4.8.4" \
+  "peft==0.18.1" \
+  "sentence-transformers==5.4.0" \
+  "trl==1.1.0" \
+  "transformers==4.56.2"
 python - <<'PY'
 import torch
 
