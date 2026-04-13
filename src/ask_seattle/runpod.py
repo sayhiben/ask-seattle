@@ -29,6 +29,7 @@ REMOTE_LOG_ROOT = "/workspace/runpod-logs"
 REMOTE_LABEL_ROOT = "/workspace/runpod-inputs"
 REMOTE_VENV_DIR = "/workspace/.venv"
 REMOTE_CACHE_ROOT = "/workspace/.cache"
+RSYNC_FLAGS = ("-rlptz",)
 DEFAULT_RUNPOD_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
 DEFAULT_RUNPOD_VOLUME_MOUNT_PATH = "/workspace"
 DEFAULT_RUNPOD_CONTAINER_DISK_GB = 50
@@ -462,7 +463,7 @@ def sync_labels_to_pod(config: RunPodConfig, ssh_endpoint: PodSshEndpoint, run_i
     _run_subprocess(
         (
             "rsync",
-            "-az",
+            *RSYNC_FLAGS,
             "-e",
             f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
             str(config.labels_path),
@@ -518,7 +519,7 @@ def pull_artifacts(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, target
         _run_subprocess(
             (
                 "rsync",
-                "-az",
+                *RSYNC_FLAGS,
                 "--delete",
                 "-e",
                 f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
@@ -535,7 +536,7 @@ def pull_remote_logs(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, run_
     _run_subprocess(
         (
             "rsync",
-            "-az",
+            *RSYNC_FLAGS,
             "-e",
             f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
             remote_dir,
