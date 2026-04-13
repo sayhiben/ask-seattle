@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import shlex
 import shutil
 import subprocess
@@ -195,6 +196,24 @@ def run_command(args: argparse.Namespace) -> int:
 
     ready_pod: PodInfo | None = None
     retain_volume = existing_volume_before_run is not None and existing_volume_before_run.volume_id == volume.volume_id
+    cleanup_state: dict[str, Any] = {
+        "pod_id": pod.pod_id,
+        "volume_id": volume.volume_id,
+        "delete_volume": existing_volume_before_run is None,
+    }
+    previous_sigint = signal.getsignal(signal.SIGINT)
+    previous_sigterm = signal.getsignal(signal.SIGTERM)
+
+    def _handle_signal(signum: int, frame: Any) -> None:
+        cleanup_runpod_resources(
+            pod_id=str(cleanup_state.get("pod_id") or ""),
+            volume_id=str(cleanup_state.get("volume_id") or ""),
+            delete_volume=bool(cleanup_state.get("delete_volume")),
+        )
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
     try:
         ready_pod = wait_for_pod_ready(config, pod.pod_id, pod_name=pod.name)
         if ready_pod.ssh_endpoint is None:
@@ -203,6 +222,7 @@ def run_command(args: argparse.Namespace) -> int:
         ensure_remote_rsync(ready_pod.ssh_endpoint)
         remote_labels_path = sync_labels_to_pod(config, ready_pod.ssh_endpoint, run_id)
         retain_volume = True
+        cleanup_state["delete_volume"] = False
         run_remote_bootstrap(
             config,
             ssh_endpoint=ready_pod.ssh_endpoint,
@@ -230,11 +250,16 @@ def run_command(args: argparse.Namespace) -> int:
         write_json(log_dir / "run_metadata.local.json", local_metadata)
         raise
     finally:
-        delete_pod(pod.pod_id)
+        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGTERM, previous_sigterm)
+        cleanup_runpod_resources(
+            pod_id=pod.pod_id,
+            volume_id=volume.volume_id,
+            delete_volume=(not retain_volume and existing_volume_before_run is None),
+        )
         if retain_volume:
             record_volume_retention(config, volume)
         elif existing_volume_before_run is None:
-            delete_network_volume(volume.volume_id)
             delete_volume_lease(config)
 
 
@@ -992,6 +1017,12 @@ def delete_network_volume(volume_id: str) -> None:
     if not volume_id:
         return
     subprocess.run(("runpodctl", "network-volume", "delete", volume_id), check=False, capture_output=True, text=True)
+
+
+def cleanup_runpod_resources(*, pod_id: str, volume_id: str, delete_volume: bool) -> None:
+    delete_pod(pod_id)
+    if delete_volume:
+        delete_network_volume(volume_id)
 
 
 def cleanup_expired_cached_volume(config: RunPodConfig) -> None:
