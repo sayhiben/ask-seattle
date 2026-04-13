@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.6
+// @version      0.1.8
 // @description  Adds auto-checking, skip, re-check, binary labeling, and side-by-side model checks for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
@@ -26,7 +26,10 @@
   const HOTKEY_NEGATIVE = 'n';
   const AUTO_CHECK_RETRIES = 8;
   const AUTO_CHECK_DELAY_MS = 400;
+  const CHECK_TIMEOUT_MS = 10000;
+  const COMPARISON_TIMEOUT_MS = 120000;
   let lastAutoCheckedKey = '';
+  let currentCheckToken = 0;
 
   function textFrom(selector, root = document) {
     const node = root.querySelector(selector);
@@ -238,14 +241,15 @@
     localStorage.setItem(AUTO_NEXT_KEY, enabled ? '1' : '0');
   }
 
-  function bridgePost(path, payload) {
+  function bridgePost(path, payload, options = {}) {
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : CHECK_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
       GM_xmlhttpRequest({
         method: 'POST',
         url: `${BRIDGE_URL}${path}`,
         headers: { 'Content-Type': 'application/json' },
         data: JSON.stringify(payload),
-        timeout: 10000,
+        timeout: timeoutMs,
         onload: (response) => {
           try {
             const body = JSON.parse(response.responseText || '{}');
@@ -300,19 +304,10 @@
   }
 
   function displayNameForModel(entry) {
+    if (entry.display_name) return entry.display_name;
     const raw = String(entry.name || entry.model_family || entry.model_name || '').toLowerCase();
     if (raw.includes('tfidf')) return 'TF-IDF';
-    if (raw.includes('semantic')) return 'Semantic';
-    if (raw.includes('transformer')) return 'Transformer';
     return entry.name || entry.model_name || 'Model';
-  }
-
-  function modelSortRank(entry) {
-    const label = displayNameForModel(entry);
-    if (label === 'TF-IDF') return 0;
-    if (label === 'Semantic') return 1;
-    if (label === 'Transformer') return 2;
-    return 99;
   }
 
   function resultTone(result) {
@@ -335,14 +330,106 @@
     container.replaceChildren(row);
   }
 
+  function loadingComparisonEntries(models) {
+    return (models || []).map((model) => ({
+      ...model,
+      loading: true,
+    }));
+  }
+
+  function comparisonStatusText(baseStatusText, completed, total) {
+    if (!total || completed >= total) return baseStatusText;
+    return `${baseStatusText} | model checks ${completed}/${total}`;
+  }
+
   function renderEvaluationResults(entries) {
     const container = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations`);
     if (!container) return;
     container.replaceChildren();
 
-    const orderedEntries = [...entries].sort((left, right) => modelSortRank(left) - modelSortRank(right));
+    if (!entries || entries.length === 0) {
+      const row = document.createElement('div');
+      row.textContent = 'No comparison models loaded.';
+      row.style.border = '1px solid #d0d0d0';
+      row.style.borderRadius = '6px';
+      row.style.padding = '6px 8px';
+      row.style.background = '#f2f2f2';
+      row.style.color = '#555';
+      row.style.gridColumn = '1 / -1';
+      container.append(row);
+      return;
+    }
 
-    for (const entry of orderedEntries) {
+    for (const entry of entries) {
+      if (entry.loading) {
+        const pendingRow = document.createElement('div');
+        pendingRow.style.display = 'flex';
+        pendingRow.style.flexDirection = 'column';
+        pendingRow.style.gap = '6px';
+        pendingRow.style.border = '1px solid #8a6d1d';
+        pendingRow.style.borderRadius = '6px';
+        pendingRow.style.padding = '8px';
+        pendingRow.style.background = '#fff7e0';
+        pendingRow.style.minHeight = '88px';
+
+        const modelLabel = document.createElement('div');
+        modelLabel.textContent = displayNameForModel(entry);
+        modelLabel.style.fontWeight = '600';
+        modelLabel.style.fontSize = '12px';
+
+        const verdict = document.createElement('div');
+        verdict.textContent = 'LOADING...';
+        verdict.style.fontWeight = '700';
+        verdict.style.fontSize = '13px';
+        verdict.style.lineHeight = '1.2';
+        verdict.style.color = '#6f5717';
+
+        const detail = document.createElement('div');
+        detail.textContent = 'Waiting for model result';
+        detail.style.fontSize = '11px';
+        detail.style.lineHeight = '1.3';
+        detail.style.color = '#6f5717';
+
+        pendingRow.append(modelLabel, verdict, detail);
+        container.append(pendingRow);
+        continue;
+      }
+
+      if (entry.error) {
+        const errorRow = document.createElement('div');
+        errorRow.style.display = 'flex';
+        errorRow.style.flexDirection = 'column';
+        errorRow.style.gap = '6px';
+        errorRow.style.border = '1px solid #b00020';
+        errorRow.style.borderRadius = '6px';
+        errorRow.style.padding = '8px';
+        errorRow.style.background = '#fdecef';
+        errorRow.style.minHeight = '88px';
+
+        const modelLabel = document.createElement('div');
+        modelLabel.textContent = displayNameForModel(entry);
+        modelLabel.style.fontWeight = '600';
+        modelLabel.style.fontSize = '12px';
+
+        const verdict = document.createElement('div');
+        verdict.textContent = 'CHECK FAILED';
+        verdict.style.fontWeight = '700';
+        verdict.style.fontSize = '13px';
+        verdict.style.lineHeight = '1.2';
+        verdict.style.color = '#b00020';
+
+        const detail = document.createElement('div');
+        detail.textContent = String(entry.error || 'Unknown comparison error');
+        detail.style.fontSize = '11px';
+        detail.style.lineHeight = '1.3';
+        detail.style.color = '#8a1111';
+        detail.style.wordBreak = 'break-word';
+
+        errorRow.append(modelLabel, verdict, detail);
+        container.append(errorRow);
+        continue;
+      }
+
       const result = entry.result || {};
       const row = document.createElement('div');
       row.style.display = 'flex';
@@ -404,6 +491,46 @@
     }
   }
 
+  async function loadComparisonResults(checkToken, post, models, baseStatusText) {
+    if (!models || models.length === 0) {
+      renderEvaluationResults([]);
+      setStatus(baseStatusText);
+      return;
+    }
+
+    const entries = loadingComparisonEntries(models);
+    let completed = 0;
+    renderEvaluationResults(entries);
+    setStatus(comparisonStatusText(baseStatusText, completed, models.length));
+
+    await Promise.all(
+      models.map(async (model, index) => {
+        try {
+          const response = await bridgePost(
+            '/check-comparison',
+            {
+              ...post,
+              name: model.name,
+            },
+            { timeoutMs: COMPARISON_TIMEOUT_MS }
+          );
+          if (checkToken !== currentCheckToken) return;
+          entries[index] = response.comparison || { ...model, error: 'Missing comparison payload' };
+        } catch (error) {
+          if (checkToken !== currentCheckToken) return;
+          entries[index] = {
+            ...model,
+            error: error.message || 'Unknown comparison error',
+          };
+        }
+        if (checkToken !== currentCheckToken) return;
+        completed += 1;
+        renderEvaluationResults(entries);
+        setStatus(comparisonStatusText(baseStatusText, completed, models.length));
+      })
+    );
+  }
+
   function autoRetrainStatusText(autoRetrain) {
     if (!autoRetrain || autoRetrain.enabled !== true) return '';
     if (autoRetrain.scheduled) {
@@ -434,6 +561,7 @@
 
   async function checkPost(options = {}) {
     const { post: providedPost = null, auto = false } = options;
+    const checkToken = ++currentCheckToken;
     if (!isCommentPage()) {
       setStatus('Open a post page before checking or training.', true);
       return;
@@ -448,9 +576,10 @@
 
     setStatus(auto ? 'Auto-checking...' : 'Checking...');
     setDecisionState('Checking current post...', 'pending');
-    setEvaluationResultsPending('Checking TF-IDF, semantic, and transformer models...');
+    setEvaluationResultsPending('Checking benchmark-suite models...');
     try {
-      const response = await bridgePost('/check', post);
+      const response = await bridgePost('/check', { ...post, include_comparisons: false });
+      if (checkToken !== currentCheckToken) return;
       const result = response.result;
       const bandLabel = String(result.confidence_band || '').toUpperCase();
       const verdictMessage =
@@ -460,11 +589,11 @@
             : 'Looks like askseattle (borderline)'
           : 'Does not look like askseattle';
       setDecisionState(verdictMessage, result.label === 'askseattle' ? 'flag' : 'pass');
-      renderEvaluationResults([{ name: result.model_name, result }, ...(response.comparisons || [])]);
-      setStatus(
-        `${result.confidence_band} ${result.label} score=${result.score.toFixed(3)} low=${result.low_threshold} high=${result.high_threshold}`
-      );
+      const baseStatusText = `${result.confidence_band} ${result.label} score=${result.score.toFixed(3)} low=${result.low_threshold} high=${result.high_threshold}`;
+      const comparisonModels = Array.isArray(response.comparison_models) ? response.comparison_models : [];
+      void loadComparisonResults(checkToken, post, comparisonModels, baseStatusText);
     } catch (error) {
+      if (checkToken !== currentCheckToken) return;
       setDecisionState('Check failed', 'error');
       setEvaluationResultsPending('Check failed.');
       setStatus(error.message, true);
@@ -680,6 +809,7 @@
     let lastUrl = window.location.href;
     window.setInterval(() => {
       if (window.location.href === lastUrl) return;
+      currentCheckToken += 1;
       lastUrl = window.location.href;
       if (!isCommentPage()) {
         seedQueueFromPage(false);

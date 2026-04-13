@@ -12,6 +12,8 @@ Inside scope:
 - local reviewed-label storage
 - local model training
 - local `/check` inference through a localhost bridge
+- local multi-model benchmark comparison
+- optional remote execution of the existing train and benchmark targets on contributor-managed hardware
 
 Outside scope:
 
@@ -19,6 +21,8 @@ Outside scope:
 - Reddit API writes
 - moderation actions
 - hosted model services
+
+The public GitHub repository is code and docs only. Reviewed labels and any other training corpus material stay local to each contributor and may be synced to remote execution hosts per run, but they are not repository content.
 
 ## End-To-End Flow
 
@@ -28,9 +32,12 @@ flowchart TD
     B -->|"POST /check"| C["Local bridge"]
     B -->|"POST /train"| C
     C --> D["Reviewed labels JSONL"]
-    D --> E["ask-seattle train"]
+    D --> E["ask-seattle retrain-all"]
     E --> F["tfidf_logreg.joblib"]
     F --> C
+    E --> G["suite_input.json + suite model artifacts"]
+    G --> H["ask-seattle benchmark-suite"]
+    H --> C
 ```
 
 ## Main Components
@@ -57,6 +64,7 @@ File:
 Responsibilities:
 
 - load the current model bundle
+- optionally load comparison bundles from the benchmark-suite summary
 - expose localhost-only HTTP endpoints
 - classify posts
 - append reviewed labels
@@ -85,6 +93,7 @@ File:
 Responsibilities:
 
 - define the TF-IDF + logistic regression pipeline
+- define the shared runtime interfaces used by semantic, encoder-transformer, and decoder-LLM bundles
 - build deterministic train/calibration/test splits
 - calibrate probabilities
 - select low and high thresholds
@@ -99,10 +108,13 @@ File:
 Responsibilities:
 
 - prepare reviewed labels for training
-- fit the model and calibrator
-- evaluate the held-out test slice
+- fit the operational TF-IDF model and calibrator
+- retrain the full six-model suite without held-out benchmarking
+- evaluate held-out slices later from the trained suite artifacts
 - write `tfidf_logreg.joblib`
 - write `training_summary.json`
+- build one persisted benchmark-suite split manifest
+- benchmark the six comparison models against that shared manifest
 
 ### CLI
 
@@ -112,7 +124,7 @@ File:
 
 Responsibilities:
 
-- expose `train`, `check`, and `serve-bridge`
+- expose `train`, `retrain-all`, `check`, `benchmark-variants`, `benchmark-suite`, and `serve-bridge`
 
 ## Design Choices
 
@@ -120,9 +132,24 @@ Responsibilities:
 
 The bridge accepts title and body text that is already visible in the browser. This avoids server-side Reddit fetching and keeps the supported workflow narrow and auditable.
 
-### One cheap local model path
+### One cheap operational model path
 
-The model is TF-IDF + logistic regression because it is fast, easy to inspect, cheap to retrain, and strong enough for repeated wording patterns.
+The operational retrain path is TF-IDF + logistic regression because it is fast, easy to inspect, cheap to retrain, and strong enough for repeated wording patterns.
+
+That does not mean the repository only supports one model family. The benchmark suite now compares six local model paths on the same split so the project can make evidence-based promotion decisions without changing the default bridge model prematurely.
+
+### One shared benchmark manifest
+
+The benchmark suite writes a shared `suite_input.json` manifest and requires every model family to consume it.
+
+That keeps the comparison honest:
+
+- same prepared rows
+- same train/calibration/test membership
+- same evaluation subreddit restriction
+- same calibration and threshold-selection contract
+
+Without that, model-to-model comparisons would drift into "different task, different numbers" instead of a real benchmark.
 
 ### Precision-first thresholds
 
@@ -144,6 +171,8 @@ The current implementation should continue to satisfy these:
 - browser-originated input only
 - local filesystem artifacts only
 - binary labels only
+- the operational retrain path remains local TF-IDF
+- the benchmark suite remains local-first and runnable on the MacBook Pro M2 32 GB, even if some model families are slow
 
 If you change one of those, update the architecture docs, README, and public references together.
 

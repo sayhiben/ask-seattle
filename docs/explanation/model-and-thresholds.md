@@ -16,17 +16,29 @@ That choice is deliberate:
 
 This project does not currently need a larger or more complex stack to prove the workflow.
 
-That said, the repository now also includes benchmark-only semantic and transformer paths so you can compare whether a denser model family improves the fuzzy edge of the decision boundary without changing the bridge runtime.
+That said, the repository now also includes a six-model benchmark suite so you can compare whether denser semantic, encoder-transformer, and decoder-LLM families improve the fuzzy edge of the decision boundary without changing the operational TF-IDF retrain path.
 
-The transformer benchmark uses title/body pair encoding instead of one flattened text string. The body sequence carries the same shared metadata tokens used elsewhere, and the training loss is class-weighted so the minority positive class gets more influence during fine-tuning.
+The comparison stack currently includes:
+
+- TF-IDF baseline
+- tuned MiniLM semantic model
+- Qwen3 embedding semantic model
+- DeBERTa-v3-small encoder classifier
+- ModernBERT-base encoder classifier
+- Qwen3-1.7B LoRA decoder classifier
+
+The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They now compare plain versus balanced cross-entropy, use calibration PR-AUC for early stopping, and keep the better candidate before test evaluation.
+
+The decoder-LLM benchmark uses the same title/body/metadata content, but framed as a fixed binary prompt. The current prompt is a compact contextual English instruction that exposes only the fields that materially helped on current data: title, raw body, post type, content domain, question-mark presence, low-text state, and crosspost state. It is trained to continue with exactly `askseattle` or `not_askseattle`, then scored by comparing those two label continuations directly.
 
 ## How The Model Sees A Post
 
-Each post is represented through three text channels:
+Each post is represented through four TF-IDF-side channels:
 
 - title words
 - body words
-- character n-grams across combined text
+- character n-grams across raw title/body text
+- exact metadata tokens
 
 That helps because:
 
@@ -34,7 +46,7 @@ That helps because:
 - bodies add context when present
 - character features help with phrasing variants, spelling variation, and short recurring templates
 
-When available, the shared text also carries normalized content metadata:
+When available, the shared representation also carries normalized content metadata:
 
 - `HAS_BODY`
 - `POST_TYPE`
@@ -48,13 +60,26 @@ When available, the shared text also carries normalized content metadata:
 
 That is especially useful for link, image, and crosspost submissions where the title alone often underspecifies the moderation intent.
 
-The word channels use a small custom stopword list for obvious filler words such as `the`, `and`, `is`, and `was`.
+For the operational TF-IDF model, those metadata tokens now live in a dedicated metadata feature channel rather than being mixed into the natural-language word and character channels. That keeps the feature audit cleaner and prevents the `char_wb` branch from overfitting our own synthetic marker syntax.
 
-That is intentionally conservative. Earlier experiments with adding `just`, `one`, and `some` as extra stopwords reduced recall on the `/r/seattle` benchmark, so they remain available as a benchmark variant rather than part of the default model.
+The lexical TF-IDF channels also normalize visible URLs to a neutral `URL` token before vectorization. That strips out brittle scaffolding such as `https`, `www`, and `://` from the word and character features while preserving cleaner structural signals through `CONTENT_DOMAIN` and `POST_TYPE`.
 
-The character channel is also intentionally downweighted relative to the original baseline. It still helps with phrasing variants and short templates, but it now has less influence when it starts overfitting generic fragments.
+The word channels use a small custom stopword list for obvious filler words such as `the`, `and`, `is`, and `was`. The current default also excludes `just`, `one`, and `some`.
 
-The training harness also applies conservative slice-aware positive weighting. If the train split contains very few positive low-text or sparse-media examples, those examples get extra weight during fitting so they are not drowned out by richer self-text positives.
+That remains intentionally conservative. Those three words were only promoted after the URL-normalization pass made the lexical audit cleaner and the held-out `/r/seattle` variant benchmark showed better strict-bucket and review recall with only a small review-precision tradeoff.
+
+The character channel is still intentionally downweighted relative to the original baseline. It now only sees raw title/body text, which makes it much less likely to surface fragments from synthetic markers such as `HAS_BODY:no` or `SPARSE_MEDIA:yes`.
+
+The default TF-IDF pipeline also raises `min_df` as the corpus grows:
+
+- fewer than `50` posts: `min_df=1`
+- `50` to `499` posts: `min_df=2`
+- `500` to `1999` posts: `min_df=3`
+- `2000+` posts: `min_df=5`
+
+That change is there to suppress brittle low-support phrases once the reviewed label set is no longer tiny.
+
+The training harness also applies conservative slice-aware positive weighting. Right now that weighting only uses `image` and `low_text` as active levers. `sparse_media` remains in the data model and benchmark output, but it is monitoring-only until the corpus has enough support to trust that slice.
 
 ## What TF-IDF Means Here
 
@@ -121,7 +146,14 @@ Training chooses it by maximizing recall subject to meeting the precision target
 
 This is the lower threshold for the `borderline` band.
 
-Training chooses it from the best-F1 calibration threshold, capped so it never exceeds the high threshold.
+Training now chooses it by maximizing recall subject to a minimum review-queue precision target on the calibration slice, capped so it never exceeds the high threshold.
+
+The TF-IDF review-threshold policy now uses a looser review precision target of `0.70`. That keeps the review queue recall-oriented without letting the threshold collapse into a pure catch-everything setting.
+
+The broader six-model suite still reports fixed-constraint comparison metrics at stricter common bars:
+
+- `auto_recall_at_precision_95`
+- `review_recall_at_precision_75`
 
 ## Confidence Bands
 
@@ -140,8 +172,6 @@ The predicted label is binary:
 - `not_askseattle` otherwise
 
 That means the bridge can expose more structure than a single yes/no answer without embedding moderation actions into the bridge itself.
-
-There is one extra policy layer on top of the raw thresholds: sparse media posts are treated more conservatively in the `high` bucket. If a post is an image or link post with little or no body text, it must clear a slightly higher effective high threshold to count as `high`. It can still land in `borderline` or `low` the normal way.
 
 ## Why Precision-First
 
@@ -177,7 +207,13 @@ Across model families, the most important metrics are:
 - `slice_metrics.low_text`
   - whether sparse-text posts behave differently from richer-text posts
 - `slice_metrics.sparse_media`
-  - whether link/image posts with little text should be trusted less aggressively
+  - monitoring-only until the slice has enough positive support to be trustworthy
+
+Each slice summary now also records:
+
+- train positive counts
+- test positive counts
+- `support_status = active | observational`
 
 Those metrics are more useful for system design than a single raw accuracy number because they tell you:
 
@@ -200,6 +236,40 @@ So the default policy is:
 The seed makes the benchmark reproducible. The shared split makes cross-model comparisons fair.
 
 The time-based split still exists, but it is now an explicit option for the point where the collection window is long enough that future-facing drift is the thing you actually want to measure.
+
+## What The Benchmark Suite Is Actually Comparing
+
+The benchmark suite keeps the evaluation contract aligned across all six models:
+
+- one persisted `suite_input.json` manifest
+- one split assignment reused by every family
+- one calibration flow
+- one threshold-selection policy
+- one normalized operating-metrics surface
+
+That matters because it lets you compare model families on the same deployment-relevant question instead of letting each path quietly define its own task.
+
+The implementation details differ by family:
+
+- TF-IDF uses sparse lexical features and a calibrated logistic-regression head
+- semantic models use dense embeddings plus a calibrated logistic-regression head
+- encoder transformers use sequence classification heads
+- the decoder-LLM uses LoRA fine-tuning plus two-label continuation scoring
+
+But all of them still end in the same bridge-facing concepts:
+
+- calibrated probability
+- low threshold
+- high threshold
+- `high`, `borderline`, and `low` confidence bands
+- operating metrics for auto vs review behavior
+
+Operationally, retraining and benchmarking are now separate steps:
+
+- `make retrain` retrains the operational TF-IDF model plus all six suite models and writes training-only summaries
+- `make benchmark` reads those trained suite artifacts later and computes held-out metrics only for the compatible models already on disk
+
+That split is deliberate. It keeps training failures, resumability, and held-out evaluation easier to reason about than one giant command that mixes all three concerns.
 
 ## What To Improve Before Adding Complexity
 

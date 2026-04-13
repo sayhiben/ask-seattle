@@ -21,6 +21,8 @@ Returns bridge health and startup configuration.
 
 Example response:
 
+This example is illustrative. Real `comparison_models` arrays depend on which benchmark-suite artifacts currently exist and load successfully.
+
 ```json
 {
   "ok": true,
@@ -31,16 +33,39 @@ Example response:
   "split_seed": 13,
   "comparison_models": [
     {
-      "name": "semantic_embedding",
+      "name": "semantic_minilm_tuned",
+      "display_name": "Semantic MiniLM",
       "model_family": "semantic_embedding",
       "model_id": "sentence-transformers/all-MiniLM-L6-v2",
-      "artifact_path": "/abs/path/to/semantic_embedding_logreg.joblib"
+      "artifact_path": "/abs/path/to/models/benchmark-suite/semantic_minilm_tuned/semantic_embedding_logreg.joblib"
     },
     {
-      "name": "transformer_sequence_classifier",
+      "name": "semantic_qwen3_embedding_0_6b",
+      "display_name": "Semantic Qwen3-Embedding",
+      "model_family": "semantic_embedding",
+      "model_id": "Qwen/Qwen3-Embedding-0.6B",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/semantic_qwen3_embedding_0_6b/semantic_embedding_logreg.joblib"
+    },
+    {
+      "name": "transformer_deberta_v3_small",
+      "display_name": "Transformer DeBERTa-v3-small",
       "model_family": "transformer_sequence_classifier",
       "model_id": "microsoft/deberta-v3-small",
-      "artifact_path": "/abs/path/to/transformer_bundle.joblib"
+      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_deberta_v3_small/transformer_bundle.joblib"
+    },
+    {
+      "name": "transformer_modernbert_base",
+      "display_name": "Transformer ModernBERT-base",
+      "model_family": "transformer_sequence_classifier",
+      "model_id": "answerdotai/ModernBERT-base",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_modernbert_base/transformer_bundle.joblib"
+    },
+    {
+      "name": "causal_lm_qwen3_1_7b_lora",
+      "display_name": "Causal LM Qwen3-1.7B",
+      "model_family": "causal_lm_classifier",
+      "model_id": "Qwen/Qwen3-1.7B",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/causal_lm_qwen3_1_7b_lora/causal_lm_bundle.joblib"
     }
   ],
   "auto_retrain": null
@@ -66,6 +91,7 @@ Optional request fields:
 - `post_type`
 - `content_domain`
 - `is_crosspost`
+- `include_comparisons`
 
 Example request:
 
@@ -84,6 +110,8 @@ Example request:
 
 If those optional metadata fields are present, the bridge includes them in the model input for scoring.
 
+`include_comparisons` defaults to `false`. That means the normal fast `/check` path returns the active bridge model result plus `comparison_models` metadata, without waiting for every benchmark-suite model to score the same post.
+
 For sparse image and link posts, the bridge also applies a stricter effective high-confidence threshold. Those posts can still score positive, but they need a stronger score to return `confidence_band: "high"`.
 
 Example response:
@@ -97,6 +125,7 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
     "post_id": "abc123",
     "permalink": "https://www.reddit.com/r/example/comments/abc123/example/",
     "model_name": "tfidf_logreg",
+    "display_name": "tfidf_logreg",
     "model_version": "<varies>",
     "low_threshold": "<varies>",
     "high_threshold": "<varies>",
@@ -108,32 +137,95 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
     "time_source": "collected_at",
     "created_at": "<varies>"
   },
-  "comparisons": [
+  "comparison_models": [
     {
-      "name": "semantic_embedding",
+      "name": "semantic_minilm_tuned",
+      "display_name": "Semantic MiniLM",
       "model_family": "semantic_embedding",
       "model_id": "sentence-transformers/all-MiniLM-L6-v2",
-      "result": {
-        "model_name": "semantic_embedding_logreg",
-        "score": "<varies>",
-        "label": "askseattle",
-        "confidence_band": "borderline"
-      }
+      "artifact_path": "/abs/path/to/models/benchmark-suite/semantic_minilm_tuned/semantic_embedding_logreg.joblib"
     },
     {
-      "name": "transformer_sequence_classifier",
+      "name": "semantic_qwen3_embedding_0_6b",
+      "display_name": "Semantic Qwen3-Embedding",
+      "model_family": "semantic_embedding",
+      "model_id": "Qwen/Qwen3-Embedding-0.6B",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/semantic_qwen3_embedding_0_6b/semantic_embedding_logreg.joblib"
+    },
+    {
+      "name": "transformer_deberta_v3_small",
+      "display_name": "Transformer DeBERTa-v3-small",
       "model_family": "transformer_sequence_classifier",
       "model_id": "microsoft/deberta-v3-small",
-      "result": {
-        "model_name": "transformer_sequence_classifier",
-        "score": "<varies>",
-        "label": "askseattle",
-        "confidence_band": "high"
-      }
+      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_deberta_v3_small/transformer_bundle.joblib"
+    },
+    {
+      "name": "transformer_modernbert_base",
+      "display_name": "Transformer ModernBERT-base",
+      "model_family": "transformer_sequence_classifier",
+      "model_id": "answerdotai/ModernBERT-base",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_modernbert_base/transformer_bundle.joblib"
+    },
+    {
+      "name": "causal_lm_qwen3_1_7b_lora",
+      "display_name": "Causal LM Qwen3-1.7B",
+      "model_family": "causal_lm_classifier",
+      "model_id": "Qwen/Qwen3-1.7B",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/causal_lm_qwen3_1_7b_lora/causal_lm_bundle.joblib"
     }
-  ]
+  ],
+  "comparisons": []
 }
 ```
+
+When the full benchmark suite artifacts exist, the bridge includes all available comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. The current expected full set is six models total: TF-IDF, two semantic models, two encoder transformers, and one decoder-LLM.
+
+If one comparison model fails during scoring, the bridge now keeps the main `result` and returns an `error` field for that comparison entry instead of failing the whole `/check` request.
+
+On Apple Silicon, the bridge also keeps the Qwen-based comparison models off MPS during `/check` because those families are not stable on the current MPS stack.
+
+## `POST /check-comparison`
+
+Classify a post payload with one named comparison model.
+
+Required request fields:
+
+- `name`
+- `title`
+
+Optional request fields:
+
+- `selftext`
+- `id`
+- `permalink`
+- `created_utc`
+- `collected_at`
+- `time_source`
+- `post_type`
+- `content_domain`
+- `is_crosspost`
+
+Example response:
+
+```json
+{
+  "ok": true,
+  "comparison": {
+    "name": "transformer_modernbert_base",
+    "display_name": "Transformer ModernBERT-base",
+    "model_family": "transformer_sequence_classifier",
+    "model_id": "answerdotai/ModernBERT-base",
+    "result": {
+      "model_name": "transformer_modernbert_base",
+      "score": "<varies>",
+      "label": "askseattle",
+      "confidence_band": "borderline"
+    }
+  }
+}
+```
+
+This endpoint exists so the userscript can render model cards incrementally instead of waiting for every comparison model to finish inside one `/check` request.
 
 ## `POST /train`
 

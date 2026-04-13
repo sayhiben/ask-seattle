@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from ask_seattle.model import (
@@ -11,8 +12,11 @@ from ask_seattle.data import write_jsonl_records
 import ask_seattle.training as training
 from ask_seattle.training import (
     OperatingMetrics,
+    SuiteModelSpec,
     benchmark_model_suite_from_labels,
     benchmark_model_variants_from_labels,
+    retrain_all_from_labels,
+    retrain_model_suite_from_labels,
     train_model_bundle_from_labels,
 )
 
@@ -57,6 +61,11 @@ def test_train_model_bundle_from_labels_writes_random_split_summary_and_feature_
     assert set(summary["metrics"]["confidence_band_counts"]) == {"high", "borderline", "low"}
     assert "slice_metrics" in summary["operating_metrics"]
     assert set(summary["operating_metrics"]["slice_metrics"]) == {"post_type", "low_text", "sparse_media"}
+    assert summary["operating_metrics"]["slice_metrics"]["post_type"]["support_status"] == "active"
+    assert summary["operating_metrics"]["slice_metrics"]["low_text"]["support_status"] == "active"
+    assert summary["operating_metrics"]["slice_metrics"]["sparse_media"]["support_status"] in {"active", "observational"}
+    assert "constraint_metrics" in summary
+    assert "ranking_metrics" in summary
     assert Path(tmp_path, "training_summary.json").exists()
 
 
@@ -323,7 +332,7 @@ def test_train_model_bundle_from_labels_can_evaluate_only_one_subreddit(tmp_path
     assert summary["production_gate"]["minimum_high_confidence_test_predictions"] == 5
 
 
-def test_slice_aware_positive_weighting_upweights_sparse_positive_slices() -> None:
+def test_slice_aware_positive_weighting_uses_image_and_low_text_only() -> None:
     posts = [
         training.LabeledPost(
             title="What is this?",
@@ -366,8 +375,9 @@ def test_slice_aware_positive_weighting_upweights_sparse_positive_slices() -> No
 
     assert weighting.sample_weights[0] > 1.0
     assert weighting.sample_weights[1] == 1.0
-    assert weighting.summary["bucket_weights"]["post_type"]["image"] > 1.0
+    assert weighting.summary["bucket_weights"]["image_post"]["yes"] > 1.0
     assert weighting.summary["bucket_weights"]["low_text"]["yes"] > 1.0
+    assert "sparse_media" not in weighting.summary["bucket_weights"]
 
 
 def test_benchmark_model_variants_writes_aggregate_summary(tmp_path: Path) -> None:
@@ -413,13 +423,148 @@ def test_benchmark_model_variants_writes_aggregate_summary(tmp_path: Path) -> No
 
     assert summary["evaluation_subreddit"] == "seattle"
     assert summary["production_gate"]["minimum_high_confidence_test_predictions"] == 5
-    assert [variant["name"] for variant in summary["variants"]] == [
-        "legacy_baseline",
-        "extra_stopwords_only",
-        "lower_char_weight_only",
-        "recommended",
-    ]
+    variant_names = [variant["name"] for variant in summary["variants"]]
+    assert variant_names[0:2] == ["legacy_baseline", "recommended"]
+    assert any(name.startswith("grid_c0_5") for name in variant_names)
+    assert any(name.startswith("grid_c4_0") for name in variant_names)
     assert Path(tmp_path / "variants" / "variant_benchmark_summary.json").exists()
+
+
+def test_train_model_bundle_from_labels_can_skip_benchmark(tmp_path: Path) -> None:
+    labels_path = tmp_path / "labels.jsonl"
+    records = [
+        {
+            "id": f"sea_pos{index}",
+            "title": f"Best coffee {index}?",
+            "selftext": "Any suggestions in Seattle?",
+            "label": "askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2),
+        }
+        for index in range(8)
+    ] + [
+        {
+            "id": f"sea_neg{index}",
+            "title": f"Local update {index}",
+            "selftext": "Policy discussion and civic news",
+            "label": "not_askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2 + 1),
+        }
+        for index in range(8)
+    ]
+    write_jsonl_records(labels_path, records)
+
+    summary = train_model_bundle_from_labels(labels_path, tmp_path / "model", evaluate_on_test=False)
+
+    assert summary["benchmark_status"] == "not_run"
+    assert summary["production_ready"] is False
+    assert summary["production_ready_blocked_reason"] == "benchmark_not_run"
+    assert "metrics" not in summary
+    assert "operating_metrics" not in summary
+
+
+def test_retrain_model_suite_writes_training_only_summary(tmp_path: Path, monkeypatch) -> None:
+    labels_path = tmp_path / "labels.jsonl"
+    records = [
+        {
+            "id": f"sea_pos{index}",
+            "title": f"Best coffee {index}?",
+            "selftext": "Any suggestions in Seattle?",
+            "label": "askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2),
+        }
+        for index in range(8)
+    ] + [
+        {
+            "id": f"sea_neg{index}",
+            "title": f"Local update {index}",
+            "selftext": "Policy discussion and civic news",
+            "label": "not_askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2 + 1),
+        }
+        for index in range(8)
+    ]
+    write_jsonl_records(labels_path, records)
+
+    call_counts = {"semantic_minilm_tuned": 0, "transformer_deberta_v3_small": 0}
+
+    def make_runner(name: str, family: str, model_id: str):
+        def runner(*, split, output_dir, prepared_data_summary=None, evaluate_on_test=True, **kwargs):
+            assert evaluate_on_test is False
+            call_counts[name] += 1
+            output_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = output_dir / f"{name}.joblib"
+            artifact_path.write_text(name, encoding="utf-8")
+            return {
+                "model_name": name,
+                "model_family": family,
+                "model_id": model_id,
+                "artifact_path": str(artifact_path),
+                "calibration": {
+                    "available": True,
+                    "method": "sigmoid",
+                    "positive_count": 2,
+                    "negative_count": 2,
+                    "calibration_size": 4,
+                },
+                "threshold_selection": {
+                    "high_threshold": 0.7,
+                    "high_threshold_selection": {"production_ready": True},
+                },
+                "threshold_policy": {"low_threshold": 0.3, "high_threshold": 0.7},
+                "benchmark_status": "not_run",
+                "production_ready": False,
+                "production_ready_blocked_reason": "benchmark_not_run",
+                "split": training._split_summary(split),
+                "prepared_data": prepared_data_summary or {},
+            }
+
+        return runner
+
+    def fake_suite_specs(**kwargs):
+        return [
+            SuiteModelSpec(
+                name="semantic_minilm_tuned",
+                display_name="Semantic MiniLM",
+                family="semantic_embedding",
+                runner=make_runner("semantic_minilm_tuned", "semantic_embedding", kwargs["semantic_model_id"]),
+                kwargs={
+                    "config": training.SemanticModelConfig(
+                        name="semantic_minilm_tuned",
+                        display_name="Semantic MiniLM",
+                        model_id=kwargs["semantic_model_id"],
+                        backend="sentence_transformers",
+                        prompt_modes=("plain",),
+                        normalize_embeddings=(False,),
+                        logistic_c_values=(1.0,),
+                    )
+                },
+            ),
+            SuiteModelSpec(
+                name="transformer_deberta_v3_small",
+                display_name="Transformer DeBERTa-v3-small",
+                family="transformer_sequence_classifier",
+                runner=make_runner(
+                    "transformer_deberta_v3_small",
+                    "transformer_sequence_classifier",
+                    kwargs["transformer_model_id"],
+                ),
+                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer DeBERTa-v3-small"},
+            ),
+        ]
+
+    monkeypatch.setattr(training, "_suite_model_specs", fake_suite_specs)
+
+    summary = retrain_model_suite_from_labels(labels_path, tmp_path / "suite", evaluation_subreddit="seattle")
+
+    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_deberta_v3_small": 1}
+    assert (tmp_path / "suite" / "suite_input.json").exists()
+    assert (tmp_path / "suite" / "suite_training_summary.json").exists()
+    assert [model["status"] for model in summary["models"]] == ["trained", "trained"]
+    assert [model["benchmark_status"] for model in summary["models"]] == ["not_run", "not_run"]
 
 
 def test_benchmark_model_suite_writes_aggregate_summary(tmp_path: Path, monkeypatch) -> None:
@@ -447,87 +592,622 @@ def test_benchmark_model_suite_writes_aggregate_summary(tmp_path: Path, monkeypa
     ]
     write_jsonl_records(labels_path, records)
 
-    def fake_semantic(*, split, output_dir, model_id, prepared_data_summary=None):
-        output_dir.mkdir(parents=True, exist_ok=True)
-        summary = {
-            "model_name": "semantic_embedding_logreg",
-            "model_family": "semantic_embedding",
-            "model_id": model_id,
-            "artifact_path": str(output_dir / "semantic_embedding_logreg.joblib"),
-            "metrics": {
-                "high_confidence_precision": 0.9,
-                "high_confidence_recall": 0.5,
-                "high_confidence_f1": 0.64,
-                "support": 2,
-                "confidence_band_counts": {"high": 1, "borderline": 2, "low": 1},
-            },
-            "operating_metrics": {
-                "auto_band": {"precision": 0.9, "recall": 0.5, "f1": 0.64, "predicted_positive": 1, "support": 2},
-                "review_queue": {"precision": 0.6, "recall": 0.75, "f1": 0.67, "predicted_positive": 3, "support": 2},
-                "queue_counts": {"high": 1, "borderline": 2, "low": 1},
-                "queue_rates": {"auto_rate": 0.25, "review_rate": 0.75, "borderline_rate": 0.5},
-                "positive_prevalence": 0.5,
-                "positive_count": 2,
-                "total_count": 4,
-                "slice_metrics": {},
-            },
-            "threshold_policy": {"low_threshold": 0.3, "high_threshold": 0.7},
-            "production_gate": {"high_precision_target": 0.95, "minimum_high_confidence_test_predictions": 5},
-            "production_ready": False,
-            "production_ready_blocked_reason": "high_precision_target_not_met_on_test",
-        }
-        (output_dir / "training_summary.json").write_text("{}", encoding="utf-8")
-        return summary
+    call_counts = {"semantic_minilm_tuned": 0, "transformer_deberta_v3_small": 0}
 
-    def fake_transformer(*, split, output_dir, model_id, prepared_data_summary=None):
-        output_dir.mkdir(parents=True, exist_ok=True)
-        summary = {
-            "model_name": "transformer_sequence_classifier",
-            "model_family": "transformer_sequence_classifier",
-            "model_id": model_id,
-            "artifact_path": str(output_dir / "transformer_model"),
-            "metrics": {
-                "high_confidence_precision": 0.95,
-                "high_confidence_recall": 0.55,
-                "high_confidence_f1": 0.7,
-                "support": 2,
-                "confidence_band_counts": {"high": 2, "borderline": 1, "low": 1},
-            },
-            "operating_metrics": {
-                "auto_band": {"precision": 0.95, "recall": 0.55, "f1": 0.7, "predicted_positive": 2, "support": 2},
-                "review_queue": {"precision": 0.7, "recall": 0.8, "f1": 0.75, "predicted_positive": 3, "support": 2},
-                "queue_counts": {"high": 2, "borderline": 1, "low": 1},
-                "queue_rates": {"auto_rate": 0.5, "review_rate": 0.75, "borderline_rate": 0.25},
-                "positive_prevalence": 0.5,
-                "positive_count": 2,
-                "total_count": 4,
-                "slice_metrics": {},
-            },
-            "threshold_policy": {"low_threshold": 0.25, "high_threshold": 0.6},
-            "production_gate": {"high_precision_target": 0.95, "minimum_high_confidence_test_predictions": 5},
-            "production_ready": True,
-            "production_ready_blocked_reason": None,
-        }
-        (output_dir / "training_summary.json").write_text("{}", encoding="utf-8")
-        return summary
+    def make_runner(name: str, family: str, model_id: str):
+        def runner(*, split, output_dir, prepared_data_summary=None, evaluate_on_test=True, **kwargs):
+            assert evaluate_on_test is False
+            call_counts[name] += 1
+            output_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = output_dir / f"{name}.joblib"
+            artifact_path.write_text(name, encoding="utf-8")
+            return {
+                "model_name": name,
+                "model_family": family,
+                "model_id": model_id,
+                "artifact_path": str(artifact_path),
+                "calibration": {
+                    "available": True,
+                    "method": "sigmoid",
+                    "positive_count": 2,
+                    "negative_count": 2,
+                    "calibration_size": 4,
+                },
+                "threshold_selection": {
+                    "high_threshold": 0.7,
+                    "high_threshold_selection": {"production_ready": True},
+                },
+                "threshold_policy": {"low_threshold": 0.3, "high_threshold": 0.7},
+                "benchmark_status": "not_run",
+                "production_ready": False,
+                "production_ready_blocked_reason": "benchmark_not_run",
+                "split": training._split_summary(split),
+                "prepared_data": prepared_data_summary or {},
+            }
 
-    monkeypatch.setattr(training, "_train_semantic_embedding_bundle_for_split", fake_semantic)
-    monkeypatch.setattr(training, "_train_transformer_bundle_for_split", fake_transformer)
+        return runner
+
+    def fake_suite_specs(**kwargs):
+        return [
+            SuiteModelSpec(
+                name="semantic_minilm_tuned",
+                display_name="Semantic MiniLM",
+                family="semantic_embedding",
+                runner=make_runner("semantic_minilm_tuned", "semantic_embedding", kwargs["semantic_model_id"]),
+                kwargs={
+                    "config": training.SemanticModelConfig(
+                        name="semantic_minilm_tuned",
+                        display_name="Semantic MiniLM",
+                        model_id=kwargs["semantic_model_id"],
+                        backend="sentence_transformers",
+                        prompt_modes=("plain",),
+                        normalize_embeddings=(False,),
+                        logistic_c_values=(1.0,),
+                    )
+                },
+            ),
+            SuiteModelSpec(
+                name="transformer_deberta_v3_small",
+                display_name="Transformer DeBERTa-v3-small",
+                family="transformer_sequence_classifier",
+                runner=make_runner(
+                    "transformer_deberta_v3_small",
+                    "transformer_sequence_classifier",
+                    kwargs["transformer_model_id"],
+                ),
+                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer DeBERTa-v3-small"},
+            ),
+        ]
+
+    monkeypatch.setattr(training, "_suite_model_specs", fake_suite_specs)
+    monkeypatch.setattr(training, "load_model", lambda artifact_path: {"artifact_path": str(artifact_path)})
+
+    def fake_score_rows(bundle, rows):
+        artifact_path = str(bundle["artifact_path"])
+        base = [0.8, 0.7, 0.2, 0.1] if "semantic_minilm_tuned" in artifact_path else [0.9, 0.6, 0.4, 0.1]
+        repeats = (len(rows) + len(base) - 1) // len(base)
+        scores = (base * repeats)[: len(rows)]
+        if "semantic_minilm_tuned" in artifact_path:
+            return scores
+        return scores
+
+    monkeypatch.setattr(training, "score_rows", fake_score_rows)
+
+    retrain_model_suite_from_labels(labels_path, tmp_path / "suite", evaluation_subreddit="seattle")
+    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_deberta_v3_small": 1}
 
     summary = benchmark_model_suite_from_labels(
         labels_path,
         tmp_path / "suite",
         evaluation_subreddit="seattle",
+        notes="after adding april labels",
     )
 
     assert summary["evaluation_subreddit"] == "seattle"
     assert summary["production_gate"]["minimum_high_confidence_test_predictions"] == 5
-    assert [model["name"] for model in summary["models"]] == [
-        "tfidf_recommended",
-        "semantic_embedding",
-        "transformer_sequence_classifier",
-    ]
+    assert [model["status"] for model in summary["models"]] == ["ok", "ok"]
+    assert [model["result_source"] for model in summary["models"]] == ["benchmarked", "benchmarked"]
     assert "metrics_reference" in summary
-    assert "slice_metrics" in summary["metrics_reference"]
-    assert summary["models"][1]["production_gate"]["minimum_high_confidence_test_predictions"] == 5
+    assert summary["benchmark_run"]["notes"] == "after adding april labels"
+    assert "representation" in summary["benchmark_run"]
     assert Path(tmp_path / "suite" / "benchmark_suite_summary.json").exists()
+    history_index = json.loads((tmp_path / "suite" / "benchmark_history.json").read_text())
+    assert history_index["runs"][-1]["notes"] == "after adding april labels"
+    archived_summary_path = Path(history_index["runs"][-1]["summary_path"])
+    assert archived_summary_path.exists()
+    benchmarked_summary = json.loads((tmp_path / "suite" / "semantic_minilm_tuned" / "training_summary.json").read_text())
+    assert benchmarked_summary["benchmark_status"] == "complete"
+    assert "metrics" in benchmarked_summary
+
+
+def test_benchmark_model_suite_skips_untrained_models(tmp_path: Path, monkeypatch) -> None:
+    labels_path = tmp_path / "labels.jsonl"
+    records = [
+        {
+            "id": f"sea_pos{index}",
+            "title": f"Best coffee {index}?",
+            "selftext": "Any suggestions in Seattle?",
+            "label": "askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2),
+        }
+        for index in range(8)
+    ] + [
+        {
+            "id": f"sea_neg{index}",
+            "title": f"Local update {index}",
+            "selftext": "Policy discussion and civic news",
+            "label": "not_askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2 + 1),
+        }
+        for index in range(8)
+    ]
+    write_jsonl_records(labels_path, records)
+
+    def fake_suite_specs(**kwargs):
+        return [
+            SuiteModelSpec(
+                name="semantic_minilm_tuned",
+                display_name="Semantic MiniLM",
+                family="semantic_embedding",
+                runner=lambda **kwargs: {},
+                kwargs={
+                    "config": training.SemanticModelConfig(
+                        name="semantic_minilm_tuned",
+                        display_name="Semantic MiniLM",
+                        model_id=kwargs["semantic_model_id"],
+                        backend="sentence_transformers",
+                        prompt_modes=("plain",),
+                        normalize_embeddings=(False,),
+                        logistic_c_values=(1.0,),
+                    )
+                },
+            ),
+            SuiteModelSpec(
+                name="transformer_deberta_v3_small",
+                display_name="Transformer DeBERTa-v3-small",
+                family="transformer_sequence_classifier",
+                runner=lambda **kwargs: {},
+                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer DeBERTa-v3-small"},
+            ),
+        ]
+
+    monkeypatch.setattr(training, "_suite_model_specs", fake_suite_specs)
+
+    summary = benchmark_model_suite_from_labels(labels_path, tmp_path / "suite", evaluation_subreddit="seattle")
+
+    assert [model["status"] for model in summary["models"]] == ["skipped", "skipped"]
+    assert all(model["reason"] == "not_trained" for model in summary["models"])
+
+
+def test_retrain_all_trains_operational_and_suite_without_benchmark(tmp_path: Path, monkeypatch) -> None:
+    labels_path = tmp_path / "labels.jsonl"
+    records = [
+        {
+            "id": f"sea_pos{index}",
+            "title": f"Best coffee {index}?",
+            "selftext": "Any suggestions in Seattle?",
+            "label": "askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2),
+        }
+        for index in range(8)
+    ] + [
+        {
+            "id": f"sea_neg{index}",
+            "title": f"Local update {index}",
+            "selftext": "Policy discussion and civic news",
+            "label": "not_askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2 + 1),
+        }
+        for index in range(8)
+    ]
+    write_jsonl_records(labels_path, records)
+
+    monkeypatch.setattr(
+        training,
+        "retrain_model_suite_from_labels",
+        lambda *args, **kwargs: {"models": [{"name": "semantic_minilm_tuned", "benchmark_status": "not_run"}]},
+    )
+
+    summary = retrain_all_from_labels(
+        labels_path,
+        operational_output_dir=tmp_path / "operational",
+        benchmark_output_dir=tmp_path / "suite",
+        evaluation_subreddit="seattle",
+    )
+
+    assert summary["operational_model"]["benchmark_status"] == "not_run"
+    assert summary["suite"]["models"][0]["benchmark_status"] == "not_run"
+
+
+def test_benchmark_model_suite_benchmarks_only_available_artifacts(tmp_path: Path, monkeypatch) -> None:
+    labels_path = tmp_path / "labels.jsonl"
+    records = [
+        {
+            "id": f"sea_pos{index}",
+            "title": f"Best coffee {index}?",
+            "selftext": "Any suggestions in Seattle?",
+            "label": "askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2),
+        }
+        for index in range(8)
+    ] + [
+        {
+            "id": f"sea_neg{index}",
+            "title": f"Local update {index}",
+            "selftext": "Policy discussion and civic news",
+            "label": "not_askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2 + 1),
+        }
+        for index in range(8)
+    ]
+    write_jsonl_records(labels_path, records)
+
+    call_counts = {"semantic_minilm_tuned": 0, "transformer_deberta_v3_small": 0}
+
+    def make_runner(name: str, family: str, model_id: str):
+        def runner(*, split, output_dir, prepared_data_summary=None, evaluate_on_test=True, **kwargs):
+            assert evaluate_on_test is False
+            call_counts[name] += 1
+            output_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = output_dir / f"{name}.joblib"
+            artifact_path.write_text(name, encoding="utf-8")
+            return {
+                "model_name": name,
+                "model_family": family,
+                "model_id": model_id,
+                "artifact_path": str(artifact_path),
+                "calibration": {
+                    "available": True,
+                    "method": "sigmoid",
+                    "positive_count": 2,
+                    "negative_count": 2,
+                    "calibration_size": 4,
+                },
+                "threshold_selection": {
+                    "high_threshold": 0.7,
+                    "high_threshold_selection": {"production_ready": True},
+                },
+                "threshold_policy": {"low_threshold": 0.3, "high_threshold": 0.7},
+                "benchmark_status": "not_run",
+                "production_ready": False,
+                "production_ready_blocked_reason": "benchmark_not_run",
+                "split": training._split_summary(split),
+                "prepared_data": prepared_data_summary or {},
+            }
+
+        return runner
+
+    def fake_suite_specs(**kwargs):
+        return [
+            SuiteModelSpec(
+                name="semantic_minilm_tuned",
+                display_name="Semantic MiniLM",
+                family="semantic_embedding",
+                runner=make_runner("semantic_minilm_tuned", "semantic_embedding", kwargs["semantic_model_id"]),
+                kwargs={
+                    "config": training.SemanticModelConfig(
+                        name="semantic_minilm_tuned",
+                        display_name="Semantic MiniLM",
+                        model_id=kwargs["semantic_model_id"],
+                        backend="sentence_transformers",
+                        prompt_modes=("plain",),
+                        normalize_embeddings=(False,),
+                        logistic_c_values=(1.0,),
+                    )
+                },
+            ),
+            SuiteModelSpec(
+                name="transformer_deberta_v3_small",
+                display_name="Transformer DeBERTa-v3-small",
+                family="transformer_sequence_classifier",
+                runner=make_runner(
+                    "transformer_deberta_v3_small",
+                    "transformer_sequence_classifier",
+                    kwargs["transformer_model_id"],
+                ),
+                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer DeBERTa-v3-small"},
+            ),
+        ]
+
+    monkeypatch.setattr(training, "_suite_model_specs", fake_suite_specs)
+    monkeypatch.setattr(training, "load_model", lambda artifact_path: {"artifact_path": str(artifact_path)})
+    monkeypatch.setattr(
+        training,
+        "score_rows",
+        lambda bundle, rows: ([0.8, 0.7, 0.2, 0.1] * ((len(rows) + 3) // 4))[: len(rows)],
+    )
+
+    retrain_model_suite_from_labels(labels_path, tmp_path / "suite", evaluation_subreddit="seattle")
+    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_deberta_v3_small": 1}
+
+    (tmp_path / "suite" / "transformer_deberta_v3_small" / "transformer_deberta_v3_small.joblib").unlink()
+
+    second = benchmark_model_suite_from_labels(labels_path, tmp_path / "suite", evaluation_subreddit="seattle")
+
+    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_deberta_v3_small": 1}
+    assert second["models"][0]["status"] == "ok"
+    assert second["models"][0]["result_source"] == "benchmarked"
+    assert second["models"][1]["status"] == "skipped"
+    assert second["models"][1]["reason"] == "not_trained"
+
+
+def test_resolve_suite_artifact_path_prefers_repo_relative_paths(tmp_path: Path, monkeypatch) -> None:
+    repo_like_root = tmp_path / "repo"
+    artifact = repo_like_root / "models" / "benchmark-suite" / "tfidf_recommended" / "tfidf_logreg.joblib"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    artifact.write_text("ok", encoding="utf-8")
+    monkeypatch.chdir(repo_like_root)
+
+    resolved = training._resolve_suite_artifact_path(
+        {"artifact_path": "models/benchmark-suite/tfidf_recommended/tfidf_logreg.joblib"},
+        repo_like_root / "models" / "benchmark-suite" / "tfidf_recommended",
+    )
+
+    assert resolved == artifact.resolve()
+
+
+def test_causal_lm_training_dataset_removes_raw_text_columns() -> None:
+    class FakeTokenizer:
+        eos_token_id = 99
+
+        def __call__(
+            self,
+            text: str,
+            *,
+            add_special_tokens: bool,
+            truncation: bool,
+            max_length: int,
+        ) -> dict[str, list[int]]:
+            token_ids = [min(ord(ch), 255) for ch in text][:max_length]
+            if add_special_tokens:
+                token_ids = [1] + token_ids
+            return {"input_ids": token_ids}
+
+    dataset = training._causal_lm_training_dataset(
+        [
+            {
+                "prompt": "Prompt text",
+                "target": " askseattle",
+                "label": 1,
+                "example_weight": 1.5,
+            }
+        ],
+        tokenizer=FakeTokenizer(),
+        prompt_max_length=32,
+        target_max_length=8,
+        sequence_max_length=40,
+    )
+
+    assert set(dataset.column_names) == {"input_ids", "attention_mask", "labels", "example_weight"}
+
+
+def test_resolve_causal_lm_runtime_profile_prefers_cpu_on_mps_by_default() -> None:
+    assert (
+        training._resolve_causal_lm_runtime_profile(
+            detected_runtime="mps",
+            requested_runtime_profile=None,
+            model_id="Qwen/Qwen3-1.7B",
+        )
+        == "cpu_fallback"
+    )
+    assert (
+        training._resolve_causal_lm_runtime_profile(
+            detected_runtime="mps",
+            requested_runtime_profile="mps",
+            model_id="Qwen/Qwen3-1.7B",
+        )
+        == "mps"
+    )
+
+
+def test_resolve_semantic_encoder_device_prefers_cpu_for_hf_embedding_on_mps() -> None:
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeMPSBackend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeBackends:
+        mps = FakeMPSBackend()
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        backends = FakeBackends()
+
+    config = training.SemanticModelConfig(
+        name="semantic_qwen3_embedding_0_6b",
+        display_name="Semantic Qwen3-Embedding",
+        model_id="Qwen/Qwen3-Embedding-0.6B",
+        backend="hf_embedding",
+        config_version="v2_title_body_metadata",
+        prompt_modes=("plain",),
+        normalize_embeddings=(False,),
+        logistic_c_values=(1.0,),
+    )
+
+    assert training._resolve_semantic_encoder_device(config, FakeTorch()) == "cpu"
+
+
+def test_causal_lm_prompt_v3_uses_compact_contextual_fields() -> None:
+    row = {
+        "title": "Who is this on the mural?",
+        "body_raw": "Found this in Ballard and trying to identify the artist.",
+        "post_type": "image",
+        "content_domain": "i.redd.it",
+        "has_question_mark": "yes",
+        "is_low_text": "no",
+        "is_crosspost": "no",
+    }
+
+    prompt = training.causal_lm_prompt_for_row(
+        row,
+        prompt_template_version=training.DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
+    )
+
+    assert "Return exactly one label: askseattle or not_askseattle." in prompt
+    assert "Do not use subreddit name." in prompt
+    assert "Title: Who is this on the mural?" in prompt
+    assert "Post type: image" in prompt
+    assert "Has question mark: yes" in prompt
+    assert "Crosspost: no" in prompt
+    assert "Sparse media:" not in prompt
+    assert prompt.endswith("Label:")
+
+
+def test_suite_summary_matches_spec_checks_causal_lm_prompt_template_version() -> None:
+    spec = SuiteModelSpec(
+        name="causal_lm_qwen3_1_7b_lora",
+        display_name="Decoder Qwen3-1.7B LoRA",
+        family="causal_lm_classifier",
+        runner=lambda **kwargs: {},
+        kwargs={
+            "model_id": "Qwen/Qwen3-1.7B",
+            "display_name": "Decoder Qwen3-1.7B LoRA",
+            "prompt_template_version": training.DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
+            "config_version": "v2_compact_prompt_two_epoch",
+        },
+    )
+
+    matching_summary = {
+        "model_family": "causal_lm_classifier",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "prompt_template_version": training.DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
+        "config_version": "v2_compact_prompt_two_epoch",
+    }
+    stale_summary = {
+        "model_family": "causal_lm_classifier",
+        "model_id": "Qwen/Qwen3-1.7B",
+        "prompt_template_version": "v1_binary_label_completion",
+        "config_version": "v2_compact_prompt_two_epoch",
+    }
+
+    assert training._suite_summary_matches_spec(matching_summary, spec) is True
+    assert training._suite_summary_matches_spec(stale_summary, spec) is False
+
+
+def test_suite_summary_matches_spec_checks_semantic_config_version() -> None:
+    spec = SuiteModelSpec(
+        name="semantic_minilm_tuned",
+        display_name="Semantic MiniLM",
+        family="semantic_embedding",
+        runner=lambda **kwargs: {},
+        kwargs={
+            "config": training.SemanticModelConfig(
+                name="semantic_minilm_tuned",
+                display_name="Semantic MiniLM",
+                model_id="sentence-transformers/all-MiniLM-L6-v2",
+                backend="sentence_transformers",
+                config_version="v2_title_body_metadata",
+                prompt_modes=("plain", "task_prefix"),
+                normalize_embeddings=(False, True),
+                logistic_c_values=(0.25, 1.0),
+            )
+        },
+    )
+
+    matching_summary = {
+        "model_family": "semantic_embedding",
+        "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+        "config_version": "v2_title_body_metadata",
+    }
+    stale_summary = {
+        "model_family": "semantic_embedding",
+        "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+        "config_version": "v1_flat_text",
+    }
+
+    assert training._suite_summary_matches_spec(matching_summary, spec) is True
+    assert training._suite_summary_matches_spec(stale_summary, spec) is False
+
+
+def test_semantic_component_texts_split_title_body_and_prefixes() -> None:
+    posts = [
+        training.LabeledPost(title="Who is this?", selftext="Seen near Fremont.", label=1),
+    ]
+    config = training.SemanticModelConfig(
+        name="semantic_qwen3_embedding_0_6b",
+        display_name="Semantic Qwen3-Embedding",
+        model_id="Qwen/Qwen3-Embedding-0.6B",
+        backend="hf_embedding",
+        config_version="v2_title_body_metadata",
+        prompt_modes=("plain", "short_task_prefix"),
+        normalize_embeddings=(False, True),
+        logistic_c_values=(1.0,),
+        prompt_prefix="Long prefix",
+        short_prompt_prefix="Short prefix",
+    )
+
+    title_texts, body_texts = training._semantic_component_texts(
+        posts,
+        prompt_mode="short_task_prefix",
+        config=config,
+    )
+
+    assert title_texts == ["Short prefix Title: Who is this?"]
+    assert body_texts == ["Short prefix Body: Seen near Fremont."]
+
+
+def test_move_token_batch_to_device_preserves_integer_tensor_types() -> None:
+    class FakeTensor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object | None]] = []
+
+        def to(self, *, device: object, dtype: object | None = None) -> "FakeTensor":
+            self.calls.append((device, dtype))
+            return self
+
+    class FakeTorch:
+        long = "long-dtype"
+
+    input_ids = FakeTensor()
+    attention_mask = FakeTensor()
+    other = FakeTensor()
+
+    moved = training._move_token_batch_to_device(
+        {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "special": other,
+        },
+        device="mps",
+        torch_module=FakeTorch(),
+    )
+
+    assert moved["input_ids"] is input_ids
+    assert moved["attention_mask"] is attention_mask
+    assert moved["special"] is other
+    assert input_ids.calls == [("mps", "long-dtype")]
+    assert attention_mask.calls == [("mps", "long-dtype")]
+    assert other.calls == [("mps", None)]
+
+
+def test_suite_summary_matches_spec_checks_tfidf_config_version() -> None:
+    spec = SuiteModelSpec(
+        name="tfidf_recommended",
+        display_name="TF-IDF",
+        family="tfidf",
+        runner=lambda **kwargs: {},
+        kwargs={
+            "variant": training.VariantConfig(
+                name="recommended",
+                extra_word_stopwords=training.DEFAULT_EXTRA_WORD_STOPWORDS,
+                char_weight=training.DEFAULT_CHAR_WEIGHT,
+                metadata_weight=training.DEFAULT_METADATA_WEIGHT,
+                tfidf_config_version=training.DEFAULT_TFIDF_CONFIG_VERSION,
+                normalize_urls=training.DEFAULT_TFIDF_URL_NORMALIZATION,
+                strip_urls=training.DEFAULT_TFIDF_STRIP_URLS,
+            )
+        },
+    )
+
+    matching_summary = {
+        "model_family": "tfidf",
+        "variant": {
+            "name": "recommended",
+            "tfidf_config_version": training.DEFAULT_TFIDF_CONFIG_VERSION,
+            "normalize_urls": training.DEFAULT_TFIDF_URL_NORMALIZATION,
+            "strip_urls": training.DEFAULT_TFIDF_STRIP_URLS,
+        },
+    }
+    stale_summary = {
+        "model_family": "tfidf",
+        "variant": {
+            "name": "recommended",
+            "tfidf_config_version": "v1_mixed_metadata",
+            "normalize_urls": training.DEFAULT_TFIDF_URL_NORMALIZATION,
+            "strip_urls": training.DEFAULT_TFIDF_STRIP_URLS,
+        },
+    }
+
+    assert training._suite_summary_matches_spec(matching_summary, spec) is True
+    assert training._suite_summary_matches_spec(stale_summary, spec) is False

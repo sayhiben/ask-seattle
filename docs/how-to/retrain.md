@@ -1,6 +1,8 @@
 # How To Retrain From Reviewed Labels
 
-Use this page when you want to rebuild the local model from the reviewed label file.
+Use this page when you want to retrain the local models or benchmark the trained suite.
+
+If you want to run those same targets on remote hardware instead of on the MacBook, see [How to run training on RunPod](runpod-training.md) or [How to run training on a remote Windows WSL box](remote-wsl-training.md).
 
 ## Normal Retrain
 
@@ -11,10 +13,18 @@ make retrain
 That expands to:
 
 ```bash
-PYTHONPATH=src python3 -m ask_seattle.cli train \
+PYTHONPATH=src python3 -m ask_seattle.cli retrain-all \
   --data data/processed/tampermonkey_labels.jsonl \
-  --output-dir models/real-labels-precision-refresh
+  --operational-output-dir models/real-labels-precision-refresh \
+  --benchmark-output-dir models/benchmark-suite
 ```
+
+This retrains:
+
+- the operational TF-IDF model under `models/real-labels-precision-refresh/`
+- all six suite models under `models/benchmark-suite/`
+
+It does not run held-out benchmarks.
 
 If you want to train on mixed reviewed labels but calibrate and test only on one subreddit, add `EVAL_SUBREDDIT`:
 
@@ -22,7 +32,7 @@ If you want to train on mixed reviewed labels but calibrate and test only on one
 make retrain EVAL_SUBREDDIT=seattle
 ```
 
-## Run A Benchmark Without Replacing The Main Model
+## Run Benchmarks On Trained Models
 
 ```bash
 make benchmark
@@ -31,12 +41,28 @@ make benchmark
 That expands to:
 
 ```bash
-PYTHONPATH=src python3 -m ask_seattle.cli train \
+PYTHONPATH=src python3 -m ask_seattle.cli benchmark-suite \
   --data data/processed/tampermonkey_labels.jsonl \
-  --output-dir models/benchmark
+  --output-dir models/benchmark-suite
 ```
 
-Use this when you want a fresh held-out evaluation run and `training_summary.json`, but do not want to overwrite the default bridge model artifact.
+Use this when you want a fresh held-out evaluation run for the trained suite models without retraining them.
+
+If a model is missing or incompatible for the current `suite_input.json`, the benchmark logs a warning and skips it.
+
+If you want a benchmark note stored in the history:
+
+```bash
+make benchmark EVAL_SUBREDDIT=seattle BENCHMARK_NOTES="after adding april labels"
+```
+
+To run the same make targets on RunPod, keep the target the same and add `REMOTE=runpod`:
+
+```bash
+make runpod-bootstrap
+make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
+make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
+```
 
 Target only one subreddit for evaluation:
 
@@ -62,13 +88,12 @@ PYTHONPATH=src python3 -m ask_seattle.cli benchmark-variants \
 Use this when you want to compare:
 
 - the legacy baseline
-- extra stopwords only
-- lower `char_wb` weight only
 - the current recommended default
+- a TF-IDF tuning grid over `C`, `char_weight`, `metadata_weight`, and `min_df`
 
 All variants run on the exact same split.
 
-## Compare TF-IDF, Semantic, And Transformer Paths
+## Compare The Full Six-Model Suite
 
 Install the optional model dependencies first:
 
@@ -76,13 +101,13 @@ Install the optional model dependencies first:
 python -m pip install -e ".[dev,models]"
 ```
 
-Then run:
+Then retrain:
 
 ```bash
-make benchmark-suite EVAL_SUBREDDIT=seattle
+make retrain EVAL_SUBREDDIT=seattle
 ```
 
-That expands to:
+Then benchmark:
 
 ```bash
 PYTHONPATH=src python3 -m ask_seattle.cli benchmark-suite \
@@ -93,24 +118,46 @@ PYTHONPATH=src python3 -m ask_seattle.cli benchmark-suite \
   --eval-subreddit seattle
 ```
 
-The suite uses one shared split across all model families and writes:
+`make benchmark-suite` is an alias for `make benchmark`.
 
+The suite uses one shared split across all model families. Retraining writes:
+
+- `suite_input.json`
 - `tfidf_recommended/training_summary.json`
-- `semantic_embedding/training_summary.json`
-- `transformer_sequence_classifier/training_summary.json`
+- `semantic_minilm_tuned/training_summary.json`
+- `semantic_qwen3_embedding_0_6b/training_summary.json`
+- `transformer_deberta_v3_small/training_summary.json`
+- `transformer_modernbert_base/training_summary.json`
+- `causal_lm_qwen3_1_7b_lora/training_summary.json`
+- `suite_training_summary.json`
+
+On Apple Silicon, the transformer-backed semantic embedding path (`semantic_qwen3_embedding_0_6b`) now bypasses MPS and uses CPU during training. That is slower, but it avoids current Metal backend failures for that model family on the supported Mac baseline.
+
+Benchmarking writes:
+
 - `benchmark_suite_summary.json`
+- `benchmark_history.json`
+- `history/<run_id>/benchmark_suite_summary.json`
 
-The default semantic and transformer paths are:
+The default six-model suite is:
 
-- `sentence-transformers/all-MiniLM-L6-v2`
-- `microsoft/deberta-v3-small`
+- TF-IDF baseline
+- tuned MiniLM semantic model
+- Qwen3 embedding semantic model
+- DeBERTa-v3-small sequence classifier
+- ModernBERT-base sequence classifier
+- Qwen3-1.7B LoRA causal-language-model classifier
 
-The transformer benchmark currently uses:
+Important implementation details:
 
-- title/body pair encoding instead of one flattened text string
-- `max_length=384`
-- balanced class-weighted cross-entropy loss
-- the same shared metadata tokens in the body sequence
+- every family consumes the same persisted `suite_input.json` manifest
+- rerunning `make retrain` resumes from any compatible completed per-model artifact already on disk for that manifest
+- `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
+- the semantic family now encodes title and body separately, concatenates those embeddings with a metadata one-hot block, and then fits the calibrated logistic-regression head
+- the encoder transformer family uses title/body pair encoding, compares plain vs balanced cross-entropy, and keeps the better candidate by calibration PR-AUC with early stopping
+- the decoder-LLM family scores the two candidate label continuations directly instead of free-form generation
+- the decoder-LLM prompt now uses a compact contextual template with only the structured fields that materially helped on current data, so prompt-template changes still force that family to retrain instead of silently reusing an older summary
+- on Apple Silicon, the decoder-LLM family currently bypasses MPS and uses the CPU fallback profile by default because the Qwen3 fine-tuning path is not stable on the current MPS stack
 
 ## What Training Does
 
@@ -124,9 +171,16 @@ The training command:
 6. fits the TF-IDF + logistic regression model
 7. fits a sigmoid probability calibrator
 8. selects low and high thresholds
-9. writes:
-   - `tfidf_logreg.joblib`
-   - `training_summary.json`
+9. writes trained artifacts and training summaries
+
+That retrain step does not compute held-out test metrics. Benchmarking is a separate later step.
+
+The raw `ask-seattle train` command still exists if you want a TF-IDF-only train-plus-benchmark run.
+
+`make retrain` specifically runs the split flow instead:
+
+- retrain all models first
+- benchmark them second only when you explicitly run `make benchmark`
 
 If `EVAL_SUBREDDIT` is set, training still uses mixed reviewed data, but the calibration and test slices are restricted to the named subreddit.
 
@@ -141,12 +195,17 @@ Use `SPLIT_STRATEGY=time` when you intentionally want future-facing evaluation o
 make benchmark EVAL_SUBREDDIT=seattle SPLIT_STRATEGY=time
 ```
 
-The current default model applies one conservative refinement relative to the legacy baseline:
+The current default model applies these conservative refinements relative to the older baseline:
 
-- lower `char_wb` feature weight
-- slice-aware positive weighting during training so underrepresented positive cohorts such as low-text or sparse-media posts count more
+- metadata is fitted in its own exact-token feature channel instead of being mixed into the TF-IDF word and character channels
+- `char_wb` now only sees natural title/body text, not synthetic metadata markers
+- lexical title/body text normalizes visible URLs to `URL`, so raw transport syntax like `https`, `www`, and `://` does not carry direct weight
+- the TF-IDF word stopword list also excludes `just`, `one`, and `some`, because that benchmarked better than leaving them active on the current `/r/seattle` split
+- default `min_df` now scales with corpus size so larger label sets suppress more brittle low-support phrases
+- TF-IDF review-threshold selection now maximizes review recall subject to `review precision >= 0.70`, while the strict auto bucket still targets `high precision >= 0.95`
+- slice-aware positive weighting during training now uses only `image` and `low_text` as active tuning levers
 
-The shared text representation also includes normalized content metadata when available:
+The shared post representation still includes normalized content metadata when available:
 
 - `HAS_BODY`
 - `POST_TYPE`
@@ -157,6 +216,10 @@ The shared text representation also includes normalized content metadata when av
 - `HAS_QUESTION_MARK`
 - `LOW_TEXT`
 - `SPARSE_MEDIA`
+
+For the operational TF-IDF model specifically, those metadata tokens now live in a separate metadata feature channel instead of being mixed into the natural-language body and character channels.
+
+The same TF-IDF path also normalizes visible URLs to a neutral `URL` token before vectorization. Domain and post-type information still survive in the metadata channel, but raw URL scaffolding no longer dominates the word or character audit.
 
 ## Output Location
 
@@ -172,7 +235,7 @@ make retrain MODEL_DIR=models/run-002
 
 ## After A Manual Retrain
 
-Restart the bridge so it loads the new model artifact:
+After `make retrain`, run `make benchmark` if you want fresh suite metrics. Restart the bridge after retraining so it loads the new TF-IDF artifact:
 
 ```bash
 make bridge
@@ -206,11 +269,25 @@ If an auto-retrain attempt fails, the bridge records the error and waits for ano
 
 ## Inspecting The Result
 
-Look at:
+After `make retrain`, inspect:
 
 - `models/real-labels-precision-refresh/training_summary.json`
+- `models/benchmark-suite/suite_training_summary.json`
 
-Important fields:
+Those training-only summaries tell you:
+
+- what data was prepared
+- which split and manifest were used
+- whether calibration and threshold selection succeeded
+- whether `benchmark_status` is still `not_run`
+- which artifacts were trained or reused
+
+After `make benchmark`, inspect:
+
+- `models/benchmark-suite/benchmark_suite_summary.json`
+- per-model `training_summary.json` files under `models/benchmark-suite/*/`
+
+Important benchmarked fields:
 
 - `prepared_data`
 - `split`
@@ -218,13 +295,16 @@ Important fields:
 - `calibration`
 - `production_gate`
 - `threshold_selection`
+  - includes the review precision target used for the low threshold and the high precision target used for the strict bucket
 - `metrics`
 - `operating_metrics`
 - `training_balance`
 - `production_ready`
 - `production_ready_blocked_reason`
+- `benchmark_run`
+  - run id, timestamp, optional notes, manifest fingerprint, and a short human-readable description of what this benchmark represents
 
-The `operating_metrics` block is the ongoing comparison surface across model families:
+The `operating_metrics` block is the ongoing comparison surface across model families once benchmarking has completed:
 
 - `auto_band`
   - metrics for the strict `high` bucket only
@@ -236,18 +316,27 @@ The `operating_metrics` block is the ongoing comparison surface across model fam
   - what fraction of the held-out set falls into the auto band or review queue
 - `positive_prevalence`
   - how common positives are in the held-out test set
+- `ranking_metrics`
+  - threshold-independent quality such as `pr_auc`
+- `constraint_metrics`
+  - fixed-constraint comparisons such as `auto_recall_at_precision_95` and `review_recall_at_precision_75`
 - `slice_metrics`
   - the same operating metrics broken out by post type, low-text posts, and sparse-media posts
+  - each slice now also records support counts and `support_status`
 
 The `split.coverage` block tells you how many positives and negatives you actually have in those cohorts for train, calibration, and test.
 
 The `training_balance` block tells you how the harness weighted underrepresented positive cohorts during fitting.
 
-One important interpretation detail: sparse image/link posts are intentionally treated more conservatively for the `high` bucket. They can still score positive overall, but they need a stronger score to count as high confidence.
-
 ## Failure Modes
 
-Training can still write artifacts even when the run is not production-ready. Common reasons:
+Retraining can still write artifacts even when benchmarking has not been run yet. In that case the summary shows:
+
+- `benchmark_status = not_run`
+- `production_ready = false`
+- `production_ready_blocked_reason = benchmark_not_run`
+
+After benchmarking, common reasons a model is still not production-ready include:
 
 - the calibration slice does not contain both classes
 - the held-out high-confidence test precision misses the target

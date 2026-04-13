@@ -125,6 +125,7 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
     assert check["ok"] is True
     assert check["result"]["label"] == "askseattle"
     assert check["result"]["confidence_band"] == "high"
+    assert check["comparison_models"] == []
     assert check["comparisons"] == []
     assert "POST_TYPE:image" in fake_model.last_rows[0]["body"]
     assert "CONTENT_DOMAIN:reddit_com" in fake_model.last_rows[0]["body"]
@@ -305,6 +306,7 @@ def test_bridge_check_returns_comparison_results(tmp_path: Path) -> None:
                 "id": "abc",
                 "title": "Where should I stay?",
                 "selftext": "Visiting",
+                "include_comparisons": True,
             },
         )
     finally:
@@ -312,12 +314,82 @@ def test_bridge_check_returns_comparison_results(tmp_path: Path) -> None:
 
     assert check["ok"] is True
     assert check["result"]["model_name"] == "tfidf_logreg"
+    assert [entry["name"] for entry in check["comparison_models"]] == [
+        "semantic_embedding",
+        "transformer_sequence_classifier",
+    ]
     assert [entry["name"] for entry in check["comparisons"]] == [
         "semantic_embedding",
         "transformer_sequence_classifier",
     ]
     assert check["comparisons"][0]["result"]["model_name"] == "semantic_embedding_logreg"
     assert check["comparisons"][1]["result"]["model_name"] == "transformer_sequence_classifier"
+
+
+def test_bridge_check_comparison_returns_single_result(tmp_path: Path) -> None:
+    from http.server import ThreadingHTTPServer
+
+    labels = tmp_path / "labels.jsonl"
+
+    class Handler(LocalBridgeRequestHandler):
+        bridge_config = FakeServer()
+
+    primary_model = FakeModel()
+    semantic_model = FakeModel()
+
+    Handler.bridge_config = BridgeConfig.__new__(BridgeConfig)
+    Handler.bridge_config.model_path = tmp_path / "fake.joblib"
+    Handler.bridge_config.label_path = labels
+    Handler.bridge_config.comparison_suite_path = tmp_path / "benchmark_suite_summary.json"
+    Handler.bridge_config.label_lock = threading.Lock()
+    Handler.bridge_config.auto_retrain = None
+    Handler.bridge_config.bundle = {
+        "model": primary_model,
+        "model_family": "tfidf",
+        "model_name": "tfidf_logreg",
+        "model_version": "test",
+        "threshold": 0.7,
+    }
+    Handler.bridge_config.comparison_models = [
+        {
+            "name": "semantic_embedding",
+            "display_name": "Semantic MiniLM",
+            "model_family": "semantic_embedding",
+            "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+            "artifact_path": str(tmp_path / "semantic.joblib"),
+            "bundle": {
+                "model": semantic_model,
+                "model_family": "tfidf",
+                "model_name": "semantic_embedding_logreg",
+                "model_version": "test",
+                "threshold": 0.7,
+            },
+        },
+    ]
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+
+    try:
+        response = request_json(
+            port,
+            "POST",
+            "/check-comparison",
+            {
+                "name": "semantic_embedding",
+                "id": "abc",
+                "title": "Where should I stay?",
+                "selftext": "Visiting",
+            },
+        )
+    finally:
+        server.shutdown()
+
+    assert response["ok"] is True
+    assert response["comparison"]["name"] == "semantic_embedding"
+    assert response["comparison"]["result"]["model_name"] == "semantic_embedding_logreg"
 
 
 def test_auto_retrain_note_label_saved_returns_status_without_deadlock(tmp_path: Path) -> None:

@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import json
+import logging
 from math import ceil
 from pathlib import Path
 from typing import Any
@@ -11,7 +12,7 @@ from typing import Any
 import joblib
 import numpy as np
 from sklearn.base import BaseEstimator, TransformerMixin
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     brier_score_loss,
@@ -24,17 +25,23 @@ from ask_seattle import __version__
 from ask_seattle.data import (
     LabeledPost,
     body_length_bucket,
+    has_question_mark,
     is_sparse_media_post,
+    is_low_text_body,
     normalize_body,
+    normalize_urls_for_lexical_text,
     post_metadata_text,
     post_text,
     title_length_bucket,
 )
 
 DEFAULT_THRESHOLD_GRID = tuple(round(index / 100, 2) for index in range(5, 100, 5))
-SPARSE_MEDIA_HIGH_THRESHOLD_DELTA = 0.1
 DEFAULT_SPLIT_STRATEGY = "random"
 DEFAULT_SPLIT_SEED = 13
+DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION = "v3_compact_contextual_fields"
+DEFAULT_TFIDF_CONFIG_VERSION = "v6_tfidf_review70_semantic_components"
+DEFAULT_REVIEW_PRECISION_TARGET = 0.75
+LOGGER = logging.getLogger("ask_seattle.model")
 WORD_STOPWORDS = frozenset(
     {
         "a",
@@ -68,8 +75,11 @@ WORD_STOPWORDS = frozenset(
         "without",
     }
 )
-DEFAULT_EXTRA_WORD_STOPWORDS = frozenset()
+DEFAULT_EXTRA_WORD_STOPWORDS = frozenset({"just", "one", "some"})
 DEFAULT_CHAR_WEIGHT = 0.25
+DEFAULT_METADATA_WEIGHT = 0.4
+DEFAULT_TFIDF_URL_NORMALIZATION = True
+DEFAULT_TFIDF_STRIP_URLS = False
 
 
 class TextFieldExtractor(BaseEstimator, TransformerMixin):
@@ -145,6 +155,7 @@ class CheckResult:
     post_id: str | None
     permalink: str | None
     model_name: str
+    display_name: str
     model_version: str
     low_threshold: float
     high_threshold: float
@@ -162,6 +173,11 @@ def build_pipeline(*, min_df: int = 2) -> Pipeline:
         min_df=min_df,
         extra_word_stopwords=DEFAULT_EXTRA_WORD_STOPWORDS,
         char_weight=DEFAULT_CHAR_WEIGHT,
+        metadata_weight=DEFAULT_METADATA_WEIGHT,
+        normalize_urls=DEFAULT_TFIDF_URL_NORMALIZATION,
+        strip_urls=DEFAULT_TFIDF_STRIP_URLS,
+        classifier_c=1.0,
+        classifier_class_weight="balanced",
     )
 
 
@@ -170,15 +186,28 @@ def build_pipeline_with_config(
     min_df: int = 2,
     extra_word_stopwords: set[str] | frozenset[str] | None = None,
     char_weight: float = DEFAULT_CHAR_WEIGHT,
+    metadata_weight: float = DEFAULT_METADATA_WEIGHT,
+    normalize_urls: bool = DEFAULT_TFIDF_URL_NORMALIZATION,
+    strip_urls: bool = DEFAULT_TFIDF_STRIP_URLS,
+    classifier_c: float = 1.0,
+    classifier_class_weight: str | dict[int, float] | None = "balanced",
 ) -> Pipeline:
     word_stopwords = sorted(WORD_STOPWORDS | set(extra_word_stopwords or ()))
+    if normalize_urls:
+        title_field = "title_lexical_stripped" if strip_urls else "title_lexical"
+        body_field = "body_lexical_stripped" if strip_urls else "body_lexical"
+        char_field = "text_lexical_stripped" if strip_urls else "text_lexical"
+    else:
+        title_field = "title"
+        body_field = "body_raw"
+        char_field = "text_raw"
     features = FeatureUnion(
         [
             (
                 "title_word",
                 Pipeline(
                     [
-                        ("extractor", TextFieldExtractor("title")),
+                        ("extractor", TextFieldExtractor(title_field)),
                         (
                             "vectorizer",
                             TfidfVectorizer(
@@ -198,7 +227,7 @@ def build_pipeline_with_config(
                 "body_word",
                 Pipeline(
                     [
-                        ("extractor", TextFieldExtractor("body")),
+                        ("extractor", TextFieldExtractor(body_field)),
                         (
                             "vectorizer",
                             TfidfVectorizer(
@@ -218,7 +247,7 @@ def build_pipeline_with_config(
                 "char_wb",
                 Pipeline(
                     [
-                        ("extractor", TextFieldExtractor("text")),
+                        ("extractor", TextFieldExtractor(char_field)),
                         (
                             "vectorizer",
                             TfidfVectorizer(
@@ -232,11 +261,31 @@ def build_pipeline_with_config(
                     ]
                 ),
             ),
+            (
+                "metadata_token",
+                Pipeline(
+                    [
+                        ("extractor", TextFieldExtractor("metadata_text")),
+                        (
+                            "vectorizer",
+                            CountVectorizer(
+                                binary=True,
+                                lowercase=False,
+                                min_df=min_df,
+                                preprocessor=None,
+                                tokenizer=str.split,
+                                token_pattern=None,
+                            ),
+                        ),
+                    ]
+                ),
+            ),
         ],
         transformer_weights={
             "title_word": 2.0,
             "body_word": 1.0,
             "char_wb": char_weight,
+            "metadata_token": metadata_weight,
         },
     )
 
@@ -246,7 +295,8 @@ def build_pipeline_with_config(
             (
                 "classifier",
                 LogisticRegression(
-                    class_weight="balanced",
+                    class_weight=classifier_class_weight,
+                    C=classifier_c,
                     max_iter=2_000,
                     solver="liblinear",
                 ),
@@ -261,15 +311,26 @@ def train_model(
     sample_weight: list[float] | None = None,
     extra_word_stopwords: set[str] | frozenset[str] | None = None,
     char_weight: float = DEFAULT_CHAR_WEIGHT,
+    metadata_weight: float = DEFAULT_METADATA_WEIGHT,
+    normalize_urls: bool = DEFAULT_TFIDF_URL_NORMALIZATION,
+    strip_urls: bool = DEFAULT_TFIDF_STRIP_URLS,
+    min_df: int | None = None,
+    classifier_c: float = 1.0,
+    classifier_class_weight: str | dict[int, float] | None = "balanced",
 ) -> Pipeline:
     _validate_posts(posts)
     effective_word_stopwords = (
         DEFAULT_EXTRA_WORD_STOPWORDS if extra_word_stopwords is None else set(extra_word_stopwords)
     )
     model = build_pipeline_with_config(
-        min_df=_default_min_df(posts),
+        min_df=_default_min_df(posts) if min_df is None else int(min_df),
         extra_word_stopwords=effective_word_stopwords,
         char_weight=char_weight,
+        metadata_weight=metadata_weight,
+        normalize_urls=normalize_urls,
+        strip_urls=strip_urls,
+        classifier_c=classifier_c,
+        classifier_class_weight=classifier_class_weight,
     )
     fit_kwargs: dict[str, Any] = {}
     if sample_weight is not None:
@@ -360,6 +421,7 @@ def select_decision_thresholds(
     probabilities: list[float],
     *,
     auto_precision_target: float,
+    review_precision_target: float = DEFAULT_REVIEW_PRECISION_TARGET,
     thresholds: tuple[float, ...] | None = None,
 ) -> DecisionThresholds:
     high_threshold_selection = select_threshold(
@@ -370,12 +432,15 @@ def select_decision_thresholds(
     )
     high_threshold_sweep = threshold_sweep(y_true, probabilities, thresholds)
     low_threshold_sweep = high_threshold_sweep
+    low_ready = [
+        row for row in low_threshold_sweep if float(row["precision"]) >= review_precision_target
+    ]
     best_low = max(
-        low_threshold_sweep,
+        low_ready or low_threshold_sweep,
         key=lambda row: (
-            float(row["f1"]),
             float(row["recall"]),
             float(row["precision"]),
+            float(row["f1"]),
             -float(row["threshold"]),
         ),
     )
@@ -520,14 +585,20 @@ def save_model(
     bundle = {
         "model": model,
         "model_type": "tfidf",
+        "model_family": "tfidf",
         "model_name": "tfidf_logreg",
         "model_version": __version__,
+        "tfidf_config_version": DEFAULT_TFIDF_CONFIG_VERSION,
         "threshold": high_threshold,
         "low_threshold": low_threshold,
         "high_threshold": high_threshold,
         "threshold_policy": {
             "low_threshold": low_threshold,
             "high_threshold": high_threshold,
+            "review_precision_target": (
+                decision_policy.get("review_precision_target") if decision_policy else DEFAULT_REVIEW_PRECISION_TARGET
+            ),
+            "high_precision_target": decision_policy.get("high_precision_target") if decision_policy else None,
             "calibration_method": decision_policy.get("calibration_method") if decision_policy else None,
             "split_strategy": decision_policy.get("split_strategy") if decision_policy else "manual",
             "split_seed": decision_policy.get("split_seed") if decision_policy else None,
@@ -561,6 +632,8 @@ def load_model(path: str | Path) -> dict[str, Any]:
         return _load_semantic_bundle(bundle)
     if bundle.get("model_family") == "transformer_sequence_classifier":
         return _load_transformer_bundle_from_joblib(bundle, source_path=model_path)
+    if bundle.get("model_family") == "causal_lm_classifier":
+        return _load_causal_lm_bundle_from_joblib(bundle, source_path=model_path)
     msg = f"{path} is not an ask-seattle model bundle"
     raise ValueError(msg)
 
@@ -625,6 +698,8 @@ def raw_score_rows(bundle: dict[str, Any], rows: list[dict[str, str]]) -> list[f
         return _semantic_positive_probabilities(bundle, rows)
     if family == "transformer_sequence_classifier":
         return _transformer_positive_probabilities(bundle, rows)
+    if family == "causal_lm_classifier":
+        return _causal_lm_positive_probabilities(bundle, rows)
     raise ValueError(f"Unsupported model family: {family}")
 
 
@@ -636,12 +711,58 @@ def positive_probabilities(model: Pipeline, rows: list[dict[str, str]]) -> list[
 
 
 def _semantic_positive_probabilities(bundle: dict[str, Any], rows: list[dict[str, str]]) -> list[float]:
-    encoder = bundle.get("encoder")
     classifier = bundle.get("classifier")
-    if encoder is None or classifier is None:
-        raise ValueError("Semantic embedding bundle is missing encoder or classifier")
-    embeddings = encoder.encode([str(row.get("text") or "") for row in rows], show_progress_bar=False)
-    probabilities = classifier.predict_proba(embeddings)
+    if classifier is None:
+        raise ValueError("Semantic embedding bundle is missing classifier")
+    feature_layout = str(bundle.get("feature_layout") or "single_text")
+    backend = str(bundle.get("backend") or "sentence_transformers")
+    if feature_layout == "title_body_metadata_v1":
+        title_texts = _semantic_runtime_component_texts(bundle, rows, component="title")
+        body_texts = _semantic_runtime_component_texts(bundle, rows, component="body")
+        if backend == "sentence_transformers":
+            encoder = bundle.get("encoder")
+            if encoder is None:
+                raise ValueError("Semantic embedding bundle is missing encoder")
+            title_embeddings = np.asarray(
+                encoder.encode(
+                    title_texts,
+                    show_progress_bar=False,
+                    normalize_embeddings=bool(bundle.get("normalize_embeddings")),
+                ),
+                dtype=np.float32,
+            )
+            body_embeddings = np.asarray(
+                encoder.encode(
+                    body_texts,
+                    show_progress_bar=False,
+                    normalize_embeddings=bool(bundle.get("normalize_embeddings")),
+                ),
+                dtype=np.float32,
+            )
+        elif backend == "hf_embedding":
+            title_embeddings = _hf_embedding_runtime_embeddings(bundle, title_texts)
+            body_embeddings = _hf_embedding_runtime_embeddings(bundle, body_texts)
+        else:
+            raise ValueError(f"Unsupported semantic embedding backend: {backend}")
+        metadata_features = _semantic_runtime_metadata_features(bundle, rows)
+        feature_matrix = np.hstack([title_embeddings, body_embeddings, metadata_features]).astype(np.float32)
+        probabilities = classifier.predict_proba(feature_matrix)
+    else:
+        texts = _semantic_runtime_texts(bundle, rows)
+        if backend == "sentence_transformers":
+            encoder = bundle.get("encoder")
+            if encoder is None:
+                raise ValueError("Semantic embedding bundle is missing encoder")
+            embeddings = encoder.encode(
+                texts,
+                show_progress_bar=False,
+                normalize_embeddings=bool(bundle.get("normalize_embeddings")),
+            )
+        elif backend == "hf_embedding":
+            embeddings = _hf_embedding_runtime_embeddings(bundle, texts)
+        else:
+            raise ValueError(f"Unsupported semantic embedding backend: {backend}")
+        probabilities = classifier.predict_proba(embeddings)
     positive_index = list(classifier.classes_).index(1)
     return [float(row[positive_index]) for row in probabilities]
 
@@ -659,6 +780,7 @@ def _transformer_positive_probabilities(bundle: dict[str, Any], rows: list[dict[
     tokenizer = bundle.get("tokenizer")
     if model is None or tokenizer is None:
         raise ValueError("Transformer bundle is missing model or tokenizer")
+    device = _bundle_runtime_device(bundle, torch)
 
     titles = [str(row.get("title") or "") for row in rows]
     bodies = [str(row.get("body") or "") for row in rows]
@@ -670,11 +792,49 @@ def _transformer_positive_probabilities(bundle: dict[str, Any], rows: list[dict[
         padding=True,
         return_tensors="pt",
     )
+    encoded = _move_token_batch_to_device(encoded, device=device, torch_module=torch)
+    model.to(device)
     model.eval()
     with torch.no_grad():
         outputs = model(**encoded)
         logits = outputs.get("logits") if isinstance(outputs, dict) else outputs.logits
     return _positive_scores_from_logits(logits.detach().cpu().numpy())
+
+
+def _causal_lm_positive_probabilities(bundle: dict[str, Any], rows: list[dict[str, str]]) -> list[float]:
+    try:
+        import torch
+    except ImportError as exc:
+        raise ValueError(
+            "Causal-LM inference requires torch. Install optional model dependencies with "
+            "`python -m pip install -e \".[dev,models]\"`."
+        ) from exc
+
+    model = bundle.get("model")
+    tokenizer = bundle.get("tokenizer")
+    if model is None or tokenizer is None:
+        raise ValueError("Causal-LM bundle is missing model or tokenizer")
+
+    device = _bundle_runtime_device(bundle, torch)
+    model.to(device)
+    model.eval()
+    prompt_template_version = str(
+        bundle.get("prompt_template_version")
+        or DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION
+    )
+    prompts = [
+        causal_lm_prompt_for_row(row, prompt_template_version=prompt_template_version)
+        for row in rows
+    ]
+    ask_scores = _causal_lm_completion_scores(model, tokenizer, prompts, completion=" askseattle", device=device)
+    not_scores = _causal_lm_completion_scores(model, tokenizer, prompts, completion=" not_askseattle", device=device)
+    probabilities: list[float] = []
+    for ask_score, not_score in zip(ask_scores, not_scores, strict=True):
+        stabilizer = max(ask_score, not_score)
+        ask_prob = float(np.exp(ask_score - stabilizer))
+        not_prob = float(np.exp(not_score - stabilizer))
+        probabilities.append(ask_prob / (ask_prob + not_prob))
+    return probabilities
 
 
 def confidence_band_for_score(score: float, *, low_threshold: float, high_threshold: float) -> str:
@@ -690,8 +850,6 @@ def _effective_high_threshold_for_row(
     *,
     high_threshold: float,
 ) -> float:
-    if row and row.get("is_sparse_media"):
-        return min(0.99, high_threshold + SPARSE_MEDIA_HIGH_THRESHOLD_DELTA)
     return high_threshold
 
 
@@ -740,6 +898,7 @@ def classify_post(
         post_id=post_id,
         permalink=permalink,
         model_name=str(bundle.get("model_name") or bundle.get("model_type") or "unknown"),
+        display_name=str(bundle.get("display_name") or bundle.get("model_name") or bundle.get("model_type") or "unknown"),
         model_version=str(bundle.get("model_version") or bundle.get("version") or "unknown"),
         low_threshold=low_threshold,
         high_threshold=high_threshold,
@@ -792,19 +951,44 @@ def build_inference_row(
     is_crosspost: bool | None = None,
 ) -> dict[str, str]:
     body = normalize_body(selftext)
+    normalized_title = str(title).strip()
+    normalized_body = body.strip()
+    title_lexical = normalize_urls_for_lexical_text(normalized_title)
+    body_lexical = normalize_urls_for_lexical_text(normalized_body)
+    title_lexical_stripped = normalize_urls_for_lexical_text(normalized_title, replacement="")
+    body_lexical_stripped = normalize_urls_for_lexical_text(normalized_body, replacement="")
     metadata = post_metadata_text(
-        title=title,
+        title=normalized_title,
         selftext=body,
         post_type=post_type,
         content_domain=content_domain,
         is_crosspost=is_crosspost,
     )
     sparse_media = is_sparse_media_post(post_type=post_type, selftext=body)
+    crosspost_value = "unknown"
+    if is_crosspost is True:
+        crosspost_value = "yes"
+    elif is_crosspost is False:
+        crosspost_value = "no"
+    raw_text = "\n".join(part for part in (normalized_title, normalized_body) if part).strip()
+    lexical_text = "\n".join(part for part in (title_lexical, body_lexical) if part).strip()
+    lexical_text_stripped = "\n".join(
+        part for part in (title_lexical_stripped, body_lexical_stripped) if part
+    ).strip()
     return {
-        "title": str(title).strip(),
-        "body": "\n".join(part for part in (metadata, body.strip()) if part).strip(),
+        "title": normalized_title,
+        "title_lexical": title_lexical,
+        "title_lexical_stripped": title_lexical_stripped,
+        "body": "\n".join(part for part in (metadata, normalized_body) if part).strip(),
+        "body_raw": normalized_body,
+        "body_lexical": body_lexical,
+        "body_lexical_stripped": body_lexical_stripped,
+        "metadata_text": metadata,
+        "text_raw": raw_text,
+        "text_lexical": lexical_text,
+        "text_lexical_stripped": lexical_text_stripped,
         "text": post_text(
-            title,
+            normalized_title,
             body,
             post_type=post_type,
             content_domain=content_domain,
@@ -815,6 +999,9 @@ def build_inference_row(
         "title_length_bucket": title_length_bucket(title),
         "body_length_bucket": body_length_bucket(body),
         "has_body": "yes" if body.strip() else "no",
+        "has_question_mark": "yes" if has_question_mark(title, body) else "no",
+        "is_low_text": "yes" if is_low_text_body(body) else "no",
+        "is_crosspost": crosspost_value,
         "is_sparse_media": sparse_media,
     }
 
@@ -1252,7 +1439,13 @@ def _rank_feature_records(
 
 
 def _default_min_df(posts: list[LabeledPost]) -> int:
-    return 1 if len(posts) < 50 else 2
+    if len(posts) < 50:
+        return 1
+    if len(posts) < 500:
+        return 2
+    if len(posts) < 2_000:
+        return 3
+    return 5
 
 
 def _minimum_train_count_with_both_classes(posts: list[LabeledPost]) -> int:
@@ -1269,21 +1462,36 @@ def _normalize_tfidf_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     bundle.setdefault("model_type", "tfidf")
     bundle.setdefault("model_name", "tfidf_logreg")
     bundle.setdefault("model_version", str(bundle.get("version") or __version__))
+    bundle.setdefault("tfidf_config_version", DEFAULT_TFIDF_CONFIG_VERSION)
     _apply_threshold_policy_defaults(bundle)
     return bundle
 
 
 def _load_semantic_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
-    try:
-        from sentence_transformers import SentenceTransformer
-    except ImportError as exc:
-        raise ValueError(
-            "Semantic embedding inference requires sentence-transformers. Install optional model "
-            "dependencies with `python -m pip install -e \".[dev,models]\"`."
-        ) from exc
-
     normalized = dict(bundle)
-    normalized["encoder"] = SentenceTransformer(str(bundle["model_id"]))
+    backend = str(bundle.get("backend") or "sentence_transformers")
+    normalized["backend"] = backend
+    if backend == "sentence_transformers":
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise ValueError(
+                "Semantic embedding inference requires sentence-transformers. Install optional model "
+                "dependencies with `python -m pip install -e \".[dev,models]\"`."
+            ) from exc
+        normalized["encoder"] = SentenceTransformer(str(bundle["model_id"]))
+    elif backend == "hf_embedding":
+        try:
+            from transformers import AutoModel, AutoTokenizer
+        except ImportError as exc:
+            raise ValueError(
+                "Transformer-backed embedding inference requires transformers. Install optional model "
+                "dependencies with `python -m pip install -e \".[dev,models]\"`."
+            ) from exc
+        normalized["tokenizer"] = AutoTokenizer.from_pretrained(str(bundle["model_id"]), use_fast=False)
+        normalized["encoder_model"] = AutoModel.from_pretrained(str(bundle["model_id"]))
+    else:
+        raise ValueError(f"Unsupported semantic embedding backend: {backend}")
     normalized.setdefault("model_family", "semantic_embedding")
     normalized.setdefault("model_name", "semantic_embedding_logreg")
     normalized.setdefault("model_version", str(bundle.get("version") or __version__))
@@ -1339,6 +1547,38 @@ def _load_transformer_runtime_bundle(metadata: dict[str, Any], *, model_dir: Pat
     return normalized
 
 
+def _load_causal_lm_bundle_from_joblib(bundle: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    model_dir = bundle.get("artifact_path") or bundle.get("model_dir")
+    if not model_dir:
+        raise ValueError(f"{source_path} is missing causal-lm artifact metadata")
+    if not Path(model_dir).is_absolute():
+        model_dir = str((source_path.parent / str(model_dir)).resolve())
+    normalized = dict(bundle)
+    normalized["artifact_path"] = str(model_dir)
+    return _load_causal_lm_runtime_bundle(normalized, model_dir=Path(model_dir))
+
+
+def _load_causal_lm_runtime_bundle(metadata: dict[str, Any], *, model_dir: Path) -> dict[str, Any]:
+    try:
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as exc:
+        raise ValueError(
+            "Causal-LM inference requires transformers. Install optional model dependencies with "
+            "`python -m pip install -e \".[dev,models]\"`."
+        ) from exc
+
+    normalized = dict(metadata)
+    normalized["tokenizer"] = AutoTokenizer.from_pretrained(str(model_dir), use_fast=False)
+    if normalized["tokenizer"].pad_token is None:
+        normalized["tokenizer"].pad_token = normalized["tokenizer"].eos_token
+    normalized["model"] = AutoModelForCausalLM.from_pretrained(str(model_dir))
+    normalized.setdefault("model_family", "causal_lm_classifier")
+    normalized.setdefault("model_name", "causal_lm_classifier")
+    normalized.setdefault("model_version", str(normalized.get("version") or __version__))
+    _apply_threshold_policy_defaults(normalized)
+    return normalized
+
+
 def _transformer_max_length(model_dir: Path) -> int:
     training_summary_path = model_dir.parent / "training_summary.json"
     if training_summary_path.exists():
@@ -1370,6 +1610,8 @@ def _apply_threshold_policy_defaults(bundle: dict[str, Any]) -> None:
     bundle["threshold_policy"] = {
         "low_threshold": low_threshold,
         "high_threshold": high_threshold,
+        "review_precision_target": policy.get("review_precision_target", DEFAULT_REVIEW_PRECISION_TARGET),
+        "high_precision_target": policy.get("high_precision_target"),
         "calibration_method": policy.get("calibration_method") or bundle.get("calibration_method"),
         "split_strategy": policy.get("split_strategy") or bundle.get("split_strategy") or "manual",
         "split_seed": _first_defined(policy.get("split_seed"), bundle.get("split_seed")),
@@ -1383,6 +1625,280 @@ def _first_defined(*values: Any) -> Any:
         if value is not None:
             return value
     return None
+
+
+def _semantic_runtime_texts(bundle: dict[str, Any], rows: list[dict[str, str]]) -> list[str]:
+    prompt_mode = str(bundle.get("prompt_mode") or "plain")
+    prompt_prefix = str(bundle.get("prompt_prefix") or "")
+    texts = [str(row.get("text") or "") for row in rows]
+    if prompt_mode == "task_prefix" and prompt_prefix:
+        return [f"{prompt_prefix}\n{text}" for text in texts]
+    if prompt_mode == "short_task_prefix" and prompt_prefix:
+        return [f"{prompt_prefix} {text}".strip() for text in texts]
+    return texts
+
+
+def _semantic_runtime_component_texts(
+    bundle: dict[str, Any],
+    rows: list[dict[str, str]],
+    *,
+    component: str,
+) -> list[str]:
+    prompt_mode = str(bundle.get("prompt_mode") or "plain")
+    prompt_prefix = str(bundle.get("prompt_prefix") or "")
+    short_prompt_prefix = str(bundle.get("short_prompt_prefix") or prompt_prefix)
+    component_label = "Title" if component == "title" else "Body"
+    raw_texts = [
+        str(row.get("title") or "").strip() if component == "title" else str(row.get("body_raw") or "").strip()
+        for row in rows
+    ]
+    if prompt_mode == "plain":
+        return raw_texts
+    if prompt_mode == "task_prefix":
+        return [
+            f"{prompt_prefix}\n{component_label}: {text}" if prompt_prefix else f"{component_label}: {text}"
+            for text in raw_texts
+        ]
+    if prompt_mode == "short_task_prefix":
+        return [
+            f"{short_prompt_prefix} {component_label}: {text}".strip()
+            if short_prompt_prefix
+            else f"{component_label}: {text}"
+            for text in raw_texts
+        ]
+    raise ValueError(f"Unsupported semantic prompt mode: {prompt_mode}")
+
+
+def _semantic_runtime_metadata_features(bundle: dict[str, Any], rows: list[dict[str, str]]) -> np.ndarray:
+    vectorizer = bundle.get("metadata_vectorizer")
+    if vectorizer is None:
+        raise ValueError("Semantic embedding bundle is missing metadata_vectorizer")
+    matrix = vectorizer.transform([str(row.get("metadata_text") or "") for row in rows])
+    return np.asarray(matrix.toarray(), dtype=np.float32)
+
+
+def _hf_embedding_runtime_embeddings(bundle: dict[str, Any], texts: list[str]) -> np.ndarray:
+    import torch
+
+    tokenizer = bundle.get("tokenizer")
+    model = bundle.get("encoder_model")
+    if tokenizer is None or model is None:
+        raise ValueError("Transformer-backed semantic bundle is missing tokenizer or encoder model")
+    device = _bundle_runtime_device(bundle, torch)
+    model.to(device)
+    model.eval()
+    outputs: list[np.ndarray] = []
+    batch_size = int(bundle.get("encode_batch_size") or 8)
+    with torch.no_grad():
+        for start in range(0, len(texts), batch_size):
+            batch_texts = texts[start : start + batch_size]
+            batch = tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt",
+            )
+            batch = _move_token_batch_to_device(batch, device=device, torch_module=torch)
+            result = model(**batch)
+            hidden = result.last_hidden_state
+            pooling = str(bundle.get("pooling") or "mean")
+            if pooling == "last_token":
+                pooled = _last_token_pool(hidden, batch["attention_mask"])
+            else:
+                pooled = _mean_pool(hidden, batch["attention_mask"])
+            outputs.append(pooled.detach().cpu().numpy().astype(np.float32))
+    embeddings = np.vstack(outputs) if outputs else np.zeros((0, 0), dtype=np.float32)
+    if bool(bundle.get("normalize_embeddings")) and embeddings.size:
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+        embeddings = embeddings / np.clip(norms, a_min=1e-9, a_max=None)
+    return embeddings.astype(np.float32)
+
+
+def _mean_pool(hidden_states: Any, attention_mask: Any) -> Any:
+    expanded = attention_mask.unsqueeze(-1).expand(hidden_states.size()).float()
+    summed = (hidden_states * expanded).sum(dim=1)
+    counts = expanded.sum(dim=1).clamp(min=1e-9)
+    return summed / counts
+
+
+def _last_token_pool(hidden_states: Any, attention_mask: Any) -> Any:
+    import torch
+
+    token_counts = attention_mask.sum(dim=1) - 1
+    batch_indices = torch.arange(hidden_states.shape[0], device=hidden_states.device)
+    return hidden_states[batch_indices, token_counts]
+
+
+def _move_token_batch_to_device(
+    batch: dict[str, Any],
+    *,
+    device: Any,
+    torch_module: Any,
+) -> dict[str, Any]:
+    moved: dict[str, Any] = {}
+    integer_keys = {"input_ids", "attention_mask", "token_type_ids", "position_ids"}
+    for key, value in batch.items():
+        if not hasattr(value, "to"):
+            moved[key] = value
+            continue
+        if key in integer_keys:
+            moved[key] = value.to(device=device, dtype=torch_module.long)
+        else:
+            moved[key] = value.to(device=device)
+    return moved
+
+
+def causal_lm_prompt_for_row(
+    row: dict[str, Any],
+    *,
+    prompt_template_version: str = DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
+) -> str:
+    if prompt_template_version == "v1_binary_label_completion":
+        return _causal_lm_prompt_v1(str(row.get("text") or ""))
+    if prompt_template_version == "v2_contextual_fields":
+        return _causal_lm_prompt_v2(row)
+    if prompt_template_version == "v3_compact_contextual_fields":
+        return _causal_lm_prompt_v3(row)
+    raise ValueError(f"Unsupported causal-LM prompt template version: {prompt_template_version}")
+
+
+def _causal_lm_prompt_v1(text: str) -> str:
+    return (
+        "Classify the following Reddit post as askseattle or not_askseattle.\n"
+        "Respond with exactly one label.\n\n"
+        f"{text}\n\n"
+        "Label:"
+    )
+
+
+def _causal_lm_prompt_v2(row: dict[str, Any]) -> str:
+    title = str(row.get("title") or "").strip() or "(none)"
+    body = str(row.get("body_raw") or "").strip() or "(none)"
+    post_type = str(row.get("post_type") or "").strip() or "unknown"
+    content_domain = str(row.get("content_domain") or "").strip() or "unknown"
+    has_body = str(row.get("has_body") or "unknown")
+    has_question = str(row.get("has_question_mark") or "unknown")
+    low_text = str(row.get("is_low_text") or "unknown")
+    sparse_media = "yes" if row.get("is_sparse_media") else "no"
+    crosspost = str(row.get("is_crosspost") or "unknown")
+    title_length = str(row.get("title_length_bucket") or "unknown")
+    body_length = str(row.get("body_length_bucket") or "unknown")
+
+    return (
+        "You are classifying a Reddit post for a binary moderation workflow.\n"
+        "Return exactly one label: askseattle or not_askseattle.\n\n"
+        "Use the title, body, and metadata together.\n"
+        "Choose askseattle when the post is primarily asking for local help, recommendations, identification, "
+        "explanations, or advice that fits an ask-style local question.\n"
+        "Choose not_askseattle when the post is primarily news, discussion, opinion, promotion, media sharing, "
+        "or another post that is not mainly asking for that kind of local help.\n"
+        "Image or link posts can still be askseattle if the user is clearly asking what, where, who, why, "
+        "or for recommendations or guidance.\n"
+        "Do not use subreddit name.\n\n"
+        f"Title: {title}\n"
+        f"Body: {body}\n"
+        f"Post type: {post_type}\n"
+        f"Content domain: {content_domain}\n"
+        f"Has body: {has_body}\n"
+        f"Has question mark: {has_question}\n"
+        f"Low text: {low_text}\n"
+        f"Sparse media: {sparse_media}\n"
+        f"Crosspost: {crosspost}\n"
+        f"Title length: {title_length}\n"
+        f"Body length: {body_length}\n\n"
+        "Label:"
+    )
+
+
+def _causal_lm_prompt_v3(row: dict[str, Any]) -> str:
+    title = str(row.get("title") or "").strip() or "(none)"
+    body = str(row.get("body_raw") or "").strip() or "(none)"
+    post_type = str(row.get("post_type") or "").strip() or "unknown"
+    content_domain = str(row.get("content_domain") or "").strip() or "unknown"
+    has_question = str(row.get("has_question_mark") or "unknown")
+    low_text = str(row.get("is_low_text") or "unknown")
+    crosspost = str(row.get("is_crosspost") or "unknown")
+
+    return (
+        "Classify this Reddit post for a binary moderation workflow.\n"
+        "Return exactly one label: askseattle or not_askseattle.\n"
+        "Use the title, body, and metadata together.\n"
+        "Choose askseattle when the post is mainly asking for local help, recommendations, identification, explanation, or advice.\n"
+        "Choose not_askseattle when the post is mainly news, discussion, opinion, promotion, or media sharing without that primary ask.\n"
+        "Do not use subreddit name.\n\n"
+        f"Title: {title}\n"
+        f"Body: {body}\n"
+        f"Post type: {post_type}\n"
+        f"Content domain: {content_domain}\n"
+        f"Has question mark: {has_question}\n"
+        f"Low text: {low_text}\n"
+        f"Crosspost: {crosspost}\n\n"
+        "Label:"
+    )
+
+
+def _causal_lm_completion_scores(
+    model: Any,
+    tokenizer: Any,
+    prompts: list[str],
+    completion: str,
+    *,
+    device: str,
+) -> list[float]:
+    import torch
+
+    completion_ids = tokenizer(completion, add_special_tokens=False)["input_ids"]
+    scores: list[float] = []
+    with torch.no_grad():
+        for prompt in prompts:
+            prompt_ids = tokenizer(prompt, add_special_tokens=True)["input_ids"]
+            input_ids = torch.tensor([prompt_ids + completion_ids], device=device)
+            logits = model(input_ids=input_ids).logits
+            token_log_probs = torch.nn.functional.log_softmax(logits[:, :-1, :], dim=-1)
+            total = 0.0
+            start = len(prompt_ids) - 1
+            for offset, token_id in enumerate(completion_ids):
+                total += float(token_log_probs[0, start + offset, token_id].item())
+            scores.append(total)
+    return scores
+
+
+def _bundle_runtime_device(bundle: dict[str, Any], torch_module: Any) -> str:
+    detected = _torch_runtime_device(torch_module)
+    if detected != "mps":
+        return detected
+
+    family = str(bundle.get("model_family") or bundle.get("model_type") or "")
+    backend = str(bundle.get("backend") or "")
+
+    if family == "causal_lm_classifier":
+        LOGGER.debug(
+            "using cpu runtime for bundle family=%s model_id=%s reason=%s",
+            family,
+            bundle.get("model_id") or "",
+            "causal-lm inference is not stable on this MPS stack",
+        )
+        return "cpu"
+
+    if family == "semantic_embedding" and backend == "hf_embedding":
+        LOGGER.debug(
+            "using cpu runtime for bundle family=%s model_id=%s reason=%s",
+            family,
+            bundle.get("model_id") or "",
+            "transformer-backed embedding inference is forced off MPS on this machine",
+        )
+        return "cpu"
+
+    return detected
+
+
+def _torch_runtime_device(torch_module: Any) -> str:
+    if torch_module.cuda.is_available():
+        return "cuda"
+    if getattr(torch_module.backends, "mps", None) and torch_module.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 def _positive_scores_from_logits(logits: Any) -> list[float]:

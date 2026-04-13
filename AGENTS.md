@@ -32,7 +32,8 @@ Current architectural invariants:
 - browser-originated text only
 - local filesystem artifacts only
 - binary labels only: `askseattle` and `not_askseattle`
-- one TF-IDF + logistic regression model path
+- one TF-IDF + logistic regression operational model path
+- one local benchmark-suite comparison stack
 
 If you change any of those, treat it as a major scope change and update the docs in the same change.
 
@@ -57,7 +58,8 @@ Prefer:
 
 - one local bridge
 - one local reviewed-label file
-- one model family
+- one operational model path
+- one canonical benchmark-suite entry point for multi-model comparison
 - inspectable artifacts
 - simple make targets
 
@@ -68,6 +70,18 @@ Avoid adding:
 - databases
 - Docker-only workflows
 - server-side Reddit integrations
+
+### Mac-first is the supported baseline
+
+The primary supported machine is the MacBook Pro M2 (2023, 32 GB).
+
+That means:
+
+- new benchmark paths should be designed to train and infer locally on that machine first
+- slow is acceptable in the benchmark suite
+- the Windows 4090 laptop is an optional speed-up later, not a required dependency
+
+If a new model family only works with CUDA-specific assumptions, it is not aligned with the current baseline.
 
 ### Split policy is configurable, but random is the default
 
@@ -197,6 +211,14 @@ If you are changing model defaults or recommending a new default, compare varian
 ```bash
 make benchmark-variants EVAL_SUBREDDIT=seattle
 ```
+
+If you are changing the benchmark-suite model set, model-family behavior, or bridge comparison surface, also run:
+
+```bash
+make benchmark-suite EVAL_SUBREDDIT=seattle
+```
+
+If a full real suite run is too expensive for the current environment, at minimum leave the suite code covered by targeted tests and state clearly that the heavy end-to-end run was not completed.
 
 ## Three additional recommendations
 

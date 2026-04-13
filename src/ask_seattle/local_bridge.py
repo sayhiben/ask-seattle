@@ -52,6 +52,7 @@ class BridgeConfig:
         self.bundle = load_model(self.model_path)
         self.comparison_models = _load_comparison_models(
             primary_bundle=self.bundle,
+            primary_model_path=self.model_path,
             comparison_suite_path=self.comparison_suite_path,
         )
         LOGGER.info("labels will append to %s", self.label_path)
@@ -178,6 +179,9 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             if self.path == "/check":
                 self._handle_check(payload)
                 return
+            if self.path == "/check-comparison":
+                self._handle_check_comparison(payload)
+                return
             if self.path == "/train":
                 self._handle_train(payload)
                 return
@@ -198,16 +202,22 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
     def _handle_check(self, payload: dict[str, Any]) -> None:
         title = _required_string(payload, "title")
         selftext = str(payload.get("selftext") or "")
+        post_type = _optional_string(payload, "post_type")
+        content_domain = _optional_string(payload, "content_domain")
+        is_crosspost = _optional_bool(payload, "is_crosspost")
+        post_id = _optional_string(payload, "id")
+        permalink = _optional_string(payload, "permalink")
+        time_source = _request_time_source(payload)
         result = classify_post(
             self.bridge_config.bundle,
             title=title,
             selftext=selftext,
-            post_type=_optional_string(payload, "post_type"),
-            content_domain=_optional_string(payload, "content_domain"),
-            is_crosspost=_optional_bool(payload, "is_crosspost"),
-            post_id=_optional_string(payload, "id"),
-            permalink=_optional_string(payload, "permalink"),
-            time_source=_request_time_source(payload),
+            post_type=post_type,
+            content_domain=content_domain,
+            is_crosspost=is_crosspost,
+            post_id=post_id,
+            permalink=permalink,
+            time_source=time_source,
         )
         LOGGER.info(
             "check result id=%s label=%s confidence_band=%s score=%.3f high_threshold=%.3f",
@@ -217,28 +227,66 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             result.score,
             result.high_threshold,
         )
-        comparisons = [
+        include_comparisons = bool(payload.get("include_comparisons") is True)
+        comparisons = []
+        if include_comparisons:
+            comparisons = [
+                _comparison_result_entry(
+                    comparison,
+                    title=title,
+                    selftext=selftext,
+                    post_type=post_type,
+                    content_domain=content_domain,
+                    is_crosspost=is_crosspost,
+                    post_id=post_id,
+                    permalink=permalink,
+                    time_source=time_source,
+                )
+                for comparison in self.bridge_config.comparison_models
+            ]
+        self._send_json(
             {
-                "name": comparison["name"],
-                "model_family": comparison["model_family"],
-                "model_id": comparison.get("model_id"),
-                "result": asdict(
-                    classify_post(
-                        comparison["bundle"],
-                        title=title,
-                        selftext=selftext,
-                        post_type=_optional_string(payload, "post_type"),
-                        content_domain=_optional_string(payload, "content_domain"),
-                        is_crosspost=_optional_bool(payload, "is_crosspost"),
-                        post_id=_optional_string(payload, "id"),
-                        permalink=_optional_string(payload, "permalink"),
-                        time_source=_request_time_source(payload),
-                    )
-                ),
+                "ok": True,
+                "result": asdict(result),
+                "comparison_models": _comparison_model_summaries(self.bridge_config.comparison_models),
+                "comparisons": comparisons,
             }
-            for comparison in self.bridge_config.comparison_models
-        ]
-        self._send_json({"ok": True, "result": asdict(result), "comparisons": comparisons})
+        )
+
+    def _handle_check_comparison(self, payload: dict[str, Any]) -> None:
+        comparison_name = _required_string(payload, "name")
+        title = _required_string(payload, "title")
+        selftext = str(payload.get("selftext") or "")
+        post_type = _optional_string(payload, "post_type")
+        content_domain = _optional_string(payload, "content_domain")
+        is_crosspost = _optional_bool(payload, "is_crosspost")
+        post_id = _optional_string(payload, "id")
+        permalink = _optional_string(payload, "permalink")
+        time_source = _request_time_source(payload)
+        comparison = _find_comparison_model(self.bridge_config.comparison_models, comparison_name)
+        if comparison is None:
+            self._send_error(HTTPStatus.NOT_FOUND, f"unknown comparison model: {comparison_name}")
+            return
+        entry = _comparison_result_entry(
+            comparison,
+            title=title,
+            selftext=selftext,
+            post_type=post_type,
+            content_domain=content_domain,
+            is_crosspost=is_crosspost,
+            post_id=post_id,
+            permalink=permalink,
+            time_source=time_source,
+        )
+        LOGGER.info(
+            "comparison result name=%s label=%s confidence_band=%s score=%s error=%s",
+            comparison_name,
+            ((entry.get("result") or {}).get("label") if isinstance(entry.get("result"), dict) else ""),
+            ((entry.get("result") or {}).get("confidence_band") if isinstance(entry.get("result"), dict) else ""),
+            ((entry.get("result") or {}).get("score") if isinstance(entry.get("result"), dict) else ""),
+            entry.get("error") or "",
+        )
+        self._send_json({"ok": True, "comparison": entry})
 
     def _handle_train(self, payload: dict[str, Any]) -> None:
         title = _required_string(payload, "title")
@@ -657,12 +705,66 @@ def _comparison_model_summaries(comparison_models: list[dict[str, Any]]) -> list
     return [
         {
             "name": comparison["name"],
+            "display_name": comparison.get("display_name"),
             "model_family": comparison["model_family"],
             "model_id": comparison.get("model_id"),
             "artifact_path": comparison.get("artifact_path"),
         }
         for comparison in comparison_models
     ]
+
+
+def _find_comparison_model(
+    comparison_models: list[dict[str, Any]],
+    name: str,
+) -> dict[str, Any] | None:
+    for comparison in comparison_models:
+        if str(comparison.get("name") or "") == name:
+            return comparison
+    return None
+
+
+def _comparison_result_entry(
+    comparison: dict[str, Any],
+    *,
+    title: str,
+    selftext: str,
+    post_type: str | None,
+    content_domain: str | None,
+    is_crosspost: bool | None,
+    post_id: str | None,
+    permalink: str | None,
+    time_source: str | None,
+) -> dict[str, Any]:
+    payload = {
+        "name": comparison["name"],
+        "display_name": comparison.get("display_name"),
+        "model_family": comparison["model_family"],
+        "model_id": comparison.get("model_id"),
+    }
+    try:
+        payload["result"] = asdict(
+            classify_post(
+                comparison["bundle"],
+                title=title,
+                selftext=selftext,
+                post_type=post_type,
+                content_domain=content_domain,
+                is_crosspost=is_crosspost,
+                post_id=post_id,
+                permalink=permalink,
+                time_source=time_source,
+            )
+        )
+    except Exception as exc:
+        LOGGER.exception(
+            "comparison model check failed name=%s family=%s model_id=%s",
+            comparison["name"],
+            comparison["model_family"],
+            comparison.get("model_id") or "",
+        )
+        payload["error"] = str(exc)
+    return payload
 
 
 def _bundle_family(bundle: dict[str, Any]) -> str:
@@ -672,6 +774,7 @@ def _bundle_family(bundle: dict[str, Any]) -> str:
 def _load_comparison_models(
     *,
     primary_bundle: dict[str, Any],
+    primary_model_path: Path,
     comparison_suite_path: Path | None,
 ) -> list[dict[str, Any]]:
     if comparison_suite_path is None or not comparison_suite_path.exists():
@@ -683,17 +786,40 @@ def _load_comparison_models(
         LOGGER.warning("could not parse comparison suite summary at %s: %s", comparison_suite_path, exc)
         return []
 
-    primary_family = _bundle_family(primary_bundle)
+    primary_artifact_candidates = {
+        str(resolve_bridge_path(primary_model_path, must_exist=False)),
+    }
+    for candidate in (
+        primary_bundle.get("artifact_path"),
+        primary_bundle.get("model_dir"),
+    ):
+        if candidate:
+            try:
+                primary_artifact_candidates.add(str(resolve_bridge_path(str(candidate), must_exist=False)))
+            except Exception:
+                primary_artifact_candidates.add(str(candidate))
     loaded: list[dict[str, Any]] = []
     for entry in suite_summary.get("models") or []:
         if entry.get("status") != "ok":
             continue
         family = str(entry.get("model_family") or "").strip()
         artifact_path = entry.get("artifact_path")
-        if not family or not artifact_path or family == primary_family:
+        if not family or not artifact_path:
             continue
         try:
             resolved_artifact = resolve_bridge_path(str(artifact_path), must_exist=True)
+        except Exception as exc:  # pragma: no cover - defensive runtime fallback
+            LOGGER.warning(
+                "skipping comparison model name=%s family=%s artifact_path=%s error=%s",
+                entry.get("name") or "",
+                family,
+                artifact_path,
+                exc,
+            )
+            continue
+        if str(resolved_artifact) in primary_artifact_candidates:
+            continue
+        try:
             bundle = load_model(resolved_artifact)
         except Exception as exc:  # pragma: no cover - defensive runtime fallback
             LOGGER.warning(
@@ -707,6 +833,7 @@ def _load_comparison_models(
         loaded.append(
             {
                 "name": str(entry.get("name") or bundle.get("model_name") or family),
+                "display_name": entry.get("display_name") or bundle.get("display_name") or entry.get("name"),
                 "model_family": family,
                 "model_id": entry.get("model_id") or bundle.get("model_id"),
                 "artifact_path": str(resolved_artifact),

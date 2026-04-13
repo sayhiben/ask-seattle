@@ -45,11 +45,18 @@ The verdict block shows the active bridge model verdict:
 - `Looks like askseattle (...)`
 - `Does not look like askseattle`
 
-If benchmark-suite artifacts are available, the panel also shows a `Model checks` section with three side-by-side cards so you can read all results at a glance for:
+If benchmark-suite artifacts are available, the panel also shows a `Model checks` section with one card per suite model so you can read all results at a glance.
+
+The panel now renders those comparison cards incrementally. The main bridge verdict appears first, then each benchmark-suite model card updates as its own `/check-comparison` request finishes.
+
+The current full suite is:
 
 - TF-IDF
-- semantic embedding
-- transformer
+- Semantic MiniLM
+- Semantic Qwen3-Embedding
+- Transformer DeBERTa-v3-small
+- Transformer ModernBERT-base
+- Causal LM Qwen3-1.7B
 
 Each card shows:
 
@@ -57,6 +64,8 @@ Each card shows:
 - a direct `ASKSEATTLE` or `NOT ASKSEATTLE` verdict
 - the confidence band
 - the score
+
+If one comparison model fails, only that card shows a failure state. The main verdict still uses the active bridge model.
 
 The lower status line still shows the active bridge model score and threshold details.
 

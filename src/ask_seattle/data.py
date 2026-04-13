@@ -14,6 +14,10 @@ NEGATIVE_LABELS = {"0", "false", "no", "not", "not_askseattle", "not_ask_seattle
 DELETED_TEXT_MARKERS = {"[deleted]", "[removed]", "[deleted by user]"}
 MEDIA_POST_TYPES = frozenset({"image", "link"})
 LOW_TEXT_BODY_CHAR_THRESHOLD = 80
+URL_PLACEHOLDER = "URL"
+URL_PATTERN = re.compile(
+    r"(?i)\b(?:https?://|www\.)\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?"
+)
 
 
 @dataclass(frozen=True)
@@ -139,6 +143,12 @@ def normalize_body(value: str | None) -> str:
     if body.strip().lower() in DELETED_TEXT_MARKERS:
         return ""
     return body
+
+
+def normalize_urls_for_lexical_text(value: str | None, *, replacement: str = URL_PLACEHOLDER) -> str:
+    text = "" if value is None else str(value)
+    normalized = URL_PATTERN.sub(replacement, text)
+    return re.sub(r"\s+", " ", normalized).strip()
 
 
 def title_length_bucket(title: str | None) -> str:

@@ -13,11 +13,18 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-If you need the semantic embedding and transformer benchmark paths:
+If you need the full six-model benchmark suite:
 
 ```bash
 python -m pip install -e ".[dev,models]"
 ```
+
+That extra now covers:
+
+- sentence-transformers models
+- transformers-based embedding backends
+- encoder transformer fine-tuning
+- decoder-LLM LoRA fine-tuning support
 
 ## Common Commands
 
@@ -51,10 +58,10 @@ Retrain from reviewed labels:
 make retrain
 ```
 
-Run the benchmark suite:
+Benchmark the trained suite:
 
 ```bash
-make benchmark-suite EVAL_SUBREDDIT=seattle
+make benchmark EVAL_SUBREDDIT=seattle
 ```
 
 ## Public Entry Points
@@ -62,7 +69,9 @@ make benchmark-suite EVAL_SUBREDDIT=seattle
 These are the user-facing surfaces that should stay stable and documented:
 
 - `ask-seattle train`
+- `ask-seattle retrain-all`
 - `ask-seattle check`
+- `ask-seattle benchmark-suite`
 - `ask-seattle serve-bridge`
 - `make retrain`
 - `make bridge`
@@ -82,6 +91,15 @@ If you need to change model behavior or thresholds:
 - `src/ask_seattle/training.py`
 - `docs/explanation/model-and-thresholds.md`
 - `docs/how-to/retrain.md`
+
+If you need to change benchmark-suite model composition or family-specific training:
+
+- `src/ask_seattle/training.py`
+- `src/ask_seattle/model.py`
+- `src/ask_seattle/local_bridge.py`
+- `docs/reference/cli.md`
+- `docs/reference/bridge-api.md`
+- `docs/reference/data-format.md`
 
 If you need to change bridge request or response behavior:
 

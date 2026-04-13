@@ -21,8 +21,10 @@ dev = [
 models = [
   "accelerate>=0.33",
   "datasets>=2.20",
+  "peft>=0.12",
   "sentence-transformers>=3.0",
   "torch>=2.2",
+  "trl>=0.10",
   "transformers>=4.48",
 ]
 

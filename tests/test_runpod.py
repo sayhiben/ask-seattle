@@ -1,0 +1,160 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from ask_seattle.runpod import (
+    RunPodConfig,
+    RunPodOrchestrationError,
+    build_remote_bootstrap_command,
+    build_remote_make_args,
+    datacenter_has_gpu,
+    ensure_clean_worktree,
+    extract_ssh_endpoint,
+    first_available_gpu_for_datacenter,
+    artifact_dirs_for_target,
+    select_datacenter,
+)
+
+
+def test_artifact_dirs_for_target() -> None:
+    assert artifact_dirs_for_target("retrain") == (
+        "models/real-labels-precision-refresh",
+        "models/benchmark-suite",
+    )
+    assert artifact_dirs_for_target("benchmark") == ("models/benchmark-suite",)
+    assert artifact_dirs_for_target("benchmark-variants") == ("models/benchmark-variants",)
+
+
+def test_select_datacenter_prefers_candidate_order_and_gpu_priority() -> None:
+    datacenters = [
+        {
+            "id": "US-GA-1",
+            "gpuAvailability": [{"gpuId": "NVIDIA RTX A5000", "stockStatus": "High"}],
+        },
+        {
+            "id": "US-KS-2",
+            "gpuAvailability": [{"gpuId": "NVIDIA GeForce RTX 4090", "stockStatus": "High"}],
+        },
+    ]
+
+    assert (
+        select_datacenter(
+            datacenters,
+            preferred_gpu_ids=("NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000"),
+            candidate_data_center_ids=("US-KS-2", "US-GA-1"),
+        )
+        == "US-KS-2"
+    )
+
+
+def test_first_available_gpu_for_datacenter_respects_preference_order() -> None:
+    datacenters = [
+        {
+            "id": "US-KS-2",
+            "gpuAvailability": [
+                {"gpuId": "NVIDIA RTX A5000", "stockStatus": "High"},
+                {"gpuId": "NVIDIA GeForce RTX 4090", "stockStatus": "Low"},
+            ],
+        }
+    ]
+
+    assert (
+        first_available_gpu_for_datacenter(
+            datacenters,
+            data_center_id="US-KS-2",
+            preferred_gpu_ids=("NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000"),
+        )
+        == "NVIDIA GeForce RTX 4090"
+    )
+
+
+def test_datacenter_has_gpu_ignores_unavailable_stock() -> None:
+    datacenter = {
+        "id": "US-KS-2",
+        "gpuAvailability": [{"gpuId": "NVIDIA GeForce RTX 4090", "stockStatus": "Unavailable"}],
+    }
+
+    assert datacenter_has_gpu(datacenter, "NVIDIA GeForce RTX 4090") is False
+
+
+def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> None:
+    config = RunPodConfig(
+        repo_root=Path("/tmp/repo"),
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=Path("/tmp/id.pub"),
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        gpu_types=("NVIDIA GeForce RTX 4090",),
+        data_center_ids=("US-KS-2",),
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=Path("/tmp/labels.jsonl"),
+        benchmark_meta_dir=Path("/tmp/meta"),
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit="seattle",
+        benchmark_notes="after labels",
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+    )
+
+    args = build_remote_make_args(
+        config,
+        target="benchmark",
+        remote_labels_path="/workspace/runpod-inputs/run/labels.jsonl",
+    )
+
+    assert "LABELS=/workspace/runpod-inputs/run/labels.jsonl" in args
+    assert "EVAL_SUBREDDIT=seattle" in args
+    assert "BENCHMARK_NOTES=after labels" in args
+
+
+def test_build_remote_bootstrap_command_quotes_make_args() -> None:
+    command = build_remote_bootstrap_command(
+        remote_script="/workspace/ask-seattle/scripts/runpod_pod_bootstrap.sh",
+        target="benchmark",
+        commit_sha="abc123",
+        origin_url="git@github.com:sayhiben/ask-seattle.git",
+        remote_repo_dir="/workspace/ask-seattle",
+        remote_labels_path="/workspace/runpod-inputs/run/labels.jsonl",
+        remote_log_dir="/workspace/runpod-logs/run-id",
+        remote_venv_dir="/workspace/.venv",
+        run_id="run-id",
+        make_args=("LABELS=/workspace/runpod-inputs/run/labels.jsonl", "BENCHMARK_NOTES=after labels"),
+    )
+
+    assert "'BENCHMARK_NOTES=after labels'" in command
+    assert "/workspace/ask-seattle/scripts/runpod_pod_bootstrap.sh" in command
+
+
+def test_extract_ssh_endpoint_reads_runtime_port_mapping() -> None:
+    endpoint = extract_ssh_endpoint(
+        {
+            "runtime": {
+                "publicIp": "1.2.3.4",
+                "ports": [{"privatePort": 22, "publicPort": 32511}],
+            }
+        }
+    )
+
+    assert endpoint is not None
+    assert endpoint.host == "1.2.3.4"
+    assert endpoint.port == 32511
+    assert endpoint.user == "root"
+
+
+def test_ensure_clean_worktree_raises_for_dirty_repo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from ask_seattle import runpod
+
+    monkeypatch.setattr(runpod, "run_command_capture", lambda *args, **kwargs: " M src/ask_seattle/model.py\n")
+
+    with pytest.raises(RunPodOrchestrationError):
+        ensure_clean_worktree(tmp_path)

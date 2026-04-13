@@ -1,5 +1,8 @@
 from ask_seattle.data import LabeledPost
 from ask_seattle.model import (
+    _default_min_df,
+    _bundle_runtime_device,
+    _move_token_batch_to_device,
     build_inference_row,
     build_pipeline,
     classify_post,
@@ -98,6 +101,19 @@ def test_select_decision_thresholds_orders_low_and_high() -> None:
     assert thresholds.high_threshold == 0.6
     assert thresholds.low_threshold <= thresholds.high_threshold
     assert thresholds.abstain_enabled is False
+
+
+def test_select_decision_thresholds_uses_review_precision_target_for_low_threshold() -> None:
+    thresholds = select_decision_thresholds(
+        [1, 1, 0, 1, 0],
+        [0.9, 0.45, 0.4, 0.39, 0.1],
+        auto_precision_target=0.95,
+        review_precision_target=0.8,
+        thresholds=(0.1, 0.39, 0.4, 0.45),
+    )
+
+    assert thresholds.low_threshold == 0.45
+    assert thresholds.low_threshold <= thresholds.high_threshold
 
 
 def test_threshold_selection_uses_observed_probabilities_when_grid_is_too_coarse() -> None:
@@ -229,12 +245,12 @@ def test_build_pipeline_excludes_common_function_words_from_word_vocab() -> None
     title_vectorizer = features.transformer_list[0][1].named_steps["vectorizer"]
     body_vectorizer = features.transformer_list[1][1].named_steps["vectorizer"]
 
-    assert "some" not in title_vectorizer.get_stop_words()
-    assert "just" not in title_vectorizer.get_stop_words()
-    assert "one" not in title_vectorizer.get_stop_words()
-    assert "some" not in body_vectorizer.get_stop_words()
-    assert "just" not in body_vectorizer.get_stop_words()
-    assert "one" not in body_vectorizer.get_stop_words()
+    assert "some" in title_vectorizer.get_stop_words()
+    assert "just" in title_vectorizer.get_stop_words()
+    assert "one" in title_vectorizer.get_stop_words()
+    assert "some" in body_vectorizer.get_stop_words()
+    assert "just" in body_vectorizer.get_stop_words()
+    assert "one" in body_vectorizer.get_stop_words()
     assert "the" not in title_vectorizer.vocabulary_
     assert "and" not in title_vectorizer.vocabulary_
     assert "the" not in body_vectorizer.vocabulary_
@@ -243,27 +259,76 @@ def test_build_pipeline_excludes_common_function_words_from_word_vocab() -> None
     assert "recommendations" in body_vectorizer.vocabulary_
 
 
-def test_build_inference_row_includes_metadata_tokens_in_body_and_text() -> None:
+def test_build_pipeline_uses_separate_metadata_channel_and_keeps_char_ngrams_off_metadata_tokens() -> None:
+    rows = [
+        build_inference_row(
+            title="What is this? https://example.com/post",
+            selftext="See https://example.com/image for context",
+            post_type="image",
+            content_domain="www.instagram.com",
+            is_crosspost=True,
+        ),
+        build_inference_row(
+            title="Traffic update",
+            selftext="Road closure downtown",
+            post_type="link",
+            content_domain="reddit.com",
+            is_crosspost=False,
+        ),
+    ]
+
+    model = build_pipeline(min_df=1)
+    model.fit(rows, [1, 0])
+
+    features = model.named_steps["features"]
+    char_vectorizer = features.transformer_list[2][1].named_steps["vectorizer"]
+    metadata_vectorizer = features.transformer_list[3][1].named_steps["vectorizer"]
+
+    assert "HAS_BODY:yes" in metadata_vectorizer.get_feature_names_out()
+    assert "POST_TYPE:image" in metadata_vectorizer.get_feature_names_out()
+    assert not any(":" in feature for feature in char_vectorizer.get_feature_names_out())
+    assert "https" not in char_vectorizer.get_feature_names_out()
+    assert "http" not in char_vectorizer.get_feature_names_out()
+
+
+def test_build_inference_row_separates_metadata_and_raw_text_views() -> None:
     row = build_inference_row(
-        title="Looking for ideas",
-        selftext="",
+        title="Looking for ideas https://example.com/post",
+        selftext="See https://example.com/image",
         post_type="image",
         content_domain="www.instagram.com",
         is_crosspost=True,
     )
 
-    assert "HAS_BODY:no" in row["body"]
-    assert "TITLE_LEN_BUCKET:short" in row["body"]
-    assert "BODY_LEN_BUCKET:none" in row["body"]
+    assert "HAS_BODY:yes" in row["body"]
+    assert "HAS_BODY:yes" in row["metadata_text"]
+    assert "TITLE_LEN_BUCKET:medium" in row["body"]
+    assert "BODY_LEN_BUCKET:short" in row["body"]
     assert "HAS_QUESTION_MARK:no" in row["body"]
     assert "LOW_TEXT:yes" in row["body"]
     assert "POST_TYPE:image" in row["body"]
     assert "CONTENT_DOMAIN:instagram_com" in row["body"]
     assert "CROSSPOST:yes" in row["body"]
     assert "SPARSE_MEDIA:yes" in row["body"]
-    assert row["body_length_bucket"] == "none"
+    assert row["body_length_bucket"] == "short"
     assert row["is_sparse_media"] is True
-    assert row["text"].startswith("TITLE: Looking for ideas")
+    assert row["body_raw"] == "See https://example.com/image"
+    assert row["body_lexical"] == "See URL"
+    assert row["body_lexical_stripped"] == "See"
+    assert row["title_lexical"] == "Looking for ideas URL"
+    assert row["title_lexical_stripped"] == "Looking for ideas"
+    assert row["text_raw"] == "Looking for ideas https://example.com/post\nSee https://example.com/image"
+    assert row["text_lexical"] == "Looking for ideas URL\nSee URL"
+    assert row["text_lexical_stripped"] == "Looking for ideas\nSee"
+    assert row["text"].startswith("TITLE: Looking for ideas https://example.com/post")
+
+
+def test_default_min_df_scales_with_corpus_size() -> None:
+    assert _default_min_df([]) == 1
+    assert _default_min_df([LabeledPost(title="a", selftext="", label=0)] * 49) == 1
+    assert _default_min_df([LabeledPost(title="a", selftext="", label=0)] * 50) == 2
+    assert _default_min_df([LabeledPost(title="a", selftext="", label=0)] * 500) == 3
+    assert _default_min_df([LabeledPost(title="a", selftext="", label=0)] * 2000) == 5
 
 
 def test_tfidf_feature_audit_includes_channel_breakdown_and_stopwords() -> None:
@@ -278,11 +343,11 @@ def test_tfidf_feature_audit_includes_channel_breakdown_and_stopwords() -> None:
 
     assert "word_stopwords" in audit
     assert "the" in audit["word_stopwords"]
-    assert "some" not in audit["word_stopwords"]
-    assert "just" not in audit["word_stopwords"]
-    assert "one" not in audit["word_stopwords"]
-    assert set(audit["top_positive_by_channel"]) == {"title_word", "body_word", "char_wb"}
-    assert set(audit["top_negative_by_channel"]) == {"title_word", "body_word", "char_wb"}
+    assert "some" in audit["word_stopwords"]
+    assert "just" in audit["word_stopwords"]
+    assert "one" in audit["word_stopwords"]
+    assert set(audit["top_positive_by_channel"]) == {"title_word", "body_word", "char_wb", "metadata_token"}
+    assert set(audit["top_negative_by_channel"]) == {"title_word", "body_word", "char_wb", "metadata_token"}
     assert all("channel" in row and "full_feature" in row for row in audit["top_positive"])
 
 
@@ -362,7 +427,7 @@ def test_classify_post_returns_borderline_match_between_thresholds() -> None:
     assert result.label == "askseattle"
 
 
-def test_classify_post_downgrades_sparse_media_high_confidence_to_borderline() -> None:
+def test_classify_post_keeps_sparse_media_in_high_bucket_when_score_clears_high_threshold() -> None:
     model = FakeModel(positive_probability=0.9)
     model.named_steps["classifier"] = FakeClassifier()
     bundle = {
@@ -383,4 +448,96 @@ def test_classify_post_downgrades_sparse_media_high_confidence_to_borderline() -
     )
 
     assert result.label == "askseattle"
-    assert result.confidence_band == "borderline"
+    assert result.confidence_band == "high"
+
+
+def test_bundle_runtime_device_keeps_causal_lm_off_mps() -> None:
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeMPSBackend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeBackends:
+        mps = FakeMPSBackend()
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        backends = FakeBackends()
+
+    assert (
+        _bundle_runtime_device(
+            {"model_family": "causal_lm_classifier", "model_id": "Qwen/Qwen3-1.7B"},
+            FakeTorch(),
+        )
+        == "cpu"
+    )
+
+
+def test_bundle_runtime_device_keeps_transformer_backed_semantic_model_off_mps() -> None:
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeMPSBackend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeBackends:
+        mps = FakeMPSBackend()
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        backends = FakeBackends()
+
+    assert (
+        _bundle_runtime_device(
+            {
+                "model_family": "semantic_embedding",
+                "backend": "hf_embedding",
+                "model_id": "Qwen/Qwen3-Embedding-0.6B",
+            },
+            FakeTorch(),
+        )
+        == "cpu"
+    )
+
+
+def test_move_token_batch_to_device_preserves_integer_tensor_types() -> None:
+    class FakeTensor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[object, object | None]] = []
+
+        def to(self, *, device: object, dtype: object | None = None) -> "FakeTensor":
+            self.calls.append((device, dtype))
+            return self
+
+    class FakeTorch:
+        long = "long-dtype"
+
+    input_ids = FakeTensor()
+    attention_mask = FakeTensor()
+    other = FakeTensor()
+
+    moved = _move_token_batch_to_device(
+        {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "special": other,
+        },
+        device="mps",
+        torch_module=FakeTorch(),
+    )
+
+    assert moved["input_ids"] is input_ids
+    assert moved["attention_mask"] is attention_mask
+    assert moved["special"] is other
+    assert input_ids.calls == [("mps", "long-dtype")]
+    assert attention_mask.calls == [("mps", "long-dtype")]
+    assert other.calls == [("mps", None)]

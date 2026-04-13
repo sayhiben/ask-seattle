@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 from dataclasses import asdict
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from ask_seattle.training import (
     DEFAULT_SPLIT_STRATEGY,
     benchmark_model_suite_from_labels,
     benchmark_model_variants_from_labels,
+    retrain_all_from_labels,
     train_model_bundle_from_labels,
 )
 
@@ -18,6 +20,7 @@ from ask_seattle.training import (
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _configure_cli_logging(args)
     return args.func(args)
 
 
@@ -34,6 +37,55 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_split_args(train)
     train.set_defaults(func=train_command)
+
+    retrain_all = subparsers.add_parser(
+        "retrain-all",
+        help="Retrain the operational TF-IDF model and the full comparison suite without benchmarking",
+    )
+    retrain_all.add_argument("--data", required=True, type=Path, help="Path to reviewed .jsonl label data")
+    retrain_all.add_argument(
+        "--operational-output-dir",
+        required=True,
+        type=Path,
+        help="Where the operational TF-IDF artifacts go",
+    )
+    retrain_all.add_argument(
+        "--benchmark-output-dir",
+        required=True,
+        type=Path,
+        help="Where the comparison-suite model artifacts go",
+    )
+    retrain_all.add_argument(
+        "--eval-subreddit",
+        help="If set, train on mixed reviewed data but restrict calibration/test evaluation to this subreddit",
+    )
+    add_split_args(retrain_all)
+    retrain_all.add_argument(
+        "--semantic-model-id",
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        help="Primary sentence embedding model for the semantic comparison path",
+    )
+    retrain_all.add_argument(
+        "--semantic-secondary-model-id",
+        default="Qwen/Qwen3-Embedding-0.6B",
+        help="Secondary embedding model for the semantic comparison path",
+    )
+    retrain_all.add_argument(
+        "--transformer-model-id",
+        default="microsoft/deberta-v3-small",
+        help="Primary transformer checkpoint for the sequence classification comparison path",
+    )
+    retrain_all.add_argument(
+        "--transformer-secondary-model-id",
+        default="answerdotai/ModernBERT-base",
+        help="Secondary transformer checkpoint for the sequence classification comparison path",
+    )
+    retrain_all.add_argument(
+        "--causal-lm-model-id",
+        default="Qwen/Qwen3-1.7B",
+        help="Decoder LLM checkpoint for the causal language model comparison path",
+    )
+    retrain_all.set_defaults(func=retrain_all_command)
 
     benchmark_variants = subparsers.add_parser(
         "benchmark-variants",
@@ -62,12 +114,31 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark_suite.add_argument(
         "--semantic-model-id",
         default="sentence-transformers/all-MiniLM-L6-v2",
-        help="Sentence embedding model for the semantic benchmark path",
+        help="Primary sentence embedding model for the semantic benchmark path",
+    )
+    benchmark_suite.add_argument(
+        "--semantic-secondary-model-id",
+        default="Qwen/Qwen3-Embedding-0.6B",
+        help="Secondary embedding model for the semantic benchmark path",
     )
     benchmark_suite.add_argument(
         "--transformer-model-id",
         default="microsoft/deberta-v3-small",
-        help="Transformer checkpoint for the sequence classification benchmark path",
+        help="Primary transformer checkpoint for the sequence classification benchmark path",
+    )
+    benchmark_suite.add_argument(
+        "--transformer-secondary-model-id",
+        default="answerdotai/ModernBERT-base",
+        help="Secondary transformer checkpoint for the sequence classification benchmark path",
+    )
+    benchmark_suite.add_argument(
+        "--causal-lm-model-id",
+        default="Qwen/Qwen3-1.7B",
+        help="Decoder LLM checkpoint for the causal language model benchmark path",
+    )
+    benchmark_suite.add_argument(
+        "--notes",
+        help="Optional free-form note stored with the benchmark history entry for this run",
     )
     benchmark_suite.set_defaults(func=benchmark_suite_command)
 
@@ -145,6 +216,17 @@ def add_split_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _configure_cli_logging(args: argparse.Namespace) -> None:
+    command = getattr(getattr(args, "func", None), "__name__", "")
+    if command == "serve_bridge_command":
+        return
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
 def train_command(args: argparse.Namespace) -> int:
     summary = train_model_bundle_from_labels(
         args.data,
@@ -152,6 +234,24 @@ def train_command(args: argparse.Namespace) -> int:
         split_strategy=args.split_strategy,
         split_seed=args.split_seed,
         evaluation_subreddit=args.eval_subreddit,
+    )
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def retrain_all_command(args: argparse.Namespace) -> int:
+    summary = retrain_all_from_labels(
+        args.data,
+        operational_output_dir=args.operational_output_dir,
+        benchmark_output_dir=args.benchmark_output_dir,
+        split_strategy=args.split_strategy,
+        split_seed=args.split_seed,
+        evaluation_subreddit=args.eval_subreddit,
+        semantic_model_id=args.semantic_model_id,
+        semantic_secondary_model_id=args.semantic_secondary_model_id,
+        transformer_model_id=args.transformer_model_id,
+        transformer_secondary_model_id=args.transformer_secondary_model_id,
+        causal_lm_model_id=args.causal_lm_model_id,
     )
     print(json.dumps(summary, indent=2))
     return 0
@@ -177,7 +277,11 @@ def benchmark_suite_command(args: argparse.Namespace) -> int:
         split_seed=args.split_seed,
         evaluation_subreddit=args.eval_subreddit,
         semantic_model_id=args.semantic_model_id,
+        semantic_secondary_model_id=args.semantic_secondary_model_id,
         transformer_model_id=args.transformer_model_id,
+        transformer_secondary_model_id=args.transformer_secondary_model_id,
+        causal_lm_model_id=args.causal_lm_model_id,
+        notes=args.notes,
     )
     print(json.dumps(summary, indent=2))
     return 0

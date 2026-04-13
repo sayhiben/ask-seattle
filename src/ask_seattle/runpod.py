@@ -1,0 +1,837 @@
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+
+RUNPOD_REQUIRED_FEATURES: tuple[tuple[str, ...], ...] = (
+    ("runpodctl", "ssh", "add-key", "--help"),
+    ("runpodctl", "ssh", "list-keys", "--help"),
+    ("runpodctl", "pod", "create", "--help"),
+    ("runpodctl", "pod", "get", "--help"),
+    ("runpodctl", "pod", "delete", "--help"),
+    ("runpodctl", "network-volume", "list", "--help"),
+    ("runpodctl", "network-volume", "create", "--help"),
+    ("runpodctl", "datacenter", "list", "--help"),
+)
+
+REMOTE_LOG_ROOT = "/workspace/runpod-logs"
+REMOTE_LABEL_ROOT = "/workspace/runpod-inputs"
+REMOTE_VENV_DIR = "/workspace/.venv"
+REMOTE_CACHE_ROOT = "/workspace/.cache"
+DEFAULT_RUNPOD_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+DEFAULT_RUNPOD_VOLUME_MOUNT_PATH = "/workspace"
+DEFAULT_RUNPOD_CONTAINER_DISK_GB = 50
+DEFAULT_RUNPOD_VOLUME_SIZE_GB = 100
+DEFAULT_RUNPOD_GPU_TYPES = (
+    "NVIDIA GeForce RTX 4090",
+    "NVIDIA RTX A5000",
+    "NVIDIA A40",
+)
+DEFAULT_RUNPOD_DATA_CENTER_IDS = (
+    "US-KS-2",
+    "US-GA-1",
+    "US-IL-1",
+    "US-CA-1",
+)
+
+
+class RunPodOrchestrationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class RunPodConfig:
+    repo_root: Path
+    repo_slug: str
+    ssh_key_path: Path
+    volume_name: str
+    volume_size_gb: int
+    gpu_types: tuple[str, ...]
+    data_center_ids: tuple[str, ...]
+    image: str
+    remote_dir: str
+    ssh_user: str
+    container_disk_gb: int
+    volume_mount_path: str
+    labels_path: Path
+    benchmark_meta_dir: Path
+    split_strategy: str
+    split_seed: int
+    evaluation_subreddit: str | None
+    benchmark_notes: str | None
+    semantic_model_id: str
+    semantic_secondary_model_id: str
+    transformer_model_id: str
+    transformer_secondary_model_id: str
+    causal_lm_model_id: str
+    no_pull_artifacts: bool = False
+    pod_ready_timeout_seconds: int = 1800
+
+
+@dataclass(frozen=True)
+class NetworkVolume:
+    volume_id: str
+    name: str
+    data_center_id: str
+    size_gb: int
+
+
+@dataclass(frozen=True)
+class PodSshEndpoint:
+    host: str
+    port: int
+    user: str
+
+
+@dataclass(frozen=True)
+class PodInfo:
+    pod_id: str
+    name: str
+    desired_status: str
+    ssh_endpoint: PodSshEndpoint | None
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="runpod_train.py",
+        description="Run ask-seattle training targets on an ephemeral RunPod Pod.",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    bootstrap_parser = subparsers.add_parser("bootstrap", help="Bootstrap GitHub and RunPod prerequisites.")
+    _add_common_arguments(bootstrap_parser, include_target=False)
+    bootstrap_parser.set_defaults(func=bootstrap_command)
+
+    run_parser = subparsers.add_parser("run", help="Run a make target on an ephemeral RunPod Pod.")
+    _add_common_arguments(run_parser, include_target=True)
+    run_parser.set_defaults(func=run_command)
+
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
+def bootstrap_command(args: argparse.Namespace) -> int:
+    config = config_from_args(args)
+    ensure_local_prerequisites()
+    ensure_runpodctl_features()
+    ensure_clean_worktree(config.repo_root)
+    ensure_origin_remote(config.repo_root, config.repo_slug)
+    push_current_head(config.repo_root)
+    ensure_runpod_ssh_key(config.ssh_key_path)
+    return 0
+
+
+def run_command(args: argparse.Namespace) -> int:
+    config = config_from_args(args)
+    target = str(args.target)
+    ensure_local_prerequisites()
+    ensure_runpodctl_features()
+    ensure_clean_worktree(config.repo_root)
+    ensure_label_path_exists(config.labels_path)
+    origin_url = ensure_origin_remote(config.repo_root, config.repo_slug)
+    ensure_runpod_ssh_key(config.ssh_key_path)
+    commit_sha = push_current_head(config.repo_root)
+
+    volume = ensure_network_volume(config)
+    gpu_id, data_center_id = select_gpu_and_datacenter(config, volume=volume)
+    pod_name = build_pod_name(target=target, commit_sha=commit_sha)
+    pod = create_pod(
+        config,
+        pod_name=pod_name,
+        gpu_id=gpu_id,
+        data_center_id=data_center_id,
+        network_volume_id=volume.volume_id,
+    )
+    run_id = build_run_id(target)
+    log_dir = config.benchmark_meta_dir / run_id
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    local_metadata = {
+        "run_id": run_id,
+        "target": target,
+        "commit_sha": commit_sha,
+        "pod_id": pod.pod_id,
+        "pod_name": pod.name,
+        "gpu_id": gpu_id,
+        "data_center_id": data_center_id,
+        "network_volume_id": volume.volume_id,
+        "repo_slug": config.repo_slug,
+        "origin_url": origin_url,
+        "started_at": utc_now(),
+    }
+    write_json(log_dir / "run_metadata.local.json", local_metadata)
+
+    try:
+        ready_pod = wait_for_pod_ready(config, pod.pod_id, pod_name=pod.name)
+        if ready_pod.ssh_endpoint is None:
+            raise RunPodOrchestrationError(f"pod {pod.pod_id} never exposed an SSH endpoint")
+        remote_labels_path = sync_labels_to_pod(config, ready_pod.ssh_endpoint, run_id)
+        run_remote_bootstrap(
+            config,
+            ssh_endpoint=ready_pod.ssh_endpoint,
+            run_id=run_id,
+            target=target,
+            commit_sha=commit_sha,
+            origin_url=origin_url,
+            remote_labels_path=remote_labels_path,
+        )
+        if not config.no_pull_artifacts:
+            pull_artifacts(config, ssh_endpoint=ready_pod.ssh_endpoint, target=target)
+        pull_remote_logs(config, ssh_endpoint=ready_pod.ssh_endpoint, run_id=run_id)
+        local_metadata["finished_at"] = utc_now()
+        local_metadata["status"] = "success"
+        write_json(log_dir / "run_metadata.local.json", local_metadata)
+        return 0
+    except Exception:
+        local_metadata["finished_at"] = utc_now()
+        local_metadata["status"] = "failed"
+        write_json(log_dir / "run_metadata.local.json", local_metadata)
+        raise
+    finally:
+        delete_pod(pod.pod_id)
+
+
+def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bool) -> None:
+    parser.add_argument("--repo-root", default=".", help="Local repo root. Default: current directory.")
+    parser.add_argument("--repo", required=True, help="GitHub repo slug, e.g. sayhiben/ask-seattle.")
+    parser.add_argument("--ssh-key-path", default="~/.ssh/id_ed25519.pub")
+    parser.add_argument("--volume-name", required=True)
+    parser.add_argument("--volume-size-gb", type=int, default=DEFAULT_RUNPOD_VOLUME_SIZE_GB)
+    parser.add_argument("--gpu-types", default=",".join(DEFAULT_RUNPOD_GPU_TYPES))
+    parser.add_argument("--data-center-ids", default=",".join(DEFAULT_RUNPOD_DATA_CENTER_IDS))
+    parser.add_argument("--image", default=DEFAULT_RUNPOD_IMAGE)
+    parser.add_argument("--remote-dir", default="/workspace/ask-seattle")
+    parser.add_argument("--ssh-user", default="root")
+    parser.add_argument("--container-disk-gb", type=int, default=DEFAULT_RUNPOD_CONTAINER_DISK_GB)
+    parser.add_argument("--volume-mount-path", default=DEFAULT_RUNPOD_VOLUME_MOUNT_PATH)
+    parser.add_argument("--labels", default="data/processed/tampermonkey_labels.jsonl")
+    parser.add_argument("--benchmark-meta-dir", default="models/runpod-meta")
+    parser.add_argument("--split-strategy", default="random", choices=("random", "time"))
+    parser.add_argument("--split-seed", type=int, default=13)
+    parser.add_argument("--eval-subreddit")
+    parser.add_argument("--benchmark-notes")
+    parser.add_argument("--semantic-model-id", default="sentence-transformers/all-MiniLM-L6-v2")
+    parser.add_argument("--semantic-secondary-model-id", default="Qwen/Qwen3-Embedding-0.6B")
+    parser.add_argument("--transformer-model-id", default="microsoft/deberta-v3-small")
+    parser.add_argument("--transformer-secondary-model-id", default="answerdotai/ModernBERT-base")
+    parser.add_argument("--causal-lm-model-id", default="Qwen/Qwen3-1.7B")
+    parser.add_argument("--no-pull-artifacts", action="store_true")
+    parser.add_argument("--pod-ready-timeout-seconds", type=int, default=1800)
+    if include_target:
+        parser.add_argument(
+            "--target",
+            required=True,
+            choices=("retrain", "benchmark", "benchmark-variants"),
+        )
+
+
+def config_from_args(args: argparse.Namespace) -> RunPodConfig:
+    return RunPodConfig(
+        repo_root=Path(args.repo_root).resolve(),
+        repo_slug=str(args.repo),
+        ssh_key_path=Path(os.path.expanduser(str(args.ssh_key_path))).resolve(),
+        volume_name=str(args.volume_name),
+        volume_size_gb=int(args.volume_size_gb),
+        gpu_types=_comma_list(args.gpu_types),
+        data_center_ids=_comma_list(args.data_center_ids),
+        image=str(args.image),
+        remote_dir=str(args.remote_dir),
+        ssh_user=str(args.ssh_user),
+        container_disk_gb=int(args.container_disk_gb),
+        volume_mount_path=str(args.volume_mount_path),
+        labels_path=Path(args.labels).resolve(),
+        benchmark_meta_dir=Path(args.benchmark_meta_dir).resolve(),
+        split_strategy=str(args.split_strategy),
+        split_seed=int(args.split_seed),
+        evaluation_subreddit=str(args.eval_subreddit) if args.eval_subreddit else None,
+        benchmark_notes=str(args.benchmark_notes) if args.benchmark_notes else None,
+        semantic_model_id=str(args.semantic_model_id),
+        semantic_secondary_model_id=str(args.semantic_secondary_model_id),
+        transformer_model_id=str(args.transformer_model_id),
+        transformer_secondary_model_id=str(args.transformer_secondary_model_id),
+        causal_lm_model_id=str(args.causal_lm_model_id),
+        no_pull_artifacts=bool(args.no_pull_artifacts),
+        pod_ready_timeout_seconds=int(args.pod_ready_timeout_seconds),
+    )
+
+
+def _comma_list(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in str(value).split(",") if item.strip())
+
+
+def ensure_local_prerequisites() -> None:
+    for command in ("gh", "git", "runpodctl", "ssh", "rsync"):
+        if shutil.which(command) is None:
+            raise RunPodOrchestrationError(f"missing required local command: {command}")
+
+
+def ensure_runpodctl_features() -> None:
+    for command in RUNPOD_REQUIRED_FEATURES:
+        try:
+            subprocess.run(command, check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as exc:
+            raise RunPodOrchestrationError(
+                "runpodctl is missing required Pod/network-volume commands. "
+                "Upgrade it first with `runpodctl update` and verify the current docs-aligned command surface."
+            ) from exc
+
+
+def ensure_clean_worktree(repo_root: Path) -> None:
+    result = run_command_capture(("git", "status", "--short"), cwd=repo_root)
+    if result.strip():
+        raise RunPodOrchestrationError(
+            "remote RunPod execution requires a clean working tree so the Pod can train from an exact pushed commit"
+        )
+
+
+def ensure_origin_remote(repo_root: Path, repo_slug: str) -> str:
+    origin_url = run_command_capture(("git", "remote", "get-url", "origin"), cwd=repo_root, check=False).strip()
+    if origin_url:
+        return origin_url
+
+    repo_view = subprocess.run(
+        ("gh", "repo", "view", repo_slug, "--json", "sshUrl"),
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if repo_view.returncode == 0:
+        repo_info = json.loads(repo_view.stdout or "{}")
+        ssh_url = str(repo_info.get("sshUrl") or "").strip()
+        if not ssh_url:
+            raise RunPodOrchestrationError(f"failed to resolve sshUrl for GitHub repo {repo_slug}")
+        _run_subprocess(("git", "remote", "add", "origin", ssh_url), cwd=repo_root)
+        return ssh_url
+
+    _run_subprocess(("gh", "repo", "create", repo_slug, "--public", "--source=.", "--remote=origin"), cwd=repo_root)
+    ssh_url = run_command_capture(("git", "remote", "get-url", "origin"), cwd=repo_root).strip()
+    if not ssh_url:
+        raise RunPodOrchestrationError("origin remote was not configured after gh repo create")
+    return ssh_url
+
+
+def push_current_head(repo_root: Path) -> str:
+    commit_sha = run_command_capture(("git", "rev-parse", "HEAD"), cwd=repo_root).strip()
+    _run_subprocess(("git", "push", "-u", "origin", "HEAD"), cwd=repo_root)
+    return commit_sha
+
+
+def ensure_runpod_ssh_key(ssh_key_path: Path) -> None:
+    if not ssh_key_path.exists():
+        raise RunPodOrchestrationError(f"RunPod SSH public key not found: {ssh_key_path}")
+    public_key = ssh_key_path.read_text(encoding="utf-8").strip()
+    listed = run_command_capture(("runpodctl", "ssh", "list-keys"))
+    if public_key and public_key in listed:
+        return
+    _run_subprocess(("runpodctl", "ssh", "add-key", "--key-file", str(ssh_key_path)))
+
+
+def ensure_label_path_exists(label_path: Path) -> None:
+    if not label_path.exists():
+        raise RunPodOrchestrationError(f"reviewed label file not found: {label_path}")
+
+
+def ensure_network_volume(config: RunPodConfig) -> NetworkVolume:
+    for item in list_network_volumes():
+        if item.name == config.volume_name:
+            return item
+    data_center_id = select_datacenter_for_new_volume(config)
+    return create_network_volume(config.volume_name, config.volume_size_gb, data_center_id)
+
+
+def select_datacenter_for_new_volume(config: RunPodConfig) -> str:
+    datacenters = list_datacenters()
+    chosen = select_datacenter(datacenters, config.gpu_types, config.data_center_ids)
+    if chosen is None:
+        raise RunPodOrchestrationError(
+            "no acceptable RunPod datacenter had the requested GPU availability for the configured preference list"
+        )
+    return chosen
+
+
+def select_gpu_and_datacenter(config: RunPodConfig, *, volume: NetworkVolume) -> tuple[str, str]:
+    datacenters = list_datacenters()
+    if volume.data_center_id:
+        available_gpu = first_available_gpu_for_datacenter(
+            datacenters,
+            data_center_id=volume.data_center_id,
+            preferred_gpu_ids=config.gpu_types,
+        )
+        if available_gpu is None:
+            raise RunPodOrchestrationError(
+                f"network volume {volume.name} is pinned to {volume.data_center_id}, but none of the requested GPUs "
+                "are currently available there"
+            )
+        return available_gpu, volume.data_center_id
+    data_center_id = select_datacenter(datacenters, config.gpu_types, config.data_center_ids)
+    if data_center_id is None:
+        raise RunPodOrchestrationError("unable to select a datacenter for the requested GPU types")
+    available_gpu = first_available_gpu_for_datacenter(
+        datacenters,
+        data_center_id=data_center_id,
+        preferred_gpu_ids=config.gpu_types,
+    )
+    if available_gpu is None:
+        raise RunPodOrchestrationError(f"no requested GPU type was available in datacenter {data_center_id}")
+    return available_gpu, data_center_id
+
+
+def create_pod(
+    config: RunPodConfig,
+    *,
+    pod_name: str,
+    gpu_id: str,
+    data_center_id: str,
+    network_volume_id: str,
+) -> PodInfo:
+    output = run_command_capture(
+        (
+            "runpodctl",
+            "pod",
+            "create",
+            "--name",
+            pod_name,
+            "--image",
+            config.image,
+            "--gpu-id",
+            gpu_id,
+            "--gpu-count",
+            "1",
+            "--container-disk-in-gb",
+            str(config.container_disk_gb),
+            "--ports",
+            "22/tcp",
+            "--cloud-type",
+            "SECURE",
+            "--global-networking",
+            "--ssh",
+            "--data-center-ids",
+            data_center_id,
+            "--network-volume-id",
+            network_volume_id,
+            "--volume-mount-path",
+            config.volume_mount_path,
+        )
+    )
+    pod = parse_pod_info(json.loads(output))
+    if not pod.pod_id:
+        raise RunPodOrchestrationError("failed to parse pod id from runpodctl pod create output")
+    return pod
+
+
+def wait_for_pod_ready(config: RunPodConfig, pod_id: str, *, pod_name: str) -> PodInfo:
+    deadline = time.monotonic() + config.pod_ready_timeout_seconds
+    while time.monotonic() < deadline:
+        pod = get_pod(pod_id)
+        if pod.ssh_endpoint is not None and pod.desired_status.upper() == "RUNNING":
+            wait_for_ssh(pod.ssh_endpoint)
+            return pod
+        time.sleep(10)
+    raise RunPodOrchestrationError(f"pod {pod_name} ({pod_id}) did not become SSH-ready before timeout")
+
+
+def sync_labels_to_pod(config: RunPodConfig, ssh_endpoint: PodSshEndpoint, run_id: str) -> str:
+    remote_labels_dir = f"{REMOTE_LABEL_ROOT}/{run_id}"
+    remote_labels_path = f"{remote_labels_dir}/{config.labels_path.name}"
+    remote_target = f"{ssh_endpoint.user}@{ssh_endpoint.host}:{remote_labels_path}"
+    _run_subprocess(
+        (
+            "ssh",
+            "-p",
+            str(ssh_endpoint.port),
+            "-o",
+            "StrictHostKeyChecking=no",
+            f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+            f"mkdir -p {shlex.quote(remote_labels_dir)}",
+        )
+    )
+    _run_subprocess(
+        (
+            "rsync",
+            "-az",
+            "-e",
+            f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
+            str(config.labels_path),
+            remote_target,
+        )
+    )
+    return remote_labels_path
+
+
+def run_remote_bootstrap(
+    config: RunPodConfig,
+    *,
+    ssh_endpoint: PodSshEndpoint,
+    run_id: str,
+    target: str,
+    commit_sha: str,
+    origin_url: str,
+    remote_labels_path: str,
+) -> None:
+    remote_log_dir = f"{REMOTE_LOG_ROOT}/{run_id}"
+    remote_script = f"{config.remote_dir}/scripts/runpod_pod_bootstrap.sh"
+    make_args = build_remote_make_args(config, target=target, remote_labels_path=remote_labels_path)
+    command = [
+        "ssh",
+        "-p",
+        str(ssh_endpoint.port),
+        "-o",
+        "StrictHostKeyChecking=no",
+        f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+        "bash",
+        "-lc",
+        build_remote_bootstrap_command(
+            remote_script=remote_script,
+            target=target,
+            commit_sha=commit_sha,
+            origin_url=origin_url,
+            remote_repo_dir=config.remote_dir,
+            remote_labels_path=remote_labels_path,
+            remote_log_dir=remote_log_dir,
+            remote_venv_dir=REMOTE_VENV_DIR,
+            run_id=run_id,
+            make_args=make_args,
+        ),
+    ]
+    _run_subprocess(tuple(command))
+
+
+def pull_artifacts(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, target: str) -> None:
+    for relative_dir in artifact_dirs_for_target(target):
+        local_dir = config.repo_root / relative_dir
+        local_dir.parent.mkdir(parents=True, exist_ok=True)
+        remote_dir = f"{ssh_endpoint.user}@{ssh_endpoint.host}:{config.remote_dir}/{relative_dir}/"
+        _run_subprocess(
+            (
+                "rsync",
+                "-az",
+                "--delete",
+                "-e",
+                f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
+                remote_dir,
+                str(local_dir.parent / Path(relative_dir).name),
+            )
+        )
+
+
+def pull_remote_logs(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, run_id: str) -> None:
+    local_dir = config.benchmark_meta_dir / run_id
+    local_dir.mkdir(parents=True, exist_ok=True)
+    remote_dir = f"{ssh_endpoint.user}@{ssh_endpoint.host}:{REMOTE_LOG_ROOT}/{run_id}/"
+    _run_subprocess(
+        (
+            "rsync",
+            "-az",
+            "-e",
+            f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
+            remote_dir,
+            str(local_dir),
+        ),
+        check=False,
+    )
+
+
+def delete_pod(pod_id: str) -> None:
+    if not pod_id:
+        return
+    subprocess.run(("runpodctl", "pod", "delete", pod_id), check=False, capture_output=True, text=True)
+
+
+def artifact_dirs_for_target(target: str) -> tuple[str, ...]:
+    if target == "retrain":
+        return (
+            "models/real-labels-precision-refresh",
+            "models/benchmark-suite",
+        )
+    if target == "benchmark":
+        return ("models/benchmark-suite",)
+    if target == "benchmark-variants":
+        return ("models/benchmark-variants",)
+    raise RunPodOrchestrationError(f"unsupported RunPod target: {target}")
+
+
+def build_remote_make_args(config: RunPodConfig, *, target: str, remote_labels_path: str) -> tuple[str, ...]:
+    args = (
+        f"LABELS={remote_labels_path}",
+        f"SPLIT_STRATEGY={config.split_strategy}",
+        f"SPLIT_SEED={config.split_seed}",
+        f"SEMANTIC_MODEL_ID={config.semantic_model_id}",
+        f"SEMANTIC_SECONDARY_MODEL_ID={config.semantic_secondary_model_id}",
+        f"TRANSFORMER_MODEL_ID={config.transformer_model_id}",
+        f"TRANSFORMER_SECONDARY_MODEL_ID={config.transformer_secondary_model_id}",
+        f"CAUSAL_LM_MODEL_ID={config.causal_lm_model_id}",
+    )
+    extra: list[str] = list(args)
+    if config.evaluation_subreddit:
+        extra.append(f"EVAL_SUBREDDIT={config.evaluation_subreddit}")
+    if target == "benchmark" and config.benchmark_notes:
+        extra.append(f"BENCHMARK_NOTES={config.benchmark_notes}")
+    return tuple(extra)
+
+
+def build_remote_bootstrap_command(
+    *,
+    remote_script: str,
+    target: str,
+    commit_sha: str,
+    origin_url: str,
+    remote_repo_dir: str,
+    remote_labels_path: str,
+    remote_log_dir: str,
+    remote_venv_dir: str,
+    run_id: str,
+    make_args: tuple[str, ...],
+) -> str:
+    command = [
+        "bash",
+        shlex.quote(remote_script),
+        shlex.quote(target),
+        shlex.quote(commit_sha),
+        shlex.quote(origin_url),
+        shlex.quote(remote_repo_dir),
+        shlex.quote(remote_labels_path),
+        shlex.quote(remote_log_dir),
+        shlex.quote(remote_venv_dir),
+        shlex.quote(run_id),
+    ]
+    command.extend(shlex.quote(item) for item in make_args)
+    return " ".join(command)
+
+
+def build_run_id(target: str) -> str:
+    return f"{target}-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:8]}"
+
+
+def build_pod_name(*, target: str, commit_sha: str) -> str:
+    return f"ask-seattle-{target}-{commit_sha[:7]}"
+
+
+def wait_for_ssh(ssh_endpoint: PodSshEndpoint) -> None:
+    deadline = time.monotonic() + 300
+    while time.monotonic() < deadline:
+        result = subprocess.run(
+            (
+                "ssh",
+                "-p",
+                str(ssh_endpoint.port),
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "BatchMode=yes",
+                f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+                "true",
+            ),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            return
+        time.sleep(5)
+    raise RunPodOrchestrationError(
+        f"pod at {ssh_endpoint.user}@{ssh_endpoint.host}:{ssh_endpoint.port} did not accept SSH before timeout"
+    )
+
+
+def list_datacenters() -> list[dict[str, Any]]:
+    output = run_command_capture(("runpodctl", "datacenter", "list"))
+    payload = json.loads(output or "[]")
+    if not isinstance(payload, list):
+        raise RunPodOrchestrationError("unexpected runpodctl datacenter list output")
+    return payload
+
+
+def list_network_volumes() -> list[NetworkVolume]:
+    output = run_command_capture(("runpodctl", "network-volume", "list"))
+    payload = json.loads(output or "[]")
+    if not isinstance(payload, list):
+        raise RunPodOrchestrationError("unexpected runpodctl network-volume list output")
+    volumes: list[NetworkVolume] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        volume_id = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        data_center_id = str(item.get("dataCenterId") or item.get("data_center_id") or "").strip()
+        size_gb = int(item.get("size") or 0)
+        if volume_id and name and data_center_id:
+            volumes.append(
+                NetworkVolume(
+                    volume_id=volume_id,
+                    name=name,
+                    data_center_id=data_center_id,
+                    size_gb=size_gb,
+                )
+            )
+    return volumes
+
+
+def create_network_volume(name: str, size_gb: int, data_center_id: str) -> NetworkVolume:
+    output = run_command_capture(
+        (
+            "runpodctl",
+            "network-volume",
+            "create",
+            "--name",
+            name,
+            "--size",
+            str(size_gb),
+            "--data-center-id",
+            data_center_id,
+        )
+    )
+    payload = json.loads(output or "{}")
+    if not isinstance(payload, dict):
+        raise RunPodOrchestrationError("unexpected runpodctl network-volume create output")
+    volume_id = str(payload.get("id") or "").strip()
+    if not volume_id:
+        raise RunPodOrchestrationError("failed to parse network volume id from create output")
+    return NetworkVolume(
+        volume_id=volume_id,
+        name=str(payload.get("name") or name),
+        data_center_id=str(payload.get("dataCenterId") or data_center_id),
+        size_gb=int(payload.get("size") or size_gb),
+    )
+
+
+def select_datacenter(
+    datacenters: list[dict[str, Any]],
+    preferred_gpu_ids: tuple[str, ...],
+    candidate_data_center_ids: tuple[str, ...],
+) -> str | None:
+    candidate_set = set(candidate_data_center_ids)
+    ordered_datacenters = [dc for dc in datacenters if str(dc.get("id") or dc.get("name") or "") in candidate_set]
+    ordered_datacenters.sort(
+        key=lambda dc: candidate_data_center_ids.index(str(dc.get("id") or dc.get("name") or ""))
+    )
+    for gpu_id in preferred_gpu_ids:
+        for datacenter in ordered_datacenters:
+            if datacenter_has_gpu(datacenter, gpu_id):
+                return str(datacenter.get("id") or datacenter.get("name"))
+    return None
+
+
+def first_available_gpu_for_datacenter(
+    datacenters: list[dict[str, Any]],
+    *,
+    data_center_id: str,
+    preferred_gpu_ids: tuple[str, ...],
+) -> str | None:
+    datacenter = next(
+        (item for item in datacenters if str(item.get("id") or item.get("name") or "") == data_center_id),
+        None,
+    )
+    if datacenter is None:
+        return None
+    for gpu_id in preferred_gpu_ids:
+        if datacenter_has_gpu(datacenter, gpu_id):
+            return gpu_id
+    return None
+
+
+def datacenter_has_gpu(datacenter: dict[str, Any], gpu_id: str) -> bool:
+    availability = datacenter.get("gpuAvailability")
+    if not isinstance(availability, list):
+        return False
+    for item in availability:
+        if not isinstance(item, dict):
+            continue
+        candidate_id = str(item.get("gpuId") or item.get("id") or "").strip()
+        if candidate_id != gpu_id:
+            continue
+        stock_status = str(item.get("stockStatus") or "").strip().lower()
+        available_flag = item.get("available")
+        if isinstance(available_flag, bool):
+            return available_flag
+        return stock_status not in {"", "unavailable", "out", "outofstock", "none"}
+    return False
+
+
+def get_pod(pod_id: str) -> PodInfo:
+    output = run_command_capture(("runpodctl", "pod", "get", pod_id))
+    return parse_pod_info(json.loads(output or "{}"))
+
+
+def parse_pod_info(payload: dict[str, Any]) -> PodInfo:
+    if not isinstance(payload, dict):
+        raise RunPodOrchestrationError("unexpected pod payload type")
+    pod_id = str(payload.get("id") or payload.get("podId") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    desired_status = str(payload.get("desiredStatus") or payload.get("status") or "").strip() or "UNKNOWN"
+    ssh_endpoint = extract_ssh_endpoint(payload)
+    return PodInfo(pod_id=pod_id, name=name, desired_status=desired_status, ssh_endpoint=ssh_endpoint)
+
+
+def extract_ssh_endpoint(payload: dict[str, Any]) -> PodSshEndpoint | None:
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    host = str(
+        runtime.get("publicIp")
+        or payload.get("publicIp")
+        or payload.get("sshHost")
+        or payload.get("ipAddress")
+        or ""
+    ).strip()
+    if not host:
+        return None
+    port = extract_ssh_port(runtime) or extract_ssh_port(payload)
+    if port is None:
+        return None
+    return PodSshEndpoint(host=host, port=port, user="root")
+
+
+def extract_ssh_port(payload: dict[str, Any]) -> int | None:
+    ports = payload.get("ports")
+    if isinstance(ports, list):
+        for item in ports:
+            if not isinstance(item, dict):
+                continue
+            private_port = int(item.get("privatePort") or item.get("containerPort") or item.get("port") or 0)
+            if private_port != 22:
+                continue
+            public_port = int(item.get("publicPort") or item.get("hostPort") or 0)
+            if public_port:
+                return public_port
+    port_mappings = payload.get("portMappings")
+    if isinstance(port_mappings, dict):
+        value = port_mappings.get("22") or port_mappings.get("22/tcp")
+        if value is not None:
+            return int(value)
+    ssh_port = payload.get("sshPort")
+    if ssh_port is not None:
+        return int(ssh_port)
+    return None
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _run_subprocess(command: tuple[str, ...], *, cwd: Path | None = None, check: bool = True) -> None:
+    subprocess.run(command, cwd=cwd, check=check, text=True)
+
+
+def run_command_capture(
+    command: tuple[str, ...],
+    *,
+    cwd: Path | None = None,
+    check: bool = True,
+) -> str:
+    result = subprocess.run(command, cwd=cwd, check=check, capture_output=True, text=True)
+    return result.stdout

@@ -8,6 +8,8 @@ Canonical path:
 
 - `data/processed/tampermonkey_labels.jsonl`
 
+This file is local contributor state, not repository content. The public GitHub repo contains code and docs only. Remote training paths may sync the local reviewed label file to a remote machine for one run, but they do not commit or fetch corpora through GitHub.
+
 The file is append-or-update JSONL written by the bridge.
 
 Minimum useful record:
@@ -56,7 +58,11 @@ Training and bridge inference reuse the content-facing subset of those fields wh
 - `content_domain`
 - `is_crosspost`
 
-Those fields are folded into the shared model text as normalized metadata tokens such as `POST_TYPE:image` and `CONTENT_DOMAIN:instagram_com`.
+Those fields are normalized into metadata tokens such as `POST_TYPE:image` and `CONTENT_DOMAIN:instagram_com`.
+
+Neural model families still consume those tokens through their shared text or prompt inputs. The operational TF-IDF model now keeps them in a separate exact-token metadata channel so word and character n-grams stay focused on natural title/body text.
+
+The semantic benchmark families now also consume metadata through a separate one-hot block alongside split title and body embeddings, instead of flattening everything into one embedded string.
 
 The shared text also includes lightweight structural tokens derived from the visible text:
 
@@ -122,10 +128,38 @@ Training writes these files into the output directory:
 
 The benchmark suite writes:
 
+- `suite_training_summary.json`
 - `tfidf_recommended/training_summary.json`
-- `semantic_embedding/training_summary.json`
-- `transformer_sequence_classifier/training_summary.json`
+- `semantic_minilm_tuned/training_summary.json`
+- `semantic_qwen3_embedding_0_6b/training_summary.json`
+- `transformer_deberta_v3_small/training_summary.json`
+- `transformer_modernbert_base/training_summary.json`
+- `causal_lm_qwen3_1_7b_lora/training_summary.json`
+- `suite_input.json`
 - `benchmark_suite_summary.json`
+- `benchmark_history.json`
+- `history/<run_id>/benchmark_suite_summary.json`
+
+The optional RunPod remote wrapper also writes local pulled metadata and logs under:
+
+- `models/runpod-meta/<run_id>/`
+
+## `suite_input.json`
+
+The benchmark suite persists one shared manifest before running any model families.
+
+The manifest includes:
+
+- the prepared and deduped records used for the run
+- the train, calibration, and test assignments
+- `split_strategy`
+- `split_seed`
+- optional `evaluation_subreddit`
+- prepared-data summary counts
+
+Every benchmark-suite model family consumes that same manifest so the six-model comparison remains apples-to-apples.
+
+`make retrain` writes or refreshes this manifest before training the suite models. `make benchmark` loads the same manifest later and only benchmarks compatible trained artifacts for that manifest.
 
 ## `tfidf_logreg.joblib`
 
@@ -143,6 +177,19 @@ Important sections:
 
 - `prepared_data`
   - counts after normalization and dedupe
+- `benchmark_run`
+  - benchmark-only metadata for the latest suite evaluation
+  - includes:
+    - `run_id`
+    - `created_at`
+    - optional `notes`
+    - `representation`
+    - `suite_manifest_fingerprint`
+- `suite_resume`
+  - benchmark-suite-only metadata used to decide whether an existing per-model artifact can be reused on a later run
+- `benchmark_status`
+  - `not_run` after retraining only
+  - `complete` after held-out benchmarking finishes for that artifact
 - `split`
   - train, calibration, and test counts
   - `split_strategy` and `split_seed`
@@ -158,26 +205,52 @@ Important sections:
   - the held-out production-readiness requirements, including the precision target and the minimum number of high-confidence test predictions
 - `threshold_selection`
   - low/high thresholds and threshold sweeps
+  - includes the current review precision target for low-threshold selection and the high precision target for strict auto selection
 - `metrics`
   - held-out high-confidence precision, recall, F1, and band counts
 - `operating_metrics`
   - stable cross-model metrics for the strict auto bucket, the broader review queue, and queue rates
+  - includes `ranking_metrics.pr_auc`
+  - includes `constraint_metrics` such as:
+    - `auto_recall_at_precision_95`
+    - `review_recall_at_precision_75`
   - includes `slice_metrics` for:
     - post type
     - low-text vs richer-text posts
     - sparse-media vs non-sparse-media posts
+  - each slice now includes support counts and `support_status`
 - `training_balance`
   - the slice-aware positive weighting strategy used during fitting
-  - bucket weights for underrepresented positive cohorts
+  - bucket weights for the active tuning levers only (`image` and `low_text`)
   - train-split positive cohort counts and sample-weight summary
 - `feature_audit`
   - top positive and negative TF-IDF features
   - top positive and negative features by channel
-  - the custom word stopword list used by the title/body vectorizers
+  - the operational TF-IDF channels now include `metadata_token` alongside `title_word`, `body_word`, and `char_wb`
+  - lexical TF-IDF channels normalize visible URLs to `URL`, so raw URL syntax is less likely to surface as a learned term
+  - the custom word stopword list used by the title/body vectorizers, including the current default extra exclusions for `just`, `one`, and `some`
 - `production_ready`
 - `production_ready_blocked_reason`
 
-Neural benchmark summaries replace `feature_audit` with model-specific metadata such as `embedding_summary` or `training_args`, but keep the same `split`, `calibration`, `threshold_selection`, `metrics`, and `operating_metrics` structure so results can be compared consistently.
+Neural benchmark summaries replace `feature_audit` with model-specific metadata such as `embedding_summary`, `training_args`, or `prompt_template`, but keep the same `split`, `calibration`, `threshold_selection`, `metrics`, and `operating_metrics` structure so results can be compared consistently.
+
+Training-only suite summaries intentionally omit `metrics` and `operating_metrics` until a later benchmark step writes them.
+
+## `benchmark_history.json`
+
+The suite benchmark also appends a compact historical index.
+
+Each entry includes:
+
+- run id
+- timestamp
+- optional notes
+- a short human-readable description of what the benchmark represents
+- split summary
+- prepared-data counts
+- a condensed per-model metrics snapshot
+
+This file is meant for longitudinal tracking. The full immutable snapshot for each indexed run lives under `history/<run_id>/benchmark_suite_summary.json`.
 
 Transformer benchmark summaries also include the current input and loss setup under `training_args`, including:
 
@@ -186,6 +259,29 @@ Transformer benchmark summaries also include the current input and loss setup un
 - `body_includes_metadata_tokens`
 - `class_weighting`
 - `class_weights`
+
+Semantic benchmark summaries also include a model-family-specific `embedding_summary`, including fields such as:
+
+- `backend`
+- `model_id`
+- `feature_layout`
+- `prompt_mode`
+- `prompt_prefix`
+- `short_prompt_prefix`
+- `normalize_embeddings`
+- `pooling`
+- `logreg_c`
+
+The Qwen3 embedding path uses a Transformers-based backend rather than SentenceTransformers, but it still ends in the same calibrated logistic-regression head shape as the MiniLM path.
+
+Decoder-LLM benchmark summaries also include the current prompt and continuation-scoring setup, including fields such as:
+
+- `prompt_template`
+- `target_labels`
+- `lora`
+- `runtime_device`
+
+The decoder-LLM family trains the model to continue with exactly `askseattle` or `not_askseattle`, then scores those two candidate continuations directly at evaluation and inference time instead of relying on free-form generation.
 
 ## Storage Rules
 

@@ -2,12 +2,39 @@
 
 Use this page when you need the exact command surface for the current implementation.
 
+For the remote RunPod wrapper around the existing make targets, see [How to run training on RunPod](../how-to/runpod-training.md).
+
 ## Commands
 
 The CLI entry point is:
 
 ```bash
 ask-seattle
+```
+
+## Make Targets
+
+The normal operator entry points are still the repository make targets:
+
+- `make runpod-bootstrap`
+- `make retrain`
+- `make benchmark`
+- `make benchmark-variants`
+- `make benchmark-suite`
+- `make bridge`
+
+Remote RunPod execution is selected by adding:
+
+```bash
+REMOTE=runpod
+```
+
+Examples:
+
+```bash
+make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
+make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
+make benchmark-variants REMOTE=runpod EVAL_SUBREDDIT=seattle
 ```
 
 ## `ask-seattle train`
@@ -44,9 +71,63 @@ Writes:
 - `tfidf_logreg.joblib`
 - `training_summary.json`
 
+By default this command still evaluates the held-out test slice and writes benchmark metrics for the TF-IDF model only.
+
+## `ask-seattle retrain-all`
+
+Retrain the operational TF-IDF model plus the full six-model comparison suite without running held-out benchmarks.
+
+```bash
+ask-seattle retrain-all --data PATH --operational-output-dir PATH --benchmark-output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--causal-lm-model-id Qwen/Qwen3-1.7B]
+```
+
+Arguments:
+
+- `--data`
+  - required
+  - path to reviewed `.jsonl` label data
+- `--operational-output-dir`
+  - required
+  - directory where the operational TF-IDF artifacts are written
+- `--benchmark-output-dir`
+  - required
+  - directory where the six suite model artifacts are written
+- `--eval-subreddit`
+  - optional
+  - when set, training still uses mixed reviewed data but restricts later calibration/test evaluation to the named subreddit
+- `--split-strategy`
+  - optional
+  - defaults to `random`
+- `--split-seed`
+  - optional
+  - defaults to `13`
+  - only affects `--split-strategy random`
+- `--semantic-model-id`
+  - optional
+  - defaults to `sentence-transformers/all-MiniLM-L6-v2`
+- `--semantic-secondary-model-id`
+  - optional
+  - defaults to `Qwen/Qwen3-Embedding-0.6B`
+- `--transformer-model-id`
+  - optional
+  - defaults to `microsoft/deberta-v3-small`
+- `--transformer-secondary-model-id`
+  - optional
+  - defaults to `answerdotai/ModernBERT-base`
+- `--causal-lm-model-id`
+  - optional
+  - defaults to `Qwen/Qwen3-1.7B`
+
+Writes:
+
+- operational TF-IDF artifacts under `--operational-output-dir`
+- `suite_input.json`
+- one per-model `training_summary.json` under `--benchmark-output-dir`
+- `suite_training_summary.json`
+
 ## `ask-seattle benchmark-variants`
 
-Compare a few lightweight TF-IDF variants on the same held-out split.
+Compare the current TF-IDF default, the legacy baseline, and a small TF-IDF tuning grid on the same held-out split.
 
 ```bash
 ask-seattle benchmark-variants --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle]
@@ -80,10 +161,10 @@ Writes:
 
 ## `ask-seattle benchmark-suite`
 
-Compare the recommended TF-IDF baseline against a semantic embedding path and a transformer path on the same held-out split.
+Benchmark the full six-model suite on one shared held-out split, using already-trained suite artifacts.
 
 ```bash
-ask-seattle benchmark-suite --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--transformer-model-id microsoft/deberta-v3-small]
+ask-seattle benchmark-suite --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--causal-lm-model-id Qwen/Qwen3-1.7B] [--notes "free-form note"]
 ```
 
 Arguments:
@@ -96,7 +177,7 @@ Arguments:
   - directory where suite benchmark artifacts are written
 - `--eval-subreddit`
   - optional
-  - when set, all benchmark paths train on mixed reviewed data but restrict calibration and test evaluation to the named subreddit
+  - when set, all benchmark paths restrict calibration and test evaluation to the named subreddit while still using the same mixed-data training manifest
 - `--split-strategy`
   - optional
   - defaults to `random`
@@ -107,22 +188,38 @@ Arguments:
 - `--semantic-model-id`
   - optional
   - defaults to `sentence-transformers/all-MiniLM-L6-v2`
+- `--semantic-secondary-model-id`
+  - optional
+  - defaults to `Qwen/Qwen3-Embedding-0.6B`
 - `--transformer-model-id`
   - optional
   - defaults to `microsoft/deberta-v3-small`
+- `--transformer-secondary-model-id`
+  - optional
+  - defaults to `answerdotai/ModernBERT-base`
+- `--causal-lm-model-id`
+  - optional
+  - defaults to `Qwen/Qwen3-1.7B`
+- `--notes`
+  - optional
+  - free-form text stored with the benchmark history record for this run
 
 Current suite details:
 
+- the command loads the shared `suite_input.json` manifest and benchmarks any compatible trained model artifacts already present for that manifest
+- if a family is missing or incompatible, the command logs a warning and skips it instead of retraining it
+- the semantic family includes a tuned MiniLM path and a Qwen3 embedding path
+- the transformer family includes DeBERTa-v3-small and ModernBERT-base
+- the decoder family includes a Qwen3-1.7B LoRA classifier scored via two candidate label continuations
+- on Apple Silicon, the decoder family currently defaults to `cpu_fallback` instead of MPS because the Qwen3 fine-tuning path is not stable on the current MPS stack
 - the shared model text includes normalized content metadata when available
-- the transformer path uses title/body pair encoding
-- the transformer path uses balanced class-weighted cross-entropy loss
 
 Writes:
 
-- `tfidf_recommended/training_summary.json`
-- `semantic_embedding/training_summary.json`
-- `transformer_sequence_classifier/training_summary.json`
+- updated per-model `training_summary.json` files for any model that was benchmarked successfully
 - `benchmark_suite_summary.json`
+- `benchmark_history.json`
+- `history/<run_id>/benchmark_suite_summary.json`
 
 This command requires the optional model dependencies:
 
@@ -223,7 +320,6 @@ Variables:
 - `LABELS`
 - `MODEL_DIR`
 - `MODEL_PATH`
-- `BENCHMARK_DIR`
 - `BENCHMARK_VARIANTS_DIR`
 - `BENCHMARK_SUITE_DIR`
 - `BENCHMARK_SUITE_SUMMARY`
@@ -231,18 +327,23 @@ Variables:
 - `SPLIT_STRATEGY`
 - `SPLIT_SEED`
 - `SEMANTIC_MODEL_ID`
+- `SEMANTIC_SECONDARY_MODEL_ID`
 - `TRANSFORMER_MODEL_ID`
+- `TRANSFORMER_SECONDARY_MODEL_ID`
+- `CAUSAL_LM_MODEL_ID`
+- `BENCHMARK_NOTES`
 - `LOG_LEVEL`
 - `RETRAIN_EVERY`
 
 Examples:
 
 ```bash
-make retrain MODEL_DIR=models/run-002
-make benchmark BENCHMARK_DIR=models/benchmark-run-002
+make retrain MODEL_DIR=models/run-002 BENCHMARK_SUITE_DIR=models/benchmark-suite-run-002
+make benchmark BENCHMARK_SUITE_DIR=models/benchmark-suite-run-002
 make benchmark-variants BENCHMARK_VARIANTS_DIR=models/benchmark-variants-run-002
 make benchmark-suite BENCHMARK_SUITE_DIR=models/benchmark-suite-run-002
 make benchmark EVAL_SUBREDDIT=seattle
+make benchmark EVAL_SUBREDDIT=seattle BENCHMARK_NOTES="after adding april labels"
 make benchmark-suite EVAL_SUBREDDIT=seattle
 make benchmark EVAL_SUBREDDIT=seattle SPLIT_STRATEGY=time
 make benchmark SPLIT_SEED=21
