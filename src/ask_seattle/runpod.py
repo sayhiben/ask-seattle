@@ -485,6 +485,7 @@ def run_remote_bootstrap(
 ) -> None:
     remote_log_dir = f"{REMOTE_LOG_ROOT}/{run_id}"
     remote_script = f"{config.remote_dir}/scripts/runpod_pod_bootstrap.sh"
+    sync_remote_bootstrap_script(config, ssh_endpoint=ssh_endpoint, remote_script=remote_script)
     make_args = build_remote_make_args(config, target=target, remote_labels_path=remote_labels_path)
     command = [
         "ssh",
@@ -509,6 +510,47 @@ def run_remote_bootstrap(
         ),
     ]
     _run_subprocess(tuple(command))
+
+
+def sync_remote_bootstrap_script(
+    config: RunPodConfig,
+    *,
+    ssh_endpoint: PodSshEndpoint,
+    remote_script: str,
+) -> None:
+    remote_parent = str(Path(remote_script).parent)
+    _run_subprocess(
+        (
+            "ssh",
+            "-p",
+            str(ssh_endpoint.port),
+            "-o",
+            "StrictHostKeyChecking=no",
+            f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+            f"mkdir -p {shlex.quote(remote_parent)}",
+        )
+    )
+    _run_subprocess(
+        (
+            "rsync",
+            *RSYNC_FLAGS,
+            "-e",
+            f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
+            str(config.repo_root / "scripts" / "runpod_pod_bootstrap.sh"),
+            f"{ssh_endpoint.user}@{ssh_endpoint.host}:{remote_script}",
+        )
+    )
+    _run_subprocess(
+        (
+            "ssh",
+            "-p",
+            str(ssh_endpoint.port),
+            "-o",
+            "StrictHostKeyChecking=no",
+            f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+            f"chmod +x {shlex.quote(remote_script)}",
+        )
+    )
 
 
 def pull_artifacts(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, target: str) -> None:
