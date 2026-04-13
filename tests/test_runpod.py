@@ -14,11 +14,13 @@ from ask_seattle.runpod import (
     build_remote_make_args,
     candidate_datacenters,
     cleanup_expired_cached_volume,
+    create_pod,
     datacenter_has_gpu,
     ensure_clean_worktree,
     extract_ssh_endpoint,
     first_available_gpu_for_datacenter,
     artifact_dirs_for_target,
+    wait_for_pod_ready,
     provision_volume_and_pod,
     remote_clone_url,
     select_datacenter,
@@ -447,3 +449,124 @@ def test_provision_volume_and_pod_preserves_existing_cache_without_eviction(
         provision_volume_and_pod(config, pod_name="ask-seattle-test")
 
     assert deleted == []
+
+
+def test_create_pod_reconciles_by_name_after_create_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from ask_seattle import runpod
+
+    config = RunPodConfig(
+        repo_root=tmp_path,
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=tmp_path / "id.pub",
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=tmp_path / "labels.jsonl",
+        benchmark_meta_dir=tmp_path / "meta",
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        pod_create_timeout_seconds=10,
+    )
+
+    def timeout_capture(*args, **kwargs):
+        raise subprocess.TimeoutExpired(("runpodctl", "pod", "create"), timeout=10)
+
+    monkeypatch.setattr(runpod, "run_command_capture", timeout_capture)
+    monkeypatch.setattr(
+        runpod,
+        "reconcile_pod_by_name",
+        lambda pod_name, wait_timeout_seconds: runpod.PodInfo(
+            pod_id="pod-123",
+            name=pod_name,
+            desired_status="RUNNING",
+            ssh_endpoint=None,
+        ),
+    )
+
+    pod = create_pod(
+        config,
+        pod_name="ask-seattle-test",
+        gpu_id="NVIDIA RTX A5000",
+        data_center_id="EU-RO-1",
+        network_volume_id="vol-123",
+    )
+
+    assert pod.pod_id == "pod-123"
+
+
+def test_wait_for_pod_ready_reconciles_after_missing_pod(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from ask_seattle import runpod
+
+    config = RunPodConfig(
+        repo_root=tmp_path,
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=tmp_path / "id.pub",
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=tmp_path / "labels.jsonl",
+        benchmark_meta_dir=tmp_path / "meta",
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        pod_ready_timeout_seconds=30,
+    )
+
+    state = {"calls": 0}
+
+    def fake_get_pod(pod_id: str):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise RunPodOrchestrationError("pod not found")
+        return runpod.PodInfo(
+            pod_id="pod-456",
+            name="ask-seattle-test",
+            desired_status="RUNNING",
+            ssh_endpoint=runpod.PodSshEndpoint(host="1.2.3.4", port=1234, user="root"),
+        )
+
+    monkeypatch.setattr(runpod, "get_pod", fake_get_pod)
+    monkeypatch.setattr(
+        runpod,
+        "reconcile_pod_by_name",
+        lambda pod_name, wait_timeout_seconds: runpod.PodInfo(
+            pod_id="pod-456",
+            name=pod_name,
+            desired_status="RUNNING",
+            ssh_endpoint=runpod.PodSshEndpoint(host="1.2.3.4", port=1234, user="root"),
+        ),
+    )
+    monkeypatch.setattr(runpod, "wait_for_ssh", lambda endpoint: None)
+
+    pod = wait_for_pod_ready(config, "pod-old", pod_name="ask-seattle-test")
+
+    assert pod.pod_id == "pod-456"

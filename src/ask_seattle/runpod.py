@@ -40,6 +40,8 @@ DEFAULT_RUNPOD_VOLUME_SIZE_GB = 100
 DEFAULT_RUNPOD_VOLUME_RETENTION_SECONDS = 3 * 24 * 60 * 60
 DEFAULT_RUNPOD_POD_CREATE_ATTEMPTS = 3
 DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS = 20
+DEFAULT_RUNPOD_POD_CREATE_TIMEOUT_SECONDS = 300
+DEFAULT_RUNPOD_POD_RECONCILE_TIMEOUT_SECONDS = 90
 DEFAULT_RUNPOD_GPU_TYPES = (
     "NVIDIA RTX A5000",
     "NVIDIA GeForce RTX 4090",
@@ -90,6 +92,7 @@ class RunPodConfig:
     pod_ready_timeout_seconds: int = 1800
     pod_create_attempts: int = DEFAULT_RUNPOD_POD_CREATE_ATTEMPTS
     pod_create_retry_delay_seconds: int = DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS
+    pod_create_timeout_seconds: int = DEFAULT_RUNPOD_POD_CREATE_TIMEOUT_SECONDS
     evict_volume_on_capacity_failure: bool = False
 
 
@@ -298,6 +301,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
         type=int,
         default=DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS,
     )
+    parser.add_argument("--pod-create-timeout-seconds", type=int, default=DEFAULT_RUNPOD_POD_CREATE_TIMEOUT_SECONDS)
     parser.add_argument("--evict-volume-on-capacity-failure", action="store_true")
     if include_target:
         parser.add_argument(
@@ -339,6 +343,7 @@ def config_from_args(args: argparse.Namespace) -> RunPodConfig:
         pod_ready_timeout_seconds=int(args.pod_ready_timeout_seconds),
         pod_create_attempts=int(args.pod_create_attempts),
         pod_create_retry_delay_seconds=int(args.pod_create_retry_delay_seconds),
+        pod_create_timeout_seconds=int(args.pod_create_timeout_seconds),
         evict_volume_on_capacity_failure=bool(args.evict_volume_on_capacity_failure),
     )
 
@@ -532,15 +537,26 @@ def create_pod(
     data_center_id: str,
     network_volume_id: str,
 ) -> PodInfo:
-    output = run_command_capture(
-        build_create_pod_command(
-            config,
-            pod_name=pod_name,
-            gpu_id=gpu_id,
-            data_center_id=data_center_id,
-            network_volume_id=network_volume_id,
-        )
+    command = build_create_pod_command(
+        config,
+        pod_name=pod_name,
+        gpu_id=gpu_id,
+        data_center_id=data_center_id,
+        network_volume_id=network_volume_id,
     )
+    try:
+        output = run_command_capture(command, timeout=config.pod_create_timeout_seconds)
+    except subprocess.TimeoutExpired as exc:
+        reconciled = reconcile_pod_by_name(
+            pod_name,
+            wait_timeout_seconds=DEFAULT_RUNPOD_POD_RECONCILE_TIMEOUT_SECONDS,
+        )
+        if reconciled is not None:
+            return reconciled
+        raise RunPodOrchestrationError(
+            f"runpodctl pod create timed out after {config.pod_create_timeout_seconds} seconds for pod {pod_name} "
+            f"in {data_center_id} with GPU {gpu_id}, and no matching pod could be reconciled afterward"
+        ) from exc
     pod = parse_pod_info(json.loads(output))
     if not pod.pod_id:
         raise RunPodOrchestrationError("failed to parse pod id from runpodctl pod create output")
@@ -549,13 +565,22 @@ def create_pod(
 
 def wait_for_pod_ready(config: RunPodConfig, pod_id: str, *, pod_name: str) -> PodInfo:
     deadline = time.monotonic() + config.pod_ready_timeout_seconds
+    current_pod_id = pod_id
     while time.monotonic() < deadline:
-        pod = get_pod(pod_id)
+        try:
+            pod = get_pod(current_pod_id)
+        except RunPodOrchestrationError:
+            reconciled = reconcile_pod_by_name(pod_name, wait_timeout_seconds=15)
+            if reconciled is None or not reconciled.pod_id:
+                time.sleep(5)
+                continue
+            current_pod_id = reconciled.pod_id
+            pod = reconciled
         if pod.ssh_endpoint is not None and pod.desired_status.upper() == "RUNNING":
             wait_for_ssh(pod.ssh_endpoint)
             return pod
         time.sleep(10)
-    raise RunPodOrchestrationError(f"pod {pod_name} ({pod_id}) did not become SSH-ready before timeout")
+    raise RunPodOrchestrationError(f"pod {pod_name} ({current_pod_id}) did not become SSH-ready before timeout")
 
 
 def run_remote_gpu_smoke(ssh_endpoint: PodSshEndpoint) -> None:
@@ -985,6 +1010,43 @@ def list_network_volumes() -> list[NetworkVolume]:
     return volumes
 
 
+def list_pods(*, name: str | None = None, include_all: bool = False) -> list[PodInfo]:
+    command: list[str] = ["runpodctl", "pod", "list"]
+    if include_all:
+        command.append("--all")
+    if name:
+        command.extend(("--name", name))
+    output = run_command_capture(tuple(command), timeout=30)
+    payload = json.loads(output or "[]")
+    if not isinstance(payload, list):
+        raise RunPodOrchestrationError("unexpected runpodctl pod list output")
+    pods: list[PodInfo] = []
+    for item in payload:
+        if isinstance(item, dict):
+            pods.append(parse_pod_info(item))
+    return pods
+
+
+def reconcile_pod_by_name(pod_name: str, *, wait_timeout_seconds: int) -> PodInfo | None:
+    deadline = time.monotonic() + wait_timeout_seconds
+    while time.monotonic() < deadline:
+        candidates = [
+            pod
+            for pod in list_pods(name=pod_name, include_all=True)
+            if pod.name == pod_name and pod.pod_id
+        ]
+        candidates.sort(key=lambda pod: (pod.desired_status.upper() != "RUNNING", pod.pod_id))
+        for candidate in candidates:
+            try:
+                return get_pod(candidate.pod_id)
+            except RunPodOrchestrationError:
+                continue
+        if candidates:
+            return candidates[0]
+        time.sleep(5)
+    return None
+
+
 def create_network_volume(name: str, size_gb: int, data_center_id: str) -> NetworkVolume:
     output = run_command_capture(
         (
@@ -1301,9 +1363,10 @@ def run_command_capture(
     *,
     cwd: Path | None = None,
     check: bool = True,
+    timeout: float | None = None,
 ) -> str:
     try:
-        result = subprocess.run(command, cwd=cwd, check=check, capture_output=True, text=True)
+        result = subprocess.run(command, cwd=cwd, check=check, capture_output=True, text=True, timeout=timeout)
     except subprocess.CalledProcessError as exc:
         if check:
             raise subprocess.CalledProcessError(
