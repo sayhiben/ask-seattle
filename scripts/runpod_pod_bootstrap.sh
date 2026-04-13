@@ -69,7 +69,7 @@ cd "${REMOTE_REPO_DIR}"
 git fetch --all --prune
 git checkout --detach "${COMMIT_SHA}"
 git reset --hard "${COMMIT_SHA}"
-git clean -fdx
+git clean -fd
 
 if [[ -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
   if ! "${REMOTE_VENV_DIR}/bin/python3" - <<'PY' >/dev/null 2>&1
