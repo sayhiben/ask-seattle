@@ -177,6 +177,7 @@ def run_command(args: argparse.Namespace) -> int:
         if ready_pod.ssh_endpoint is None:
             raise RunPodOrchestrationError(f"pod {pod.pod_id} never exposed an SSH endpoint")
         run_remote_gpu_smoke(ready_pod.ssh_endpoint)
+        ensure_remote_rsync(ready_pod.ssh_endpoint)
         remote_labels_path = sync_labels_to_pod(config, ready_pod.ssh_endpoint, run_id)
         run_remote_bootstrap(
             config,
@@ -508,6 +509,35 @@ def run_remote_gpu_smoke(ssh_endpoint: PodSshEndpoint) -> None:
             "RunPod pod failed the GPU smoke test before training. "
             "This usually means the selected template/image or provider runtime did not expose CUDA correctly."
         ) from exc
+
+
+def ensure_remote_rsync(ssh_endpoint: PodSshEndpoint) -> None:
+    command = (
+        "set -euo pipefail\n"
+        "if ! command -v rsync >/dev/null 2>&1; then\n"
+        "  export DEBIAN_FRONTEND=noninteractive\n"
+        "  apt-get update\n"
+        "  apt-get install -y rsync\n"
+        "fi\n"
+        "command -v rsync >/dev/null 2>&1\n"
+    )
+    try:
+        _run_subprocess(
+            (
+                "ssh",
+                "-p",
+                str(ssh_endpoint.port),
+                "-o",
+                "StrictHostKeyChecking=no",
+                f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+                f"bash -lc {shlex.quote(command)}",
+            ),
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunPodOrchestrationError("timed out while preparing rsync inside the RunPod pod") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RunPodOrchestrationError("failed to install or verify rsync inside the RunPod pod") from exc
 
 
 def sync_labels_to_pod(config: RunPodConfig, ssh_endpoint: PodSshEndpoint, run_id: str) -> str:
