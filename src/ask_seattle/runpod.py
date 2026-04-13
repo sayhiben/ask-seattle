@@ -475,36 +475,39 @@ def provision_volume_and_pod(config: RunPodConfig, *, pod_name: str) -> tuple[Ne
                 delete_volume_lease(config)
                 last_error = exc
 
-        for data_center_id in candidate_datacenters(datacenters, config.gpu_types, config.data_center_ids):
-            volume = create_network_volume(config.volume_name, config.volume_size_gb, data_center_id)
-            try:
-                gpu_id, pod = create_pod_in_datacenter(
-                    config,
-                    pod_name=pod_name,
-                    data_center_id=data_center_id,
-                    network_volume_id=volume.volume_id,
-                    gpu_ids=config.gpu_types,
-                )
-                return volume, gpu_id, data_center_id, pod
-            except subprocess.CalledProcessError as exc:
-                delete_network_volume(volume.volume_id)
-                last_error = exc
-                if not is_retryable_pod_create_error(exc):
+        for gpu_ids in (config.gpu_types, config.fallback_gpu_types):
+            if not gpu_ids:
+                continue
+            for data_center_id in candidate_datacenters(datacenters, gpu_ids, config.data_center_ids):
+                volume = create_network_volume(config.volume_name, config.volume_size_gb, data_center_id)
+                try:
+                    gpu_id, pod = create_pod_in_datacenter(
+                        config,
+                        pod_name=pod_name,
+                        data_center_id=data_center_id,
+                        network_volume_id=volume.volume_id,
+                        gpu_ids=gpu_ids,
+                    )
+                    return volume, gpu_id, data_center_id, pod
+                except subprocess.CalledProcessError as exc:
+                    delete_network_volume(volume.volume_id)
+                    last_error = exc
+                    if not is_retryable_pod_create_error(exc):
+                        raise
+                except Exception:
+                    delete_network_volume(volume.volume_id)
                     raise
-            except Exception:
-                delete_network_volume(volume.volume_id)
-                raise
 
         if attempt_index + 1 < config.pod_create_attempts:
             time.sleep(config.pod_create_retry_delay_seconds)
 
     if last_error is not None:
         raise RunPodOrchestrationError(
-            "no acceptable RunPod datacenter could create a pod with the requested GPU preferences after retries. "
+            "no acceptable RunPod datacenter could create a pod with the configured primary or fallback GPU preferences after retries. "
             f"Last provider output: {summarize_exception(last_error)}"
         ) from last_error
     raise RunPodOrchestrationError(
-        "no acceptable RunPod datacenter had the requested GPU availability for the configured preference list"
+        "no acceptable RunPod datacenter had the configured primary or fallback GPU availability"
     )
 
 

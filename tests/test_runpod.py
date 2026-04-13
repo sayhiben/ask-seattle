@@ -658,6 +658,87 @@ def test_provision_volume_and_pod_uses_same_datacenter_fallback_gpu_for_existing
     assert captured["gpu_ids"] == ("NVIDIA L4",)
 
 
+def test_provision_volume_and_pod_uses_fallback_gpu_for_new_volume_when_primary_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from ask_seattle import runpod
+
+    config = RunPodConfig(
+        repo_root=tmp_path,
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=tmp_path / "id.pub",
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        fallback_gpu_types=("NVIDIA L4",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=tmp_path / "labels.jsonl",
+        benchmark_meta_dir=tmp_path / "meta",
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+    )
+
+    monkeypatch.setattr(
+        runpod,
+        "list_datacenters",
+        lambda: [
+            {
+                "id": "EU-RO-1",
+                "gpuAvailability": [
+                    {"gpuId": "NVIDIA RTX A5000", "stockStatus": "Unavailable"},
+                    {"gpuId": "NVIDIA L4", "stockStatus": "High"},
+                ],
+            }
+        ],
+    )
+    monkeypatch.setattr(runpod, "list_network_volumes", lambda: [])
+    monkeypatch.setattr(
+        runpod,
+        "create_network_volume",
+        lambda name, size_gb, data_center_id: runpod.NetworkVolume(
+            volume_id="vol-456",
+            name=name,
+            data_center_id=data_center_id,
+            size_gb=size_gb,
+        ),
+    )
+    captured: dict[str, tuple[str, ...]] = {}
+
+    def fake_create_pod_in_datacenter(config, *, pod_name, data_center_id, network_volume_id, gpu_ids):
+        captured["gpu_ids"] = gpu_ids
+        return "NVIDIA L4", runpod.PodInfo(
+            pod_id="pod-456",
+            name=pod_name,
+            desired_status="RUNNING",
+            ssh_endpoint=None,
+        )
+
+    monkeypatch.setattr(runpod, "create_pod_in_datacenter", fake_create_pod_in_datacenter)
+
+    volume, gpu_id, data_center_id, pod = provision_volume_and_pod(config, pod_name="ask-seattle-test")
+
+    assert volume.volume_id == "vol-456"
+    assert gpu_id == "NVIDIA L4"
+    assert data_center_id == "EU-RO-1"
+    assert pod.pod_id == "pod-456"
+    assert captured["gpu_ids"] == ("NVIDIA L4",)
+
+
 def test_create_pod_reconciles_by_name_after_create_timeout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from ask_seattle import runpod
 
