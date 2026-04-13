@@ -1161,6 +1161,31 @@ def test_semantic_component_texts_split_title_body_and_prefixes() -> None:
     assert body_texts == ["Short prefix Body: Seen near Fremont."]
 
 
+def test_semantic_component_texts_fill_empty_values_with_placeholders() -> None:
+    posts = [
+        training.LabeledPost(title="", selftext="", label=1),
+    ]
+    config = training.SemanticModelConfig(
+        name="semantic_qwen3_embedding_0_6b",
+        display_name="Semantic Qwen3-Embedding",
+        model_id="Qwen/Qwen3-Embedding-0.6B",
+        backend="hf_embedding",
+        config_version="v2_title_body_metadata",
+        prompt_modes=("plain",),
+        normalize_embeddings=(False, True),
+        logistic_c_values=(1.0,),
+    )
+
+    title_texts, body_texts = training._semantic_component_texts(
+        posts,
+        prompt_mode="plain",
+        config=config,
+    )
+
+    assert title_texts == ["[no title]"]
+    assert body_texts == ["[no body]"]
+
+
 def test_move_token_batch_to_device_preserves_integer_tensor_types() -> None:
     class FakeTensor:
         def __init__(self) -> None:

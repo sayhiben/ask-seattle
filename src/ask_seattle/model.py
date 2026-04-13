@@ -1649,7 +1649,10 @@ def _semantic_runtime_component_texts(
     short_prompt_prefix = str(bundle.get("short_prompt_prefix") or prompt_prefix)
     component_label = "Title" if component == "title" else "Body"
     raw_texts = [
-        str(row.get("title") or "").strip() if component == "title" else str(row.get("body_raw") or "").strip()
+        _semantic_runtime_component_fallback_text(
+            str(row.get("title") or "").strip() if component == "title" else str(row.get("body_raw") or "").strip(),
+            component=component,
+        )
         for row in rows
     ]
     if prompt_mode == "plain":
@@ -1667,6 +1670,15 @@ def _semantic_runtime_component_texts(
             for text in raw_texts
         ]
     raise ValueError(f"Unsupported semantic prompt mode: {prompt_mode}")
+
+
+def _semantic_runtime_component_fallback_text(text: str, *, component: str) -> str:
+    normalized = str(text).strip()
+    if normalized:
+        return normalized
+    if component == "title":
+        return "[no title]"
+    return "[no body]"
 
 
 def _semantic_runtime_metadata_features(bundle: dict[str, Any], rows: list[dict[str, str]]) -> np.ndarray:

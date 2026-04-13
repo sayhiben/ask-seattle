@@ -4,6 +4,7 @@ from ask_seattle.data import LabeledPost
 from ask_seattle.model import (
     _default_min_df,
     _bundle_runtime_device,
+    _semantic_runtime_component_texts,
     _tensor_to_float32_numpy,
     _move_token_batch_to_device,
     build_inference_row,
@@ -66,6 +67,14 @@ def test_split_labeled_posts_is_random_by_default_and_deterministic() -> None:
     assert [post.post_id for post in split.calibration] == [post.post_id for post in repeated.calibration]
     assert [post.post_id for post in split.test] == [post.post_id for post in repeated.test]
     assert [post.post_id for post in split.train] != [post.post_id for post in alternate_seed.train]
+
+
+def test_semantic_runtime_component_texts_fill_empty_values_with_placeholders() -> None:
+    bundle = {"prompt_mode": "plain"}
+    rows = [{"title": "", "body_raw": ""}]
+
+    assert _semantic_runtime_component_texts(bundle, rows, component="title") == ["[no title]"]
+    assert _semantic_runtime_component_texts(bundle, rows, component="body") == ["[no body]"]
 
 
 def test_split_labeled_posts_can_use_explicit_time_strategy() -> None:

@@ -1977,8 +1977,8 @@ def _semantic_component_texts(
     prompt_mode: str,
     config: SemanticModelConfig,
 ) -> tuple[list[str], list[str]]:
-    title_texts = [str(post.title).strip() for post in posts]
-    body_texts = [str(post.selftext or "").strip() for post in posts]
+    title_texts = [_semantic_component_fallback_text(str(post.title).strip(), component="title") for post in posts]
+    body_texts = [_semantic_component_fallback_text(str(post.selftext or "").strip(), component="body") for post in posts]
     if prompt_mode == "plain":
         return title_texts, body_texts
     if prompt_mode == "task_prefix":
@@ -1994,6 +1994,15 @@ def _semantic_component_texts(
             [f"{short_prefix} Body: {text}".strip() if short_prefix else f"Body: {text}" for text in body_texts],
         )
     raise ValueError(f"Unsupported semantic prompt mode: {prompt_mode}")
+
+
+def _semantic_component_fallback_text(text: str, *, component: str) -> str:
+    normalized = str(text).strip()
+    if normalized:
+        return normalized
+    if component == "title":
+        return "[no title]"
+    return "[no body]"
 
 
 def _semantic_texts(
