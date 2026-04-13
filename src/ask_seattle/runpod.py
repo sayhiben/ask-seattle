@@ -1370,6 +1370,7 @@ def is_retryable_pod_create_error(exc: subprocess.CalledProcessError) -> bool:
     return any(
         phrase in text
         for phrase in (
+            "there are no instances currently available",
             "no longer any instances available",
             "requested specifications",
             "please refresh and try again",

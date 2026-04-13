@@ -26,6 +26,7 @@ from ask_seattle.runpod import (
     provision_volume_and_pod,
     remote_clone_url,
     select_datacenter,
+    is_retryable_pod_create_error,
 )
 
 
@@ -177,6 +178,17 @@ def test_candidate_gpu_ids_for_existing_volume_appends_fallbacks_after_primary()
         datacenters=datacenters,
         data_center_id="EU-RO-1",
     ) == ("NVIDIA L4", "NVIDIA RTX A4000")
+
+
+def test_is_retryable_pod_create_error_accepts_current_rest_capacity_message() -> None:
+    exc = subprocess.CalledProcessError(
+        1,
+        ("POST", "/pods"),
+        output='{"error":"create pod: There are no instances currently available","status":500}',
+        stderr="",
+    )
+
+    assert is_retryable_pod_create_error(exc) is True
 
 
 def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> None:
