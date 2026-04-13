@@ -98,7 +98,10 @@ python -m pip install \
   "accelerate==1.13.0" \
   "datasets==4.8.4" \
   "peft==0.18.1" \
+  "protobuf>=5.0" \
   "sentence-transformers==5.4.0" \
+  "sentencepiece>=0.2" \
+  "tiktoken>=0.7" \
   "trl==1.1.0" \
   "transformers==4.56.2"
 python - <<'PY'
