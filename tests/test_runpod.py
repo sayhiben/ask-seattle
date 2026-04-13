@@ -563,6 +563,9 @@ def test_pull_artifacts_uses_uncompressed_rsync_for_large_directories(
     assert "-rlpt" in rsync_commands[0]
     assert "--partial" in rsync_commands[0]
     assert "--inplace" in rsync_commands[0]
+    assert "checkpoints_*/" in rsync_commands[0]
+    assert "checkpoint-*/" in rsync_commands[0]
+    assert "optimizer.pt" in rsync_commands[0]
     assert "-rlptz" not in rsync_commands[0]
 
 

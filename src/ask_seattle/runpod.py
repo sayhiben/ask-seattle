@@ -36,6 +36,22 @@ REMOTE_VENV_DIR = "/workspace/.venv"
 REMOTE_CACHE_ROOT = "/workspace/.cache"
 RSYNC_FLAGS = ("-rlptz",)
 ARTIFACT_RSYNC_FLAGS = ("-rlpt", "--partial", "--inplace")
+ARTIFACT_RSYNC_EXCLUDES = (
+    "--exclude",
+    "checkpoints_*/",
+    "--exclude",
+    "checkpoint-*/",
+    "--exclude",
+    "optimizer.pt",
+    "--exclude",
+    "scheduler.pt",
+    "--exclude",
+    "trainer_state.json",
+    "--exclude",
+    "training_args.bin",
+    "--exclude",
+    "rng_state.pth",
+)
 RETRYABLE_RSYNC_EXIT_CODES = frozenset({10, 11, 12, 30, 35, 255})
 DEFAULT_ARTIFACT_RSYNC_ATTEMPTS = 2
 DEFAULT_ARTIFACT_RSYNC_RETRY_DELAY_SECONDS = 5
@@ -884,6 +900,7 @@ def run_artifact_rsync(
     command = (
         "rsync",
         *ARTIFACT_RSYNC_FLAGS,
+        *ARTIFACT_RSYNC_EXCLUDES,
         "--delete",
         "-e",
         f"ssh -p {ssh_endpoint.port} -o StrictHostKeyChecking=no",
