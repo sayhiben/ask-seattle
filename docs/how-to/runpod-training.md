@@ -157,9 +157,8 @@ The default same-datacenter fallback order for retained volumes is:
 2. `NVIDIA RTX 4000 Ada Generation`
 3. `NVIDIA L4`
 4. `NVIDIA RTX A4000`
-5. `NVIDIA GeForce RTX 5090`
-6. `NVIDIA RTX 6000 Ada Generation`
-7. `NVIDIA RTX A6000`
+5. `NVIDIA RTX 6000 Ada Generation`
+6. `NVIDIA RTX A6000`
 
 The default template is:
 

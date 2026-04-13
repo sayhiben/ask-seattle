@@ -56,7 +56,6 @@ DEFAULT_RUNPOD_FALLBACK_GPU_TYPES = (
     "NVIDIA RTX 4000 Ada Generation",
     "NVIDIA L4",
     "NVIDIA RTX A4000",
-    "NVIDIA GeForce RTX 5090",
     "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA RTX A6000",
 )
