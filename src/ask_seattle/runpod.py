@@ -490,7 +490,7 @@ def run_remote_bootstrap(
     remote_labels_path: str,
 ) -> None:
     remote_log_dir = f"{REMOTE_LOG_ROOT}/{run_id}"
-    remote_script = f"{config.remote_dir}/scripts/runpod_pod_bootstrap.sh"
+    remote_script = f"{REMOTE_CACHE_ROOT}/runpod-bootstrap/{run_id}/runpod_pod_bootstrap.sh"
     sync_remote_bootstrap_script(config, ssh_endpoint=ssh_endpoint, remote_script=remote_script)
     make_args = build_remote_make_args(config, target=target, remote_labels_path=remote_labels_path)
     command = [
