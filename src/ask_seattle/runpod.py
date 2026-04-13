@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -86,6 +87,7 @@ DEFAULT_RUNPOD_DATA_CENTER_IDS = (
     "US-IL-1",
     "US-GA-2",
 )
+RUNPOD_ENV_CACHE_VERSION = "2026-04-13-1"
 
 
 class RunPodOrchestrationError(RuntimeError):
@@ -209,10 +211,13 @@ def run_command(args: argparse.Namespace) -> int:
     existing_volume_before_run = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
 
     pod_name = build_pod_name(target=target, commit_sha=commit_sha)
+    env_cache_key = build_remote_env_cache_key(config)
+    print_runpod(f"starting target={target} commit={commit_sha[:7]} volume={config.volume_name}")
     volume, gpu_id, data_center_id, pod = provision_volume_and_pod(config, pod_name=pod_name)
     run_id = build_run_id(target)
     log_dir = config.benchmark_meta_dir / run_id
     log_dir.mkdir(parents=True, exist_ok=True)
+    local_metadata_path = log_dir / "run_metadata.local.json"
 
     local_metadata = {
         "run_id": run_id,
@@ -226,9 +231,17 @@ def run_command(args: argparse.Namespace) -> int:
         "repo_slug": config.repo_slug,
         "origin_url": origin_url,
         "remote_origin_url": remote_origin_url,
+        "env_cache_key": env_cache_key,
         "started_at": utc_now(),
+        "status": "running",
+        "stage": "provisioned",
     }
-    write_json(log_dir / "run_metadata.local.json", local_metadata)
+
+    def _persist_local_metadata(**updates: Any) -> None:
+        local_metadata.update(updates)
+        write_json(local_metadata_path, local_metadata)
+
+    _persist_local_metadata()
 
     ready_pod: PodInfo | None = None
     retain_volume = existing_volume_before_run is not None and existing_volume_before_run.volume_id == volume.volume_id
@@ -241,6 +254,12 @@ def run_command(args: argparse.Namespace) -> int:
     previous_sigterm = signal.getsignal(signal.SIGTERM)
 
     def _handle_signal(signum: int, frame: Any) -> None:
+        _persist_local_metadata(
+            status="interrupted",
+            stage="signal_cleanup",
+            finished_at=utc_now(),
+            signal=signum,
+        )
         cleanup_runpod_resources(
             pod_id=str(cleanup_state.get("pod_id") or ""),
             volume_id=str(cleanup_state.get("volume_id") or ""),
@@ -254,11 +273,20 @@ def run_command(args: argparse.Namespace) -> int:
         ready_pod = wait_for_pod_ready(config, pod.pod_id, pod_name=pod.name)
         if ready_pod.ssh_endpoint is None:
             raise RunPodOrchestrationError(f"pod {pod.pod_id} never exposed an SSH endpoint")
+        print_runpod(
+            f"pod ready id={pod.pod_id} datacenter={data_center_id} gpu={gpu_id} ssh={ready_pod.ssh_endpoint.host}:{ready_pod.ssh_endpoint.port}"
+        )
+        _persist_local_metadata(stage="pod_ready", ssh_endpoint=ready_pod.ssh_endpoint.__dict__)
         run_remote_gpu_smoke(ready_pod.ssh_endpoint)
         ensure_remote_rsync(ready_pod.ssh_endpoint)
+        print_runpod("syncing labels to pod")
+        _persist_local_metadata(stage="syncing_labels")
         remote_labels_path = sync_labels_to_pod(config, ready_pod.ssh_endpoint, run_id)
         retain_volume = True
         cleanup_state["delete_volume"] = False
+        _persist_local_metadata(stage="labels_synced", remote_labels_path=remote_labels_path)
+        print_runpod("starting remote bootstrap and target")
+        _persist_local_metadata(stage="remote_bootstrap")
         run_remote_bootstrap(
             config,
             ssh_endpoint=ready_pod.ssh_endpoint,
@@ -267,23 +295,30 @@ def run_command(args: argparse.Namespace) -> int:
             commit_sha=commit_sha,
             origin_url=remote_origin_url,
             remote_labels_path=remote_labels_path,
+            env_cache_key=env_cache_key,
         )
+        print_runpod("remote target finished; pulling logs")
+        _persist_local_metadata(stage="pulling_logs")
         pull_remote_logs(config, ssh_endpoint=ready_pod.ssh_endpoint, run_id=run_id)
         if not config.no_pull_artifacts:
+            print_runpod("pulling artifacts")
+            _persist_local_metadata(stage="pulling_artifacts")
             pull_artifacts(config, ssh_endpoint=ready_pod.ssh_endpoint, target=target)
-        local_metadata["finished_at"] = utc_now()
-        local_metadata["status"] = "success"
-        write_json(log_dir / "run_metadata.local.json", local_metadata)
+        _persist_local_metadata(finished_at=utc_now(), status="success", stage="completed")
+        print_runpod("run complete")
         return 0
-    except Exception:
+    except BaseException as exc:
         if ready_pod is not None and ready_pod.ssh_endpoint is not None:
             try:
                 pull_remote_logs(config, ssh_endpoint=ready_pod.ssh_endpoint, run_id=run_id)
             except Exception:
                 pass
-        local_metadata["finished_at"] = utc_now()
-        local_metadata["status"] = "failed"
-        write_json(log_dir / "run_metadata.local.json", local_metadata)
+        status = "interrupted" if isinstance(exc, (KeyboardInterrupt, SystemExit)) else "failed"
+        _persist_local_metadata(
+            finished_at=utc_now(),
+            status=status,
+            error=summarize_exception(exc),
+        )
         raise
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
@@ -776,6 +811,7 @@ def run_remote_bootstrap(
     commit_sha: str,
     origin_url: str,
     remote_labels_path: str,
+    env_cache_key: str,
 ) -> None:
     remote_log_dir = f"{REMOTE_LOG_ROOT}/{run_id}"
     remote_script = f"{REMOTE_CACHE_ROOT}/runpod-bootstrap/{run_id}/runpod_pod_bootstrap.sh"
@@ -792,6 +828,7 @@ def run_remote_bootstrap(
         remote_venv_dir=REMOTE_VENV_DIR,
         run_id=run_id,
         run_timeout_seconds=config.remote_run_timeout_seconds,
+        env_cache_key=env_cache_key,
         make_args=make_args,
     )
     command = [
@@ -865,11 +902,19 @@ def pull_artifacts(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, target
             raise RunPodOrchestrationError(
                 f"remote artifact directory missing after {target}: {remote_path}"
             )
+        remote_size = remote_directory_size(ssh_endpoint=ssh_endpoint, remote_path=remote_path)
+        local_size_before = local_directory_size(local_dir)
+        print_runpod(
+            f"artifact pull start dir={relative_dir} remote_size={remote_size} local_size_before={local_size_before}"
+        )
         remote_dir = f"{ssh_endpoint.user}@{ssh_endpoint.host}:{remote_path}/"
         run_artifact_rsync(
             ssh_endpoint=ssh_endpoint,
             remote_dir=remote_dir,
             local_dir=local_dir.parent / Path(relative_dir).name,
+        )
+        print_runpod(
+            f"artifact pull complete dir={relative_dir} local_size_after={local_directory_size(local_dir)}"
         )
 
 
@@ -909,6 +954,7 @@ def run_artifact_rsync(
     )
     last_error: subprocess.CalledProcessError | None = None
     for attempt in range(1, attempts + 1):
+        print_runpod(f"artifact rsync attempt={attempt}/{attempts} source={remote_dir} destination={local_dir}")
         try:
             _run_subprocess(command)
             return
@@ -916,6 +962,9 @@ def run_artifact_rsync(
             last_error = exc
             if exc.returncode not in RETRYABLE_RSYNC_EXIT_CODES or attempt >= attempts:
                 break
+            print_runpod(
+                f"artifact rsync retrying code={exc.returncode} delay={DEFAULT_ARTIFACT_RSYNC_RETRY_DELAY_SECONDS}s"
+            )
             time.sleep(DEFAULT_ARTIFACT_RSYNC_RETRY_DELAY_SECONDS)
     if last_error is None:
         raise RunPodOrchestrationError(f"failed to pull remote artifact directory {remote_dir}")
@@ -993,6 +1042,7 @@ def build_remote_bootstrap_command(
     remote_venv_dir: str,
     run_id: str,
     run_timeout_seconds: int,
+    env_cache_key: str,
     make_args: tuple[str, ...],
 ) -> str:
     command = [
@@ -1007,6 +1057,7 @@ def build_remote_bootstrap_command(
         shlex.quote(remote_venv_dir),
         shlex.quote(run_id),
         shlex.quote(str(run_timeout_seconds)),
+        shlex.quote(env_cache_key),
     ]
     command.extend(shlex.quote(item) for item in make_args)
     return " ".join(command)
@@ -1326,6 +1377,54 @@ def record_volume_retention(config: RunPodConfig, volume: NetworkVolume) -> None
             "volume_name": volume.name,
         },
     )
+
+
+def print_runpod(message: str) -> None:
+    print(f"[runpod] {message}", flush=True)
+
+
+def build_remote_env_cache_key(config: RunPodConfig) -> str:
+    hasher = hashlib.sha256()
+    hasher.update(RUNPOD_ENV_CACHE_VERSION.encode("utf-8"))
+    hasher.update((config.template_id or "").encode("utf-8"))
+    hasher.update(config.image.encode("utf-8"))
+    for relative_path in ("pyproject.toml", "scripts/runpod_pod_bootstrap.sh"):
+        path = config.repo_root / relative_path
+        hasher.update(relative_path.encode("utf-8"))
+        if path.exists():
+            hasher.update(path.read_bytes())
+        else:
+            hasher.update(b"<missing>")
+    return hasher.hexdigest()
+
+
+def local_directory_size(path: Path) -> str:
+    if not path.exists():
+        return "missing"
+    try:
+        return run_command_capture(("du", "-sh", str(path)), check=True, timeout=60).split()[0]
+    except Exception:
+        return "unknown"
+
+
+def remote_directory_size(*, ssh_endpoint: PodSshEndpoint, remote_path: str) -> str:
+    try:
+        output = run_command_capture(
+            (
+                "ssh",
+                "-p",
+                str(ssh_endpoint.port),
+                "-o",
+                "StrictHostKeyChecking=no",
+                f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+                f"du -sh {shlex.quote(remote_path)}",
+            ),
+            check=True,
+            timeout=120,
+        ).strip()
+    except Exception:
+        return "unknown"
+    return output.split()[0] if output else "unknown"
 
 
 def load_volume_lease(config: RunPodConfig) -> dict[str, Any] | None:

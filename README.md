@@ -98,6 +98,8 @@ make benchmark EVAL_SUBREDDIT=seattle
 make bridge EVAL_SUBREDDIT=seattle
 ```
 
+The RunPod path keeps a 3-day retained cache volume by default. That volume now reuses the remote checkout, virtualenv, and model/download caches directly unless the dependency environment key changes or the cached venv fails a health check.
+
 ### Run Benchmarks On Trained Models
 
 ```bash

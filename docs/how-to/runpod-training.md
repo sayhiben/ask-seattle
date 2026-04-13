@@ -11,6 +11,7 @@ This path keeps the existing project boundary intact:
 - the label file is synced to the Pod for one run, then used as a normal local input there
 - the Pod is ephemeral; persistence comes from a contributor-specific network volume
 - successful cache volumes are retained for 3 days by default, then cleaned up on the next RunPod command
+- the retained volume now keeps a warm repo checkout, virtualenv, and model/download caches, and only rebuilds the venv when the dependency environment key changes or the cached venv fails a health check
 
 ## What The RunPod Path Does
 
@@ -26,6 +27,14 @@ From your MacBook, the RunPod helper:
 8. runs the existing `make` target remotely
 9. pulls artifacts and logs back to your ignored local `models/` paths
 10. deletes the Pod
+
+During longer runs, the local controller now emits explicit stage updates for:
+
+- pod readiness
+- label sync
+- remote bootstrap
+- artifact pull start and completion per directory
+- rsync retry attempts
 
 The helper does not keep Pods alive between runs. Only the retained cache volume can continue billing between runs, and that retention window is now bounded by default.
 
@@ -117,6 +126,14 @@ By default, a successful cache volume is retained for 72 hours so the next run c
 - the virtualenv
 - model downloads
 - Hugging Face and pip caches
+
+The retained virtualenv is no longer rebuilt on every run. The bootstrap compares a cached environment key derived from:
+
+- `pyproject.toml`
+- the RunPod bootstrap script
+- the selected template or image
+
+If that key still matches and the cached venv passes a health check, the helper reuses it directly.
 
 Expired cache volumes are deleted opportunistically at the start of the next RunPod command.
 

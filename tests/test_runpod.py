@@ -11,6 +11,7 @@ from ask_seattle.runpod import (
     available_gpus_for_datacenter,
     build_create_pod_payload,
     build_create_pod_command,
+    build_remote_env_cache_key,
     build_remote_bootstrap_command,
     build_remote_make_args,
     candidate_datacenters,
@@ -258,12 +259,56 @@ def test_build_remote_bootstrap_command_quotes_make_args() -> None:
         remote_venv_dir="/workspace/.venv",
         run_id="run-id",
         run_timeout_seconds=21600,
+        env_cache_key="env-key-123",
         make_args=("LABELS=/workspace/runpod-inputs/run/labels.jsonl", "BENCHMARK_NOTES=after labels"),
     )
 
     assert "'BENCHMARK_NOTES=after labels'" in command
     assert "/workspace/ask-seattle/scripts/runpod_pod_bootstrap.sh" in command
     assert "21600" in command
+    assert "env-key-123" in command
+
+
+def test_build_remote_env_cache_key_changes_when_dependency_shape_changes(tmp_path: Path) -> None:
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='ask-seattle'\n", encoding="utf-8")
+    scripts_dir = tmp_path / "scripts"
+    scripts_dir.mkdir()
+    (scripts_dir / "runpod_pod_bootstrap.sh").write_text("#!/usr/bin/env bash\necho hi\n", encoding="utf-8")
+    config = RunPodConfig(
+        repo_root=tmp_path,
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=tmp_path / "id.pub",
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        fallback_gpu_types=("NVIDIA L4",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=tmp_path / "labels.jsonl",
+        benchmark_meta_dir=tmp_path / "meta",
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
+    )
+
+    first_key = build_remote_env_cache_key(config)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='ask-seattle'\nversion='0.2.0'\n", encoding="utf-8")
+    second_key = build_remote_env_cache_key(config)
+
+    assert first_key != second_key
 
 
 def test_build_create_pod_command_prefers_template_id() -> None:
@@ -545,6 +590,8 @@ def test_pull_artifacts_uses_uncompressed_rsync_for_large_directories(
         remote_run_timeout_seconds=21600,
     )
     monkeypatch.setattr(runpod, "remote_directory_exists", lambda **kwargs: True)
+    monkeypatch.setattr(runpod, "remote_directory_size", lambda **kwargs: "7.6G")
+    monkeypatch.setattr(runpod, "local_directory_size", lambda path: "missing")
     commands: list[tuple[str, ...]] = []
 
     def fake_run(command: tuple[str, ...], *args: object, **kwargs: object) -> None:
@@ -605,6 +652,8 @@ def test_pull_artifacts_retries_retryable_rsync_failures(
         remote_run_timeout_seconds=21600,
     )
     monkeypatch.setattr(runpod, "remote_directory_exists", lambda **kwargs: True)
+    monkeypatch.setattr(runpod, "remote_directory_size", lambda **kwargs: "7.6G")
+    monkeypatch.setattr(runpod, "local_directory_size", lambda path: "missing")
     monkeypatch.setattr(runpod.time, "sleep", lambda seconds: None)
     attempts = {"count": 0}
 

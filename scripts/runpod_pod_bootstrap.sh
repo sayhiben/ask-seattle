@@ -10,8 +10,10 @@ REMOTE_LOG_DIR="${6:?missing remote log dir}"
 REMOTE_VENV_DIR="${7:?missing remote venv dir}"
 RUN_ID="${8:?missing run id}"
 RUN_TIMEOUT_SECONDS="${9:?missing run timeout seconds}"
-shift 9
+ENV_CACHE_KEY="${10:?missing env cache key}"
+shift 10
 MAKE_ARGS=("$@")
+ENV_STAMP_PATH="${REMOTE_VENV_DIR}/.ask-seattle-runpod-env.json"
 
 mkdir -p "${REMOTE_LOG_DIR}"
 exec > >(tee -a "${REMOTE_LOG_DIR}/run.log") 2>&1
@@ -53,7 +55,7 @@ path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="
 PY
 }
 
-export TARGET COMMIT_SHA ORIGIN_URL REMOTE_REPO_DIR REMOTE_LABELS_PATH REMOTE_LOG_DIR STARTED_AT RUN_ID
+export TARGET COMMIT_SHA ORIGIN_URL REMOTE_REPO_DIR REMOTE_LABELS_PATH REMOTE_LOG_DIR STARTED_AT RUN_ID ENV_CACHE_KEY
 export MAKE_ARGS_SERIALIZED="$(printf '%s\n' "${MAKE_ARGS[@]}")"
 export RUN_TIMEOUT_SECONDS
 
@@ -71,29 +73,100 @@ git checkout --detach "${COMMIT_SHA}"
 git reset --hard "${COMMIT_SHA}"
 git clean -fd
 
-if [[ -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
-  if ! "${REMOTE_VENV_DIR}/bin/python3" - <<'PY' >/dev/null 2>&1
+cached_env_is_healthy() {
+  if [[ ! -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
+    return 1
+  fi
+  "${REMOTE_VENV_DIR}/bin/python3" - <<'PY' >/dev/null 2>&1
 import sys
+from importlib import import_module
 
 try:
-    import torch
+    torch = import_module("torch")
 except Exception:
     sys.exit(1)
 
+version = torch.__version__.split("+", 1)[0]
+major, minor, *_ = [int(part) for part in version.split(".")]
+if (major, minor) < (2, 6):
+    sys.exit(1)
+required = (
+    "accelerate",
+    "datasets",
+    "google.protobuf",
+    "peft",
+    "sentence_transformers",
+    "sentencepiece",
+    "tiktoken",
+    "trl",
+    "transformers",
+)
+for module_name in required:
+    try:
+        import_module(module_name)
+    except Exception:
+        sys.exit(1)
 sys.exit(0 if torch.cuda.is_available() else 1)
 PY
-  then
-    rm -rf "${REMOTE_VENV_DIR}"
+}
+
+stamp_matches() {
+  if [[ ! -f "${ENV_STAMP_PATH}" ]]; then
+    return 1
   fi
+  CURRENT_ENV_CACHE_KEY="${ENV_CACHE_KEY}" ENV_STAMP_PATH="${ENV_STAMP_PATH}" python3 - <<'PY' >/dev/null 2>&1
+import json
+import os
+from pathlib import Path
+
+path = Path(os.environ["ENV_STAMP_PATH"])
+current_key = os.environ["CURRENT_ENV_CACHE_KEY"]
+try:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(1)
+raise SystemExit(0 if payload.get("env_cache_key") == current_key else 1)
+PY
+}
+
+write_env_stamp() {
+  ENV_STAMP_PATH="${ENV_STAMP_PATH}" ENV_CACHE_KEY="${ENV_CACHE_KEY}" python3 - <<'PY'
+import json
+import os
+from datetime import UTC, datetime
+from pathlib import Path
+
+path = Path(os.environ["ENV_STAMP_PATH"])
+path.write_text(
+    json.dumps(
+        {
+            "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "env_cache_key": os.environ["ENV_CACHE_KEY"],
+        },
+        indent=2,
+        sort_keys=True,
+    ) + "\n",
+    encoding="utf-8",
+)
+PY
+}
+
+BOOTSTRAP_ENV=1
+if stamp_matches && cached_env_is_healthy; then
+  BOOTSTRAP_ENV=0
+  echo "reusing cached RunPod environment (matching env cache key)"
+elif [[ -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
+  echo "cached RunPod environment is stale or unhealthy; rebuilding"
+  rm -rf "${REMOTE_VENV_DIR}"
 fi
 
-if [[ ! -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
-  python3 -m venv "${REMOTE_VENV_DIR}"
-fi
-
-source "${REMOTE_VENV_DIR}/bin/activate"
-python -m pip install --upgrade pip
-if ! python - <<'PY'
+if [[ "${BOOTSTRAP_ENV}" -eq 1 ]]; then
+  if [[ ! -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
+    python3 -m venv "${REMOTE_VENV_DIR}"
+  fi
+  source "${REMOTE_VENV_DIR}/bin/activate"
+  python -m pip install --upgrade pip
+  if ! python - <<'PY'
 from importlib import import_module
 
 try:
@@ -105,22 +178,26 @@ version = torch.__version__.split("+", 1)[0]
 major, minor, *_ = [int(part) for part in version.split(".")]
 raise SystemExit(0 if (major, minor) >= (2, 6) else 1)
 PY
-then
-  python -m pip install --upgrade \
-    --index-url "https://download.pytorch.org/whl/cu124" \
-    "torch==2.6.0"
+  then
+    python -m pip install --upgrade \
+      --index-url "https://download.pytorch.org/whl/cu124" \
+      "torch==2.6.0"
+  fi
+  python -m pip install -e ".[dev]"
+  python -m pip install \
+    "accelerate==1.13.0" \
+    "datasets==4.8.4" \
+    "peft==0.18.1" \
+    "protobuf>=5.0" \
+    "sentence-transformers==5.4.0" \
+    "sentencepiece>=0.2" \
+    "tiktoken>=0.7" \
+    "trl==1.1.0" \
+    "transformers==4.56.2"
+else
+  source "${REMOTE_VENV_DIR}/bin/activate"
 fi
-python -m pip install -e ".[dev]"
-python -m pip install \
-  "accelerate==1.13.0" \
-  "datasets==4.8.4" \
-  "peft==0.18.1" \
-  "protobuf>=5.0" \
-  "sentence-transformers==5.4.0" \
-  "sentencepiece>=0.2" \
-  "tiktoken>=0.7" \
-  "trl==1.1.0" \
-  "transformers==4.56.2"
+
 python - <<'PY'
 import torch
 
@@ -151,6 +228,10 @@ then
   export STATUS FINISHED_AT
   write_metadata "${STATUS}" "${FINISHED_AT}"
   exit 1
+fi
+
+if [[ "${BOOTSTRAP_ENV}" -eq 1 ]]; then
+  write_env_stamp
 fi
 
 STATUS="running"
