@@ -1374,6 +1374,7 @@ def is_retryable_pod_create_error(exc: subprocess.CalledProcessError) -> bool:
             "no longer any instances available",
             "requested specifications",
             "please refresh and try again",
+            "something went wrong. please try again later or contact support",
         )
     )
 

@@ -191,6 +191,17 @@ def test_is_retryable_pod_create_error_accepts_current_rest_capacity_message() -
     assert is_retryable_pod_create_error(exc) is True
 
 
+def test_is_retryable_pod_create_error_accepts_generic_provider_500_message() -> None:
+    exc = subprocess.CalledProcessError(
+        1,
+        ("POST", "/pods"),
+        output='{"error":"create pod: Something went wrong. Please try again later or contact support.","status":500}',
+        stderr="",
+    )
+
+    assert is_retryable_pod_create_error(exc) is True
+
+
 def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> None:
     config = RunPodConfig(
         repo_root=Path("/tmp/repo"),
