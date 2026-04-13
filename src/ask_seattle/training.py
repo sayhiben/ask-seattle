@@ -2388,6 +2388,8 @@ def _train_transformer_bundle_for_split(
                 eval_strategy="epoch",
                 save_strategy="no",
                 load_best_model_at_end=False,
+                metric_for_best_model="pr_auc",
+                greater_is_better=True,
                 logging_strategy="no",
                 optim="adafactor" if use_mps else "adamw_torch",
                 report_to=[],
