@@ -175,6 +175,7 @@ def run_command(args: argparse.Namespace) -> int:
     }
     write_json(log_dir / "run_metadata.local.json", local_metadata)
 
+    ready_pod: PodInfo | None = None
     try:
         ready_pod = wait_for_pod_ready(config, pod.pod_id, pod_name=pod.name)
         if ready_pod.ssh_endpoint is None:
@@ -189,14 +190,19 @@ def run_command(args: argparse.Namespace) -> int:
             origin_url=remote_origin_url,
             remote_labels_path=remote_labels_path,
         )
+        pull_remote_logs(config, ssh_endpoint=ready_pod.ssh_endpoint, run_id=run_id)
         if not config.no_pull_artifacts:
             pull_artifacts(config, ssh_endpoint=ready_pod.ssh_endpoint, target=target)
-        pull_remote_logs(config, ssh_endpoint=ready_pod.ssh_endpoint, run_id=run_id)
         local_metadata["finished_at"] = utc_now()
         local_metadata["status"] = "success"
         write_json(log_dir / "run_metadata.local.json", local_metadata)
         return 0
     except Exception:
+        if ready_pod is not None and ready_pod.ssh_endpoint is not None:
+            try:
+                pull_remote_logs(config, ssh_endpoint=ready_pod.ssh_endpoint, run_id=run_id)
+            except Exception:
+                pass
         local_metadata["finished_at"] = utc_now()
         local_metadata["status"] = "failed"
         write_json(log_dir / "run_metadata.local.json", local_metadata)
@@ -557,7 +563,12 @@ def pull_artifacts(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, target
     for relative_dir in artifact_dirs_for_target(target):
         local_dir = config.repo_root / relative_dir
         local_dir.parent.mkdir(parents=True, exist_ok=True)
-        remote_dir = f"{ssh_endpoint.user}@{ssh_endpoint.host}:{config.remote_dir}/{relative_dir}/"
+        remote_path = f"{config.remote_dir}/{relative_dir}"
+        if not remote_directory_exists(ssh_endpoint=ssh_endpoint, remote_path=remote_path):
+            raise RunPodOrchestrationError(
+                f"remote artifact directory missing after {target}: {remote_path}"
+            )
+        remote_dir = f"{ssh_endpoint.user}@{ssh_endpoint.host}:{remote_path}/"
         _run_subprocess(
             (
                 "rsync",
@@ -586,6 +597,24 @@ def pull_remote_logs(config: RunPodConfig, *, ssh_endpoint: PodSshEndpoint, run_
         ),
         check=False,
     )
+
+
+def remote_directory_exists(*, ssh_endpoint: PodSshEndpoint, remote_path: str) -> bool:
+    result = subprocess.run(
+        (
+            "ssh",
+            "-p",
+            str(ssh_endpoint.port),
+            "-o",
+            "StrictHostKeyChecking=no",
+            f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+            f"test -d {shlex.quote(remote_path)}",
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.returncode == 0
 
 
 def delete_pod(pod_id: str) -> None:
