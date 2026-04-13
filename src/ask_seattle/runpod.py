@@ -493,6 +493,18 @@ def run_remote_bootstrap(
     remote_script = f"{REMOTE_CACHE_ROOT}/runpod-bootstrap/{run_id}/runpod_pod_bootstrap.sh"
     sync_remote_bootstrap_script(config, ssh_endpoint=ssh_endpoint, remote_script=remote_script)
     make_args = build_remote_make_args(config, target=target, remote_labels_path=remote_labels_path)
+    remote_command = build_remote_bootstrap_command(
+        remote_script=remote_script,
+        target=target,
+        commit_sha=commit_sha,
+        origin_url=origin_url,
+        remote_repo_dir=config.remote_dir,
+        remote_labels_path=remote_labels_path,
+        remote_log_dir=remote_log_dir,
+        remote_venv_dir=REMOTE_VENV_DIR,
+        run_id=run_id,
+        make_args=make_args,
+    )
     command = [
         "ssh",
         "-p",
@@ -500,20 +512,7 @@ def run_remote_bootstrap(
         "-o",
         "StrictHostKeyChecking=no",
         f"{ssh_endpoint.user}@{ssh_endpoint.host}",
-        "bash",
-        "-lc",
-        build_remote_bootstrap_command(
-            remote_script=remote_script,
-            target=target,
-            commit_sha=commit_sha,
-            origin_url=origin_url,
-            remote_repo_dir=config.remote_dir,
-            remote_labels_path=remote_labels_path,
-            remote_log_dir=remote_log_dir,
-            remote_venv_dir=REMOTE_VENV_DIR,
-            run_id=run_id,
-            make_args=make_args,
-        ),
+        f"bash -lc {shlex.quote(remote_command)}",
     ]
     _run_subprocess(tuple(command))
 
