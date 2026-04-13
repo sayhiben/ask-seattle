@@ -2,6 +2,8 @@
 
 Use this page when you want to keep the normal local labeling workflow on your MacBook, but run retrains or benchmarks on an ephemeral RunPod Pod.
 
+This is the preferred remote training path for the repository. If you want to avoid cloud spend entirely, use [How to run training on a remote Windows WSL box](remote-wsl-training.md) instead.
+
 This path keeps the existing project boundary intact:
 
 - the public GitHub repo contains code and docs only
@@ -62,6 +64,12 @@ Run TF-IDF variants remotely:
 make benchmark-variants REMOTE=runpod EVAL_SUBREDDIT=seattle
 ```
 
+These commands now enforce a generous 6-hour remote target timeout by default. Override it with:
+
+```bash
+make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle REMOTE_RUN_TIMEOUT=28800
+```
+
 ## Corpus Handling
 
 The reviewed label file is still local and ignored:
@@ -74,6 +82,7 @@ The RunPod helper:
 - passes it through as `LABELS=...`
 - never commits or pushes it
 - never fetches any corpus from GitHub
+- only syncs labels after the Pod passes a GPU smoke test
 
 Contributors should assume benchmark numbers are only comparable when they explicitly say:
 
@@ -96,6 +105,8 @@ That means the expensive reusable state stays remote between runs:
 
 But the Pod itself is deleted after each run.
 
+If the remote target exceeds its timeout, the helper terminates that target and the local orchestrator then tears the Pod down. The Pod-ready phase still has its own separate timeout.
+
 ## Default RunPod Settings
 
 Defaults are controlled through Make variables:
@@ -105,16 +116,29 @@ Defaults are controlled through Make variables:
 - `RUNPOD_VOLUME_SIZE_GB`
 - `RUNPOD_GPU_TYPES`
 - `RUNPOD_DATA_CENTER_IDS`
+- `RUNPOD_TEMPLATE_ID`
 - `RUNPOD_SSH_KEY_PATH`
 - `RUNPOD_IMAGE`
 
 The default GPU preference order is:
 
-1. `NVIDIA GeForce RTX 4090`
-2. `NVIDIA RTX A5000`
+1. `NVIDIA RTX A5000`
+2. `NVIDIA GeForce RTX 4090`
 3. `NVIDIA A40`
 
-The default image is the official RunPod PyTorch image used by the remote helper.
+The default template is:
+
+- `runpod-torch-v240`
+
+The helper still accepts a raw image override, but the default is now template-first because that has been more reliable than direct image selection on RunPod.
+
+The default datacenter preference order is:
+
+1. `EU-RO-1`
+2. `US-NC-1`
+3. `US-KS-2`
+4. `US-IL-1`
+5. `US-GA-2`
 
 ## Artifacts And Logs
 
@@ -141,3 +165,5 @@ runpodctl update
 ```
 
 If a run fails before the Pod comes up, no corpus material has been pushed to GitHub. The only remote copy is the per-run label file synced to the Pod or volume for that run.
+
+If a run fails the GPU smoke test, the helper stops before syncing labels or starting training. That usually means the selected template/image or the provider runtime did not expose CUDA correctly inside the Pod.

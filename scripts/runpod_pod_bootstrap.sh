@@ -9,7 +9,8 @@ REMOTE_LABELS_PATH="${5:?missing remote labels path}"
 REMOTE_LOG_DIR="${6:?missing remote log dir}"
 REMOTE_VENV_DIR="${7:?missing remote venv dir}"
 RUN_ID="${8:?missing run id}"
-shift 8
+RUN_TIMEOUT_SECONDS="${9:?missing run timeout seconds}"
+shift 9
 MAKE_ARGS=("$@")
 
 mkdir -p "${REMOTE_LOG_DIR}"
@@ -47,6 +48,7 @@ PY
 
 export TARGET COMMIT_SHA ORIGIN_URL REMOTE_REPO_DIR REMOTE_LABELS_PATH REMOTE_LOG_DIR STARTED_AT RUN_ID
 export MAKE_ARGS_SERIALIZED="$(printf '%s\n' "${MAKE_ARGS[@]}")"
+export RUN_TIMEOUT_SECONDS
 
 if [[ -d "${REMOTE_REPO_DIR}" && ! -d "${REMOTE_REPO_DIR}/.git" ]]; then
   rm -rf "${REMOTE_REPO_DIR}"
@@ -106,15 +108,47 @@ print(
 )
 PY
 
+if ! python - <<'PY'
+import torch
+
+if not torch.cuda.is_available():
+    raise SystemExit("torch.cuda.is_available() is false after bootstrap dependency setup")
+x = torch.randn((64, 64), device="cuda")
+y = x @ x
+torch.cuda.synchronize()
+print({"device": torch.cuda.get_device_name(0), "checksum": float(y.sum().item())})
+PY
+then
+  STATUS="failed_gpu_smoke"
+  FINISHED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  export STATUS FINISHED_AT
+  write_metadata "${STATUS}" "${FINISHED_AT}"
+  exit 1
+fi
+
 STATUS="running"
 FINISHED_AT=""
 export STATUS FINISHED_AT
 write_metadata "${STATUS}" "${FINISHED_AT}"
 
-if make "${TARGET}" "${MAKE_ARGS[@]}"; then
+command -v timeout >/dev/null 2>&1 || {
+  STATUS="failed"
+  FINISHED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  export STATUS FINISHED_AT
+  write_metadata "${STATUS}" "${FINISHED_AT}"
+  echo "missing required timeout command inside pod" >&2
+  exit 1
+}
+
+if timeout --foreground --signal=TERM --kill-after=300 "${RUN_TIMEOUT_SECONDS}s" make "${TARGET}" "${MAKE_ARGS[@]}"; then
   STATUS="success"
 else
-  STATUS="failed"
+  exit_code=$?
+  if [[ "$exit_code" -eq 124 ]]; then
+    STATUS="timed_out"
+  else
+    STATUS="failed"
+  fi
   FINISHED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   export STATUS FINISHED_AT
   write_metadata "${STATUS}" "${FINISHED_AT}"

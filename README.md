@@ -9,6 +9,7 @@ The current stack is intentionally small:
 - one local six-model benchmark suite for comparison work
 - local JSONL training data
 - optional remote RunPod Pod execution for the existing train and benchmark targets
+- optional remote Windows WSL execution for the existing train and benchmark targets
 - no Reddit API reads
 - no Reddit API writes
 - no moderation actions built into the bridge
@@ -170,7 +171,40 @@ The suite currently compares six models on one shared split:
 
 If the benchmark suite artifacts exist, `make bridge` also loads those comparison models for side-by-side `/check` comparisons in the userscript UI.
 
-If you want to run the same suite on a separate Windows 11 GPU box over SSH via WSL as an optional speed-up, use:
+If you want the preferred remote training path, use RunPod:
+
+```bash
+make runpod-bootstrap
+make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
+make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
+```
+
+The default RunPod settings are now reliability-first and cost-biased:
+
+1. official template `runpod-torch-v240`
+2. GPU preference:
+   - `NVIDIA RTX A5000`
+   - `NVIDIA GeForce RTX 4090`
+   - `NVIDIA A40`
+3. datacenter preference:
+   - `EU-RO-1`
+   - `US-NC-1`
+   - `US-KS-2`
+   - `US-IL-1`
+   - `US-GA-2`
+
+The RunPod helper now also performs a hard GPU smoke test before syncing labels or starting training, so it fails fast if CUDA is not actually usable inside the pod.
+
+If you want to avoid cloud spend entirely, use a separate Windows 11 GPU box over SSH via WSL:
+
+```bash
+make retrain REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+make benchmark REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+```
+
+That Make path is a wrapper around the existing WSL helper and is the recommended price-first remote option when you have your own 4090-class machine.
+
+You can still call the helper directly if you want:
 
 ```bash
 scripts/run_remote_training.sh --host gpu-win --target benchmark-suite
@@ -178,13 +212,7 @@ scripts/run_remote_training.sh --host gpu-win --target benchmark-suite
 
 See [How to run training on a remote Windows WSL box](docs/how-to/remote-wsl-training.md).
 
-If you want to run the same targets on an ephemeral RunPod Pod, use:
-
-```bash
-make runpod-bootstrap
-make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
-make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
-```
+Both remote paths now apply a generous default remote execution timeout of 6 hours. Override it with `REMOTE_RUN_TIMEOUT=<seconds>` if needed.
 
 See [How to run training on RunPod](docs/how-to/runpod-training.md).
 

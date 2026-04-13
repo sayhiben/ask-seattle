@@ -2,7 +2,7 @@
 
 Use this page when you want to retrain the local models or benchmark the trained suite.
 
-If you want to run those same targets on remote hardware instead of on the MacBook, see [How to run training on RunPod](runpod-training.md) or [How to run training on a remote Windows WSL box](remote-wsl-training.md).
+If you want to run those same targets on remote hardware instead of on the MacBook, see [How to run training on RunPod](runpod-training.md) for the preferred remote path or [How to run training on a remote Windows WSL box](remote-wsl-training.md) for the no-cloud fallback.
 
 ## Normal Retrain
 
@@ -63,6 +63,17 @@ make runpod-bootstrap
 make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
 ```
+
+The RunPod path now defaults to the official `runpod-torch-v240` template, prefers the lower-cost A5000 before the 4090 or A40, and runs a hard GPU smoke test before syncing labels or starting training.
+
+To run the same make targets on your Windows GPU box over WSL, keep the target the same and add `REMOTE=wsl`:
+
+```bash
+make retrain REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+make benchmark REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+```
+
+Both the WSL and RunPod remote wrappers now terminate the remote target after 6 hours by default. Override that with `REMOTE_RUN_TIMEOUT=<seconds>` if your run needs a larger budget.
 
 Target only one subreddit for evaluation:
 

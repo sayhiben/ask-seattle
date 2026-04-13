@@ -39,6 +39,8 @@ Options:
   --skip-model-deps           Skip semantic/transformer dependencies
   --torch-index-url URL       PyTorch wheel index URL for CUDA-enabled torch wheels
                               Example: https://download.pytorch.org/whl/cu128
+  --run-timeout-seconds INT   Max remote target runtime before it is terminated
+                              Default: 21600 (6 hours)
   -h, --help                  Show this help
 
 Examples:
@@ -106,6 +108,7 @@ BOOTSTRAP=0
 FORCE_MODEL_DEPS=0
 SKIP_MODEL_DEPS=0
 TORCH_INDEX_URL=""
+RUN_TIMEOUT_SECONDS="21600"
 ARTIFACT_DIR_REL=""
 MAKE_ARGS=()
 
@@ -175,6 +178,10 @@ while [[ $# -gt 0 ]]; do
       TORCH_INDEX_URL="${2:-}"
       shift 2
       ;;
+    --run-timeout-seconds)
+      RUN_TIMEOUT_SECONDS="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -227,7 +234,7 @@ if [[ -z "$ARTIFACT_DIR_REL" ]]; then
       ARTIFACT_DIR_REL="models/real-labels-precision-refresh"
       ;;
     benchmark)
-      ARTIFACT_DIR_REL="models/benchmark"
+      ARTIFACT_DIR_REL="models/benchmark-suite"
       ;;
     benchmark-variants)
       ARTIFACT_DIR_REL="models/benchmark-variants"
@@ -327,7 +334,8 @@ log "Running remote target: ${MAKE_CMD[*]}"
 run_wsl_script "
 cd $(quote_shell "$REMOTE_DIR")
 source .venv/bin/activate
-$MAKE_LINE
+command -v timeout >/dev/null 2>&1 || { echo 'missing timeout command inside WSL' >&2; exit 1; }
+timeout --foreground --signal=TERM --kill-after=300 $(quote_shell "${RUN_TIMEOUT_SECONDS}s") $MAKE_LINE
 "
 
 if [[ "$PULL_ARTIFACTS" -eq 1 ]]; then

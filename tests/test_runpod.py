@@ -7,6 +7,7 @@ import pytest
 from ask_seattle.runpod import (
     RunPodConfig,
     RunPodOrchestrationError,
+    build_create_pod_command,
     build_remote_bootstrap_command,
     build_remote_make_args,
     datacenter_has_gpu,
@@ -98,6 +99,7 @@ def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> Non
         volume_size_gb=100,
         gpu_types=("NVIDIA GeForce RTX 4090",),
         data_center_ids=("US-KS-2",),
+        template_id="runpod-torch-v240",
         image="runpod/pytorch:test",
         remote_dir="/workspace/ask-seattle",
         ssh_user="root",
@@ -114,6 +116,7 @@ def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> Non
         transformer_model_id="microsoft/deberta-v3-small",
         transformer_secondary_model_id="answerdotai/ModernBERT-base",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
     )
 
     args = build_remote_make_args(
@@ -138,11 +141,97 @@ def test_build_remote_bootstrap_command_quotes_make_args() -> None:
         remote_log_dir="/workspace/runpod-logs/run-id",
         remote_venv_dir="/workspace/.venv",
         run_id="run-id",
+        run_timeout_seconds=21600,
         make_args=("LABELS=/workspace/runpod-inputs/run/labels.jsonl", "BENCHMARK_NOTES=after labels"),
     )
 
     assert "'BENCHMARK_NOTES=after labels'" in command
     assert "/workspace/ask-seattle/scripts/runpod_pod_bootstrap.sh" in command
+    assert "21600" in command
+
+
+def test_build_create_pod_command_prefers_template_id() -> None:
+    config = RunPodConfig(
+        repo_root=Path("/tmp/repo"),
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=Path("/tmp/id.pub"),
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        gpu_types=("NVIDIA RTX A5000",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=Path("/tmp/labels.jsonl"),
+        benchmark_meta_dir=Path("/tmp/meta"),
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
+    )
+
+    command = build_create_pod_command(
+        config,
+        pod_name="ask-seattle-test",
+        gpu_id="NVIDIA RTX A5000",
+        data_center_id="EU-RO-1",
+        network_volume_id="vol-123",
+    )
+
+    assert "--template-id" in command
+    assert "runpod-torch-v240" in command
+    assert "--image" not in command
+
+
+def test_build_create_pod_command_falls_back_to_image_when_template_missing() -> None:
+    config = RunPodConfig(
+        repo_root=Path("/tmp/repo"),
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=Path("/tmp/id.pub"),
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        gpu_types=("NVIDIA RTX A5000",),
+        data_center_ids=("EU-RO-1",),
+        template_id=None,
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=Path("/tmp/labels.jsonl"),
+        benchmark_meta_dir=Path("/tmp/meta"),
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
+    )
+
+    command = build_create_pod_command(
+        config,
+        pod_name="ask-seattle-test",
+        gpu_id="NVIDIA RTX A5000",
+        data_center_id="EU-RO-1",
+        network_volume_id="vol-123",
+    )
+
+    assert "--image" in command
+    assert "runpod/pytorch:test" in command
+    assert "--template-id" not in command
 
 
 def test_extract_ssh_endpoint_reads_runtime_port_mapping() -> None:

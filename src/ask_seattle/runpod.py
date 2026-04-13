@@ -31,19 +31,21 @@ REMOTE_VENV_DIR = "/workspace/.venv"
 REMOTE_CACHE_ROOT = "/workspace/.cache"
 RSYNC_FLAGS = ("-rlptz",)
 DEFAULT_RUNPOD_IMAGE = "runpod/pytorch:1.0.3-cu1281-torch291-ubuntu2404"
+DEFAULT_RUNPOD_TEMPLATE_ID = "runpod-torch-v240"
 DEFAULT_RUNPOD_VOLUME_MOUNT_PATH = "/workspace"
 DEFAULT_RUNPOD_CONTAINER_DISK_GB = 50
 DEFAULT_RUNPOD_VOLUME_SIZE_GB = 100
 DEFAULT_RUNPOD_GPU_TYPES = (
-    "NVIDIA GeForce RTX 4090",
     "NVIDIA RTX A5000",
+    "NVIDIA GeForce RTX 4090",
     "NVIDIA A40",
 )
 DEFAULT_RUNPOD_DATA_CENTER_IDS = (
+    "EU-RO-1",
+    "US-NC-1",
     "US-KS-2",
-    "US-GA-1",
     "US-IL-1",
-    "US-CA-1",
+    "US-GA-2",
 )
 
 
@@ -60,6 +62,7 @@ class RunPodConfig:
     volume_size_gb: int
     gpu_types: tuple[str, ...]
     data_center_ids: tuple[str, ...]
+    template_id: str | None
     image: str
     remote_dir: str
     ssh_user: str
@@ -77,6 +80,7 @@ class RunPodConfig:
     transformer_secondary_model_id: str
     causal_lm_model_id: str
     no_pull_artifacts: bool = False
+    remote_run_timeout_seconds: int = 21600
     pod_ready_timeout_seconds: int = 1800
 
 
@@ -180,6 +184,7 @@ def run_command(args: argparse.Namespace) -> int:
         ready_pod = wait_for_pod_ready(config, pod.pod_id, pod_name=pod.name)
         if ready_pod.ssh_endpoint is None:
             raise RunPodOrchestrationError(f"pod {pod.pod_id} never exposed an SSH endpoint")
+        run_remote_gpu_smoke(ready_pod.ssh_endpoint)
         remote_labels_path = sync_labels_to_pod(config, ready_pod.ssh_endpoint, run_id)
         run_remote_bootstrap(
             config,
@@ -219,6 +224,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
     parser.add_argument("--volume-size-gb", type=int, default=DEFAULT_RUNPOD_VOLUME_SIZE_GB)
     parser.add_argument("--gpu-types", default=",".join(DEFAULT_RUNPOD_GPU_TYPES))
     parser.add_argument("--data-center-ids", default=",".join(DEFAULT_RUNPOD_DATA_CENTER_IDS))
+    parser.add_argument("--template-id", default=DEFAULT_RUNPOD_TEMPLATE_ID)
     parser.add_argument("--image", default=DEFAULT_RUNPOD_IMAGE)
     parser.add_argument("--remote-dir", default="/workspace/ask-seattle")
     parser.add_argument("--ssh-user", default="root")
@@ -236,6 +242,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
     parser.add_argument("--transformer-secondary-model-id", default="answerdotai/ModernBERT-base")
     parser.add_argument("--causal-lm-model-id", default="Qwen/Qwen3-1.7B")
     parser.add_argument("--no-pull-artifacts", action="store_true")
+    parser.add_argument("--remote-run-timeout-seconds", type=int, default=21600)
     parser.add_argument("--pod-ready-timeout-seconds", type=int, default=1800)
     if include_target:
         parser.add_argument(
@@ -254,6 +261,7 @@ def config_from_args(args: argparse.Namespace) -> RunPodConfig:
         volume_size_gb=int(args.volume_size_gb),
         gpu_types=_comma_list(args.gpu_types),
         data_center_ids=_comma_list(args.data_center_ids),
+        template_id=str(args.template_id).strip() or None,
         image=str(args.image),
         remote_dir=str(args.remote_dir),
         ssh_user=str(args.ssh_user),
@@ -271,6 +279,7 @@ def config_from_args(args: argparse.Namespace) -> RunPodConfig:
         transformer_secondary_model_id=str(args.transformer_secondary_model_id),
         causal_lm_model_id=str(args.causal_lm_model_id),
         no_pull_artifacts=bool(args.no_pull_artifacts),
+        remote_run_timeout_seconds=int(args.remote_run_timeout_seconds),
         pod_ready_timeout_seconds=int(args.pod_ready_timeout_seconds),
     )
 
@@ -406,32 +415,12 @@ def create_pod(
     network_volume_id: str,
 ) -> PodInfo:
     output = run_command_capture(
-        (
-            "runpodctl",
-            "pod",
-            "create",
-            "--name",
-            pod_name,
-            "--image",
-            config.image,
-            "--gpu-id",
-            gpu_id,
-            "--gpu-count",
-            "1",
-            "--container-disk-in-gb",
-            str(config.container_disk_gb),
-            "--ports",
-            "22/tcp",
-            "--cloud-type",
-            "SECURE",
-            "--global-networking",
-            "--ssh",
-            "--data-center-ids",
-            data_center_id,
-            "--network-volume-id",
-            network_volume_id,
-            "--volume-mount-path",
-            config.volume_mount_path,
+        build_create_pod_command(
+            config,
+            pod_name=pod_name,
+            gpu_id=gpu_id,
+            data_center_id=data_center_id,
+            network_volume_id=network_volume_id,
         )
     )
     pod = parse_pod_info(json.loads(output))
@@ -449,6 +438,48 @@ def wait_for_pod_ready(config: RunPodConfig, pod_id: str, *, pod_name: str) -> P
             return pod
         time.sleep(10)
     raise RunPodOrchestrationError(f"pod {pod_name} ({pod_id}) did not become SSH-ready before timeout")
+
+
+def run_remote_gpu_smoke(ssh_endpoint: PodSshEndpoint) -> None:
+    command = (
+        "set -euo pipefail\n"
+        "command -v nvidia-smi >/dev/null 2>&1\n"
+        "nvidia-smi -L\n"
+        "python3 - <<'PY'\n"
+        "import json\n"
+        "import torch\n"
+        "if not torch.cuda.is_available():\n"
+        "    raise SystemExit('torch.cuda.is_available() is false during RunPod GPU smoke test')\n"
+        "x = torch.randn((64, 64), device='cuda')\n"
+        "y = x @ x\n"
+        "torch.cuda.synchronize()\n"
+        "print(json.dumps({'torch_version': torch.__version__, 'cuda_version': torch.version.cuda, 'device': torch.cuda.get_device_name(0), 'checksum': float(y.sum().item())}, indent=2))\n"
+        "PY"
+    )
+    try:
+        _run_subprocess(
+            (
+                "ssh",
+                "-p",
+                str(ssh_endpoint.port),
+                "-o",
+                "StrictHostKeyChecking=no",
+                "-o",
+                "ServerAliveInterval=15",
+                "-o",
+                "ServerAliveCountMax=3",
+                f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+                f"bash -lc {shlex.quote(command)}",
+            ),
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunPodOrchestrationError("RunPod GPU smoke test timed out") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RunPodOrchestrationError(
+            "RunPod pod failed the GPU smoke test before training. "
+            "This usually means the selected template/image or provider runtime did not expose CUDA correctly."
+        ) from exc
 
 
 def sync_labels_to_pod(config: RunPodConfig, ssh_endpoint: PodSshEndpoint, run_id: str) -> str:
@@ -503,6 +534,7 @@ def run_remote_bootstrap(
         remote_log_dir=remote_log_dir,
         remote_venv_dir=REMOTE_VENV_DIR,
         run_id=run_id,
+        run_timeout_seconds=config.remote_run_timeout_seconds,
         make_args=make_args,
     )
     command = [
@@ -511,10 +543,19 @@ def run_remote_bootstrap(
         str(ssh_endpoint.port),
         "-o",
         "StrictHostKeyChecking=no",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
         f"{ssh_endpoint.user}@{ssh_endpoint.host}",
         f"bash -lc {shlex.quote(remote_command)}",
     ]
-    _run_subprocess(tuple(command))
+    try:
+        _run_subprocess(tuple(command), timeout=config.remote_run_timeout_seconds + 900)
+    except subprocess.TimeoutExpired as exc:
+        raise RunPodOrchestrationError(
+            f"remote RunPod target exceeded timeout after {config.remote_run_timeout_seconds} seconds"
+        ) from exc
 
 
 def sync_remote_bootstrap_script(
@@ -665,6 +706,7 @@ def build_remote_bootstrap_command(
     remote_log_dir: str,
     remote_venv_dir: str,
     run_id: str,
+    run_timeout_seconds: int,
     make_args: tuple[str, ...],
 ) -> str:
     command = [
@@ -678,9 +720,54 @@ def build_remote_bootstrap_command(
         shlex.quote(remote_log_dir),
         shlex.quote(remote_venv_dir),
         shlex.quote(run_id),
+        shlex.quote(str(run_timeout_seconds)),
     ]
     command.extend(shlex.quote(item) for item in make_args)
     return " ".join(command)
+
+
+def build_create_pod_command(
+    config: RunPodConfig,
+    *,
+    pod_name: str,
+    gpu_id: str,
+    data_center_id: str,
+    network_volume_id: str,
+) -> tuple[str, ...]:
+    command: list[str] = [
+        "runpodctl",
+        "pod",
+        "create",
+        "--name",
+        pod_name,
+    ]
+    if config.template_id:
+        command.extend(("--template-id", config.template_id))
+    else:
+        command.extend(("--image", config.image))
+    command.extend(
+        (
+            "--gpu-id",
+            gpu_id,
+            "--gpu-count",
+            "1",
+            "--container-disk-in-gb",
+            str(config.container_disk_gb),
+            "--ports",
+            "22/tcp",
+            "--cloud-type",
+            "SECURE",
+            "--global-networking",
+            "--ssh",
+            "--data-center-ids",
+            data_center_id,
+            "--network-volume-id",
+            network_volume_id,
+            "--volume-mount-path",
+            config.volume_mount_path,
+        )
+    )
+    return tuple(command)
 
 
 def build_run_id(target: str) -> str:
@@ -909,8 +996,14 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
-def _run_subprocess(command: tuple[str, ...], *, cwd: Path | None = None, check: bool = True) -> None:
-    subprocess.run(command, cwd=cwd, check=check, text=True)
+def _run_subprocess(
+    command: tuple[str, ...],
+    *,
+    cwd: Path | None = None,
+    check: bool = True,
+    timeout: float | None = None,
+) -> None:
+    subprocess.run(command, cwd=cwd, check=check, text=True, timeout=timeout)
 
 
 def run_command_capture(

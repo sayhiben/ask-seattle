@@ -4,6 +4,8 @@ Use this page when you want to keep the normal local labeling workflow on your m
 
 The MacBook Pro M2 remains the primary supported machine. This guide is an optional speed-up path, not a required part of the normal workflow.
 
+If you already have a Windows laptop with a suitable NVIDIA GPU, this is the no-cloud fallback remote training path. It avoids cloud spend and reuses the same local make targets.
+
 This helper keeps the current project boundary intact:
 
 - training still reads the browser-reviewed local JSONL label file
@@ -14,6 +16,20 @@ The repository helper script is:
 
 ```bash
 scripts/run_remote_training.sh
+```
+
+The same path is also available directly through the Makefile:
+
+```bash
+make retrain REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+make benchmark REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+make benchmark-variants REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+```
+
+These commands now enforce a generous 6-hour remote runtime limit by default. Override it with:
+
+```bash
+make benchmark REMOTE=wsl REMOTE_WSL_HOST=gpu-win REMOTE_RUN_TIMEOUT=28800
 ```
 
 ## What The Helper Does
@@ -29,6 +45,8 @@ From your main laptop, the helper:
 7. optionally pulls the resulting artifact directory back to your local `models/`
 
 It does not add a new training path. It is only a remote wrapper around the existing commands.
+
+If your SSH session drops, the remote make target is still bounded by that timeout and will not run indefinitely.
 
 ## Recommended First-Time Remote Setup
 
@@ -64,6 +82,26 @@ Notes:
 - the helper defaults to `--eval-subreddit seattle`
 
 ## Day-To-Day Usage
+
+Run the benchmark suite remotely through `make`:
+
+```bash
+make benchmark REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+```
+
+Retrain remotely through `make`:
+
+```bash
+make retrain REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+```
+
+Run TF-IDF variants remotely through `make`:
+
+```bash
+make benchmark-variants REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+```
+
+If you want the lower-level helper directly instead of the `make` wrapper:
 
 Run the benchmark suite remotely:
 

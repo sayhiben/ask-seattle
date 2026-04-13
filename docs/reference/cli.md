@@ -2,7 +2,7 @@
 
 Use this page when you need the exact command surface for the current implementation.
 
-For the remote RunPod wrapper around the existing make targets, see [How to run training on RunPod](../how-to/runpod-training.md).
+For the remote wrappers around the existing make targets, see [How to run training on RunPod](../how-to/runpod-training.md) and [How to run training on a remote Windows WSL box](../how-to/remote-wsl-training.md).
 
 ## Commands
 
@@ -29,13 +29,40 @@ Remote RunPod execution is selected by adding:
 REMOTE=runpod
 ```
 
+Remote Windows WSL execution is selected by adding:
+
+```bash
+REMOTE=wsl
+```
+
 Examples:
 
 ```bash
 make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark-variants REMOTE=runpod EVAL_SUBREDDIT=seattle
+make retrain REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
+make benchmark REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
 ```
+
+Useful make variables for the WSL path:
+
+- `REMOTE_WSL_HOST`
+  - SSH target for the Windows machine
+  - defaults to `gpu-win`
+- `REMOTE_WSL_DISTRO`
+  - WSL distro name
+  - defaults to `Ubuntu`
+- `REMOTE_WSL_DIR`
+  - optional Linux repo path inside WSL
+- `REMOTE_WSL_BOOTSTRAP`
+  - set to `1` to install Ubuntu package prerequisites before the run
+- `REMOTE_WSL_TORCH_INDEX_URL`
+  - CUDA PyTorch wheel index URL used by the WSL helper
+  - defaults to `https://download.pytorch.org/whl/cu128`
+- `REMOTE_RUN_TIMEOUT`
+  - max remote target runtime in seconds before it is terminated
+  - defaults to `21600` (6 hours)
 
 ## `ask-seattle train`
 
