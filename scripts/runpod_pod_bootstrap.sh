@@ -48,6 +48,10 @@ PY
 export TARGET COMMIT_SHA ORIGIN_URL REMOTE_REPO_DIR REMOTE_LABELS_PATH REMOTE_LOG_DIR STARTED_AT RUN_ID
 export MAKE_ARGS_SERIALIZED="$(printf '%s\n' "${MAKE_ARGS[@]}")"
 
+if [[ -d "${REMOTE_REPO_DIR}" && ! -d "${REMOTE_REPO_DIR}/.git" ]]; then
+  rm -rf "${REMOTE_REPO_DIR}"
+fi
+
 if [[ ! -d "${REMOTE_REPO_DIR}/.git" ]]; then
   git clone "${ORIGIN_URL}" "${REMOTE_REPO_DIR}"
 fi
