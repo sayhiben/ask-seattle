@@ -62,13 +62,49 @@ git checkout --detach "${COMMIT_SHA}"
 git reset --hard "${COMMIT_SHA}"
 git clean -fdx
 
+if [[ -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
+  if ! "${REMOTE_VENV_DIR}/bin/python3" - <<'PY' >/dev/null 2>&1
+import sys
+
+try:
+    import torch
+except Exception:
+    sys.exit(1)
+
+sys.exit(0 if torch.cuda.is_available() else 1)
+PY
+  then
+    rm -rf "${REMOTE_VENV_DIR}"
+  fi
+fi
+
 if [[ ! -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
-  python3 -m venv "${REMOTE_VENV_DIR}"
+  python3 -m venv --system-site-packages "${REMOTE_VENV_DIR}"
 fi
 
 source "${REMOTE_VENV_DIR}/bin/activate"
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev,models]"
+python -m pip install -e ".[dev]"
+python -m pip install \
+  "accelerate>=0.33" \
+  "datasets>=2.20" \
+  "peft>=0.12" \
+  "sentence-transformers>=3.0" \
+  "trl>=0.10" \
+  "transformers>=4.48"
+python - <<'PY'
+import torch
+
+print(
+    "remote torch:",
+    {
+        "version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "cuda_available": torch.cuda.is_available(),
+        "device_count": torch.cuda.device_count(),
+    },
+)
+PY
 
 STATUS="running"
 FINISHED_AT=""
