@@ -4,6 +4,26 @@ This file is maintainer guidance for people and coding agents working in this re
 
 Use it to stay inside the intended project boundary, avoid avoidable churn, and keep the public docs accurate.
 
+## Cost shutdown is the top priority
+
+If any turn creates or touches a billable resource, the agent must shut that resource off before ending the turn.
+
+Treat this as higher priority than convenience, caching, or preserving remote state.
+
+Rules:
+
+- never leave cloud resources billing between turns
+- never assume the user will reply soon, or at all
+- always terminate ephemeral Pods, VMs, jobs, or rented GPUs before the turn ends
+- always delete persistent billable resources such as network volumes if they would continue billing between turns
+- if a resource must remain billable to preserve state, do not leave it running unless the user explicitly asks for that in the same turn and acknowledges the ongoing cost
+
+Required end-of-turn check after any cloud or remote execution:
+
+- confirm there are no running Pods or equivalent rented compute left behind
+- confirm there are no persistent billable cloud resources left behind
+- mention any cleanup you performed in the final response
+
 ## Project goals
 
 The current project goal is narrow:
