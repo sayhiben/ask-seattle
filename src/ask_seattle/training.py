@@ -3820,6 +3820,14 @@ def _operating_metrics_without_slices(
 
 
 def _classification_metrics(y_true: list[int], predictions: list[int]) -> dict[str, float | int]:
+    if not y_true:
+        return {
+            "precision": 0.0,
+            "recall": 0.0,
+            "f1": 0.0,
+            "predicted_positive": int(sum(predictions)),
+            "support": 0,
+        }
     precision, recall, f1, _ = precision_recall_fscore_support(
         y_true,
         predictions,

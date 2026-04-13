@@ -99,6 +99,18 @@ def test_train_model_bundle_from_labels_can_use_explicit_time_split(tmp_path: Pa
     assert summary["split"]["time_coverage"]["train"]["count"] > 0
 
 
+def test_classification_metrics_handles_empty_slice() -> None:
+    metrics = training._classification_metrics([], [])
+
+    assert metrics == {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "predicted_positive": 0,
+        "support": 0,
+    }
+
+
 def test_train_model_bundle_requires_test_precision_for_production_ready(
     tmp_path: Path,
     monkeypatch,
