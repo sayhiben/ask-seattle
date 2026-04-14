@@ -1,18 +1,26 @@
+import sys
+from pathlib import Path
+
 import pytest
 
 from ask_seattle.data import LabeledPost
+import ask_seattle.model as model_module
 from ask_seattle.model import (
     _default_min_df,
     _bundle_runtime_device,
+    _load_causal_lm_bundle_from_joblib,
+    _load_transformer_bundle_from_joblib,
     _semantic_runtime_component_texts,
     _tensor_to_float32_numpy,
     _move_token_batch_to_device,
+    _install_xformers_swiglu_fallback,
     build_inference_row,
     build_pipeline,
     classify_post,
     select_decision_thresholds,
     select_threshold,
     split_labeled_posts,
+    transformer_load_options,
     tfidf_feature_audit,
     train_model,
 )
@@ -77,6 +85,14 @@ def test_semantic_runtime_component_texts_fill_empty_values_with_placeholders() 
     assert _semantic_runtime_component_texts(bundle, rows, component="body") == ["[no body]"]
 
 
+def test_semantic_runtime_component_texts_support_document_prefix() -> None:
+    bundle = {"prompt_mode": "document_prefix", "prompt_prefix": "Document:"}
+    rows = [{"title": "Where to park?", "body_raw": "Need Capitol Hill advice"}]
+
+    assert _semantic_runtime_component_texts(bundle, rows, component="title") == ["Document: Where to park?"]
+    assert _semantic_runtime_component_texts(bundle, rows, component="body") == ["Document: Need Capitol Hill advice"]
+
+
 def test_split_labeled_posts_can_use_explicit_time_strategy() -> None:
     posts = [
         LabeledPost(
@@ -136,6 +152,86 @@ def test_tensor_to_float32_numpy_handles_bfloat16() -> None:
 
     assert array.dtype.name == "float32"
     assert array.tolist() == [[1.0, 2.0]]
+
+
+def test_transformer_bundle_loader_rebases_stale_remote_absolute_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "transformer_bundle.joblib"
+    bundle_path.write_text("bundle", encoding="utf-8")
+    local_model_dir = tmp_path / "transformer_model"
+    local_model_dir.mkdir()
+    seen: dict[str, object] = {}
+
+    def fake_runtime_loader(metadata: dict[str, object], *, model_dir: Path) -> dict[str, object]:
+        seen["artifact_path"] = metadata["artifact_path"]
+        seen["model_dir"] = metadata["model_dir"]
+        seen["resolved_model_dir"] = model_dir
+        return {"model_dir": str(model_dir)}
+
+    monkeypatch.setattr(model_module, "_load_transformer_runtime_bundle", fake_runtime_loader)
+
+    loaded = _load_transformer_bundle_from_joblib(
+        {"artifact_path": "/workspace/ask-seattle/models/benchmark-suite/x/transformer_model"},
+        source_path=bundle_path,
+    )
+
+    assert loaded["model_dir"] == str(local_model_dir)
+    assert seen["artifact_path"] == str(local_model_dir)
+    assert seen["model_dir"] == str(local_model_dir)
+    assert seen["resolved_model_dir"] == local_model_dir
+
+
+def test_transformer_load_options_enable_remote_code_for_neobert() -> None:
+    assert transformer_load_options("chandar-lab/NeoBERT") == {"trust_remote_code": True}
+    assert transformer_load_options("answerdotai/ModernBERT-base") == {}
+
+
+def test_install_xformers_swiglu_fallback_registers_compatible_module(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch = pytest.importorskip("torch")
+
+    monkeypatch.delitem(sys.modules, "xformers", raising=False)
+    monkeypatch.delitem(sys.modules, "xformers.ops", raising=False)
+
+    _install_xformers_swiglu_fallback()
+
+    from xformers.ops import SwiGLU
+
+    module = SwiGLU(4, 8, 4, bias=False)
+    inputs = torch.randn(2, 3, 4)
+    outputs = module(inputs)
+
+    assert outputs.shape == (2, 3, 4)
+    assert hasattr(module, "w12")
+    assert hasattr(module, "w3")
+
+
+def test_causal_lm_bundle_loader_resolves_relative_model_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bundle_path = tmp_path / "causal_lm_bundle.joblib"
+    bundle_path.write_text("bundle", encoding="utf-8")
+    local_model_dir = tmp_path / "causal_lm_model"
+    local_model_dir.mkdir()
+    seen: dict[str, object] = {}
+
+    def fake_runtime_loader(metadata: dict[str, object], *, model_dir: Path) -> dict[str, object]:
+        seen["artifact_path"] = metadata["artifact_path"]
+        seen["model_dir"] = metadata["model_dir"]
+        seen["resolved_model_dir"] = model_dir
+        return {"model_dir": str(model_dir)}
+
+    monkeypatch.setattr(model_module, "_load_causal_lm_runtime_bundle", fake_runtime_loader)
+
+    loaded = _load_causal_lm_bundle_from_joblib(
+        {"artifact_path": "causal_lm_model"},
+        source_path=bundle_path,
+    )
+
+    assert loaded["model_dir"] == str(local_model_dir)
+    assert seen["artifact_path"] == str(local_model_dir)
+    assert seen["model_dir"] == str(local_model_dir)
+    assert seen["resolved_model_dir"] == local_model_dir
 
 
 def test_threshold_selection_uses_observed_probabilities_when_grid_is_too_coarse() -> None:

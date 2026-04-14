@@ -16,15 +16,18 @@ That choice is deliberate:
 
 This project does not currently need a larger or more complex stack to prove the workflow.
 
-That said, the repository now also includes a six-model benchmark suite so you can compare whether denser semantic, encoder-transformer, and decoder-LLM families improve the fuzzy edge of the decision boundary without changing the operational TF-IDF retrain path.
+That said, the repository now also includes a nine-model benchmark suite so you can compare whether denser semantic, encoder-transformer, and decoder-LLM families improve the fuzzy edge of the decision boundary without changing the operational TF-IDF retrain path.
 
 The comparison stack currently includes:
 
 - TF-IDF baseline
 - tuned MiniLM semantic model
 - Qwen3 embedding semantic model
+- Jina v5 text-small-classification semantic model
 - DeBERTa-v3-small encoder classifier
 - ModernBERT-base encoder classifier
+- NeoBERT encoder classifier
+- ModernBERT-large encoder classifier
 - Qwen3-1.7B LoRA decoder classifier
 
 The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They now compare plain versus balanced cross-entropy, use calibration PR-AUC for early stopping, and keep the better candidate before test evaluation.
@@ -150,7 +153,7 @@ Training now chooses it by maximizing recall subject to a minimum review-queue p
 
 The TF-IDF review-threshold policy now uses a looser review precision target of `0.70`. That keeps the review queue recall-oriented without letting the threshold collapse into a pure catch-everything setting.
 
-The broader six-model suite still reports fixed-constraint comparison metrics at stricter common bars:
+The broader nine-model suite still reports fixed-constraint comparison metrics at stricter common bars:
 
 - `auto_recall_at_precision_95`
 - `review_recall_at_precision_75`
@@ -239,7 +242,7 @@ The time-based split still exists, but it is now an explicit option for the poin
 
 ## What The Benchmark Suite Is Actually Comparing
 
-The benchmark suite keeps the evaluation contract aligned across all six models:
+The benchmark suite keeps the evaluation contract aligned across all nine models:
 
 - one persisted `suite_input.json` manifest
 - one split assignment reused by every family
@@ -266,7 +269,7 @@ But all of them still end in the same bridge-facing concepts:
 
 Operationally, retraining and benchmarking are now separate steps:
 
-- `make retrain` retrains the operational TF-IDF model plus all six suite models and writes training-only summaries
+- `make retrain` retrains the operational TF-IDF model plus all nine suite models and writes training-only summaries
 - `make benchmark` reads those trained suite artifacts later and computes held-out metrics only for the compatible models already on disk
 
 That split is deliberate. It keeps training failures, resumability, and held-out evaluation easier to reason about than one giant command that mixes all three concerns.

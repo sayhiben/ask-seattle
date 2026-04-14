@@ -16,8 +16,11 @@ SPLIT_SEED ?= 13
 SPLIT_ARGS := --split-strategy $(SPLIT_STRATEGY) --split-seed $(SPLIT_SEED)
 SEMANTIC_MODEL_ID ?= sentence-transformers/all-MiniLM-L6-v2
 SEMANTIC_SECONDARY_MODEL_ID ?= Qwen/Qwen3-Embedding-0.6B
+SEMANTIC_TERTIARY_MODEL_ID ?= jinaai/jina-embeddings-v5-text-small-classification
 TRANSFORMER_MODEL_ID ?= microsoft/deberta-v3-small
 TRANSFORMER_SECONDARY_MODEL_ID ?= answerdotai/ModernBERT-base
+TRANSFORMER_TERTIARY_MODEL_ID ?= chandar-lab/NeoBERT
+TRANSFORMER_QUATERNARY_MODEL_ID ?= answerdotai/ModernBERT-large
 CAUSAL_LM_MODEL_ID ?= Qwen/Qwen3-1.7B
 BENCHMARK_NOTES ?=
 BENCHMARK_NOTES_ARG := $(if $(BENCHMARK_NOTES), --notes '$(BENCHMARK_NOTES)')
@@ -70,8 +73,11 @@ RUNPOD_COMMON_ARGS := \
 	--split-seed $(SPLIT_SEED) \
 	--semantic-model-id $(SEMANTIC_MODEL_ID) \
 	--semantic-secondary-model-id $(SEMANTIC_SECONDARY_MODEL_ID) \
+	--semantic-tertiary-model-id $(SEMANTIC_TERTIARY_MODEL_ID) \
 	--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 	--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
+	--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
+	--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
 	--causal-lm-model-id $(CAUSAL_LM_MODEL_ID) \
 	--remote-run-timeout-seconds $(REMOTE_RUN_TIMEOUT) \
 	--pod-ready-timeout-seconds $(RUNPOD_READY_TIMEOUT)
@@ -100,8 +106,11 @@ WSL_COMMON_ARGS := \
 	--run-timeout-seconds '$(REMOTE_RUN_TIMEOUT)' \
 	--make-arg SEMANTIC_MODEL_ID='$(SEMANTIC_MODEL_ID)' \
 	--make-arg SEMANTIC_SECONDARY_MODEL_ID='$(SEMANTIC_SECONDARY_MODEL_ID)' \
+	--make-arg SEMANTIC_TERTIARY_MODEL_ID='$(SEMANTIC_TERTIARY_MODEL_ID)' \
 	--make-arg TRANSFORMER_MODEL_ID='$(TRANSFORMER_MODEL_ID)' \
 	--make-arg TRANSFORMER_SECONDARY_MODEL_ID='$(TRANSFORMER_SECONDARY_MODEL_ID)' \
+	--make-arg TRANSFORMER_TERTIARY_MODEL_ID='$(TRANSFORMER_TERTIARY_MODEL_ID)' \
+	--make-arg TRANSFORMER_QUATERNARY_MODEL_ID='$(TRANSFORMER_QUATERNARY_MODEL_ID)' \
 	--make-arg CAUSAL_LM_MODEL_ID='$(CAUSAL_LM_MODEL_ID)'
 WSL_NOTES_ARG := $(if $(BENCHMARK_NOTES), --make-arg BENCHMARK_NOTES='$(BENCHMARK_NOTES)')
 
@@ -170,8 +179,11 @@ retrain:
 		$(SPLIT_ARGS) \
 		--semantic-model-id $(SEMANTIC_MODEL_ID) \
 		--semantic-secondary-model-id $(SEMANTIC_SECONDARY_MODEL_ID) \
+		--semantic-tertiary-model-id $(SEMANTIC_TERTIARY_MODEL_ID) \
 		--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 		--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
+		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
+		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
 		--causal-lm-model-id $(CAUSAL_LM_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
 
 benchmark:
@@ -181,8 +193,11 @@ benchmark:
 		$(SPLIT_ARGS) \
 		--semantic-model-id $(SEMANTIC_MODEL_ID) \
 		--semantic-secondary-model-id $(SEMANTIC_SECONDARY_MODEL_ID) \
+		--semantic-tertiary-model-id $(SEMANTIC_TERTIARY_MODEL_ID) \
 		--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 		--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
+		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
+		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
 		--causal-lm-model-id $(CAUSAL_LM_MODEL_ID)$(EVAL_SUBREDDIT_ARG)$(BENCHMARK_NOTES_ARG)
 
 benchmark-variants:
@@ -224,8 +239,11 @@ benchmark-suite:
 		SPLIT_SEED='$(SPLIT_SEED)' \
 		SEMANTIC_MODEL_ID='$(SEMANTIC_MODEL_ID)' \
 		SEMANTIC_SECONDARY_MODEL_ID='$(SEMANTIC_SECONDARY_MODEL_ID)' \
+		SEMANTIC_TERTIARY_MODEL_ID='$(SEMANTIC_TERTIARY_MODEL_ID)' \
 		TRANSFORMER_MODEL_ID='$(TRANSFORMER_MODEL_ID)' \
 		TRANSFORMER_SECONDARY_MODEL_ID='$(TRANSFORMER_SECONDARY_MODEL_ID)' \
+		TRANSFORMER_TERTIARY_MODEL_ID='$(TRANSFORMER_TERTIARY_MODEL_ID)' \
+		TRANSFORMER_QUATERNARY_MODEL_ID='$(TRANSFORMER_QUATERNARY_MODEL_ID)' \
 		CAUSAL_LM_MODEL_ID='$(CAUSAL_LM_MODEL_ID)' \
 		BENCHMARK_NOTES='$(BENCHMARK_NOTES)'
 

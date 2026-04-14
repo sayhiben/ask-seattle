@@ -157,7 +157,7 @@ The manifest includes:
 - optional `evaluation_subreddit`
 - prepared-data summary counts
 
-Every benchmark-suite model family consumes that same manifest so the six-model comparison remains apples-to-apples.
+Every benchmark-suite model family consumes that same manifest so the nine-model comparison remains apples-to-apples.
 
 `make retrain` writes or refreshes this manifest before training the suite models. `make benchmark` loads the same manifest later and only benchmarks compatible trained artifacts for that manifest.
 
@@ -272,7 +272,7 @@ Semantic benchmark summaries also include a model-family-specific `embedding_sum
 - `pooling`
 - `logreg_c`
 
-The Qwen3 embedding path uses a Transformers-based backend rather than SentenceTransformers, but it still ends in the same calibrated logistic-regression head shape as the MiniLM path.
+The Qwen3 embedding and Jina v5 classification embedding paths use a Transformers-based backend rather than SentenceTransformers, but they still end in the same calibrated logistic-regression head shape as the MiniLM path.
 
 Decoder-LLM benchmark summaries also include the current prompt and continuation-scoring setup, including fields such as:
 

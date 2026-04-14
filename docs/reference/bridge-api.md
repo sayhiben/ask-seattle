@@ -47,6 +47,13 @@ This example is illustrative. Real `comparison_models` arrays depend on which be
       "artifact_path": "/abs/path/to/models/benchmark-suite/semantic_qwen3_embedding_0_6b/semantic_embedding_logreg.joblib"
     },
     {
+      "name": "semantic_jina_embeddings_v5_text_small_classification",
+      "display_name": "Semantic Jina v5 Text Small Classification",
+      "model_family": "semantic_embedding",
+      "model_id": "jinaai/jina-embeddings-v5-text-small-classification",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/semantic_jina_embeddings_v5_text_small_classification/semantic_embedding_logreg.joblib"
+    },
+    {
       "name": "transformer_deberta_v3_small",
       "display_name": "Transformer DeBERTa-v3-small",
       "model_family": "transformer_sequence_classifier",
@@ -59,6 +66,20 @@ This example is illustrative. Real `comparison_models` arrays depend on which be
       "model_family": "transformer_sequence_classifier",
       "model_id": "answerdotai/ModernBERT-base",
       "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_modernbert_base/transformer_bundle.joblib"
+    },
+    {
+      "name": "transformer_neobert",
+      "display_name": "Transformer NeoBERT",
+      "model_family": "transformer_sequence_classifier",
+      "model_id": "chandar-lab/NeoBERT",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_neobert/transformer_bundle.joblib"
+    },
+    {
+      "name": "transformer_modernbert_large",
+      "display_name": "Transformer ModernBERT-large",
+      "model_family": "transformer_sequence_classifier",
+      "model_id": "answerdotai/ModernBERT-large",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_modernbert_large/transformer_bundle.joblib"
     },
     {
       "name": "causal_lm_qwen3_1_7b_lora",
@@ -153,6 +174,13 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
       "artifact_path": "/abs/path/to/models/benchmark-suite/semantic_qwen3_embedding_0_6b/semantic_embedding_logreg.joblib"
     },
     {
+      "name": "semantic_jina_embeddings_v5_text_small_classification",
+      "display_name": "Semantic Jina v5 Text Small Classification",
+      "model_family": "semantic_embedding",
+      "model_id": "jinaai/jina-embeddings-v5-text-small-classification",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/semantic_jina_embeddings_v5_text_small_classification/semantic_embedding_logreg.joblib"
+    },
+    {
       "name": "transformer_deberta_v3_small",
       "display_name": "Transformer DeBERTa-v3-small",
       "model_family": "transformer_sequence_classifier",
@@ -167,6 +195,20 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
       "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_modernbert_base/transformer_bundle.joblib"
     },
     {
+      "name": "transformer_neobert",
+      "display_name": "Transformer NeoBERT",
+      "model_family": "transformer_sequence_classifier",
+      "model_id": "chandar-lab/NeoBERT",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_neobert/transformer_bundle.joblib"
+    },
+    {
+      "name": "transformer_modernbert_large",
+      "display_name": "Transformer ModernBERT-large",
+      "model_family": "transformer_sequence_classifier",
+      "model_id": "answerdotai/ModernBERT-large",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_modernbert_large/transformer_bundle.joblib"
+    },
+    {
       "name": "causal_lm_qwen3_1_7b_lora",
       "display_name": "Causal LM Qwen3-1.7B",
       "model_family": "causal_lm_classifier",
@@ -178,11 +220,11 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
 }
 ```
 
-When the full benchmark suite artifacts exist, the bridge includes all available comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. The current expected full set is six models total: TF-IDF, two semantic models, two encoder transformers, and one decoder-LLM.
+When the full benchmark suite artifacts exist, the bridge includes all available comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. The current expected full set is nine models total: TF-IDF, three semantic models, four encoder transformers, and one decoder-LLM.
 
 If one comparison model fails during scoring, the bridge now keeps the main `result` and returns an `error` field for that comparison entry instead of failing the whole `/check` request.
 
-On Apple Silicon, the bridge also keeps the Qwen-based comparison models off MPS during `/check` because those families are not stable on the current MPS stack.
+On Apple Silicon, the bridge also keeps the transformer-backed semantic comparison models off MPS during `/check` because those families are not stable on the current MPS stack.
 
 ## `POST /check-comparison`
 

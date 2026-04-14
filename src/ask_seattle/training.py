@@ -50,6 +50,8 @@ from ask_seattle.model import (
     split_labeled_posts,
     threshold_sweep,
     tfidf_feature_audit,
+    ensure_transformer_custom_code_support,
+    transformer_load_options,
     train_model,
 )
 
@@ -59,8 +61,11 @@ DEFAULT_CALIBRATION_SIZE = 0.2
 DEFAULT_TEST_SIZE = 0.2
 DEFAULT_SEMANTIC_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_SEMANTIC_SECONDARY_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
+DEFAULT_SEMANTIC_TERTIARY_MODEL_ID = "jinaai/jina-embeddings-v5-text-small-classification"
 DEFAULT_TRANSFORMER_MODEL_ID = "microsoft/deberta-v3-small"
 DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID = "answerdotai/ModernBERT-base"
+DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID = "chandar-lab/NeoBERT"
+DEFAULT_TRANSFORMER_QUATERNARY_MODEL_ID = "answerdotai/ModernBERT-large"
 DEFAULT_CAUSAL_LM_MODEL_ID = "Qwen/Qwen3-1.7B"
 DEFAULT_MAX_SLICE_POSITIVE_WEIGHT = 2.0
 DEFAULT_TFIDF_REVIEW_PRECISION_TARGET = 0.70
@@ -136,6 +141,13 @@ class OptionalModelDependencyError(RuntimeError):
 
 class MPSFallbackRequested(RuntimeError):
     pass
+
+
+def _portable_artifact_reference(path: Path, *, base_dir: Path) -> str:
+    try:
+        return str(path.relative_to(base_dir))
+    except ValueError:
+        return path.name
 
 
 def _constraint_metrics_template() -> dict[str, dict[str, float | int | bool | None]]:
@@ -403,8 +415,11 @@ def retrain_model_suite_from_labels(
     evaluation_subreddit: str | None = None,
     semantic_model_id: str = DEFAULT_SEMANTIC_MODEL_ID,
     semantic_secondary_model_id: str = DEFAULT_SEMANTIC_SECONDARY_MODEL_ID,
+    semantic_tertiary_model_id: str = DEFAULT_SEMANTIC_TERTIARY_MODEL_ID,
     transformer_model_id: str = DEFAULT_TRANSFORMER_MODEL_ID,
     transformer_secondary_model_id: str = DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID,
+    transformer_tertiary_model_id: str = DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID,
+    transformer_quaternary_model_id: str = DEFAULT_TRANSFORMER_QUATERNARY_MODEL_ID,
     causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
@@ -427,8 +442,11 @@ def retrain_model_suite_from_labels(
     specs = _suite_model_specs(
         semantic_model_id=semantic_model_id,
         semantic_secondary_model_id=semantic_secondary_model_id,
+        semantic_tertiary_model_id=semantic_tertiary_model_id,
         transformer_model_id=transformer_model_id,
         transformer_secondary_model_id=transformer_secondary_model_id,
+        transformer_tertiary_model_id=transformer_tertiary_model_id,
+        transformer_quaternary_model_id=transformer_quaternary_model_id,
         causal_lm_model_id=causal_lm_model_id,
     )
     results: list[dict[str, Any]] = []
@@ -537,8 +555,11 @@ def retrain_all_from_labels(
     evaluation_subreddit: str | None = None,
     semantic_model_id: str = DEFAULT_SEMANTIC_MODEL_ID,
     semantic_secondary_model_id: str = DEFAULT_SEMANTIC_SECONDARY_MODEL_ID,
+    semantic_tertiary_model_id: str = DEFAULT_SEMANTIC_TERTIARY_MODEL_ID,
     transformer_model_id: str = DEFAULT_TRANSFORMER_MODEL_ID,
     transformer_secondary_model_id: str = DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID,
+    transformer_tertiary_model_id: str = DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID,
+    transformer_quaternary_model_id: str = DEFAULT_TRANSFORMER_QUATERNARY_MODEL_ID,
     causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
@@ -567,8 +588,11 @@ def retrain_all_from_labels(
         evaluation_subreddit=evaluation_subreddit,
         semantic_model_id=semantic_model_id,
         semantic_secondary_model_id=semantic_secondary_model_id,
+        semantic_tertiary_model_id=semantic_tertiary_model_id,
         transformer_model_id=transformer_model_id,
         transformer_secondary_model_id=transformer_secondary_model_id,
+        transformer_tertiary_model_id=transformer_tertiary_model_id,
+        transformer_quaternary_model_id=transformer_quaternary_model_id,
         causal_lm_model_id=causal_lm_model_id,
     )
     summary = {
@@ -595,8 +619,11 @@ def benchmark_model_suite_from_labels(
     evaluation_subreddit: str | None = None,
     semantic_model_id: str = DEFAULT_SEMANTIC_MODEL_ID,
     semantic_secondary_model_id: str = DEFAULT_SEMANTIC_SECONDARY_MODEL_ID,
+    semantic_tertiary_model_id: str = DEFAULT_SEMANTIC_TERTIARY_MODEL_ID,
     transformer_model_id: str = DEFAULT_TRANSFORMER_MODEL_ID,
     transformer_secondary_model_id: str = DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID,
+    transformer_tertiary_model_id: str = DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID,
+    transformer_quaternary_model_id: str = DEFAULT_TRANSFORMER_QUATERNARY_MODEL_ID,
     causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
     notes: str | None = None,
 ) -> dict[str, Any]:
@@ -629,8 +656,11 @@ def benchmark_model_suite_from_labels(
     specs = _suite_model_specs(
         semantic_model_id=semantic_model_id,
         semantic_secondary_model_id=semantic_secondary_model_id,
+        semantic_tertiary_model_id=semantic_tertiary_model_id,
         transformer_model_id=transformer_model_id,
         transformer_secondary_model_id=transformer_secondary_model_id,
+        transformer_tertiary_model_id=transformer_tertiary_model_id,
+        transformer_quaternary_model_id=transformer_quaternary_model_id,
         causal_lm_model_id=causal_lm_model_id,
     )
     for index, spec in enumerate(specs, start=1):
@@ -772,8 +802,11 @@ def _suite_model_specs(
     *,
     semantic_model_id: str,
     semantic_secondary_model_id: str,
+    semantic_tertiary_model_id: str,
     transformer_model_id: str,
     transformer_secondary_model_id: str,
+    transformer_tertiary_model_id: str,
+    transformer_quaternary_model_id: str,
     causal_lm_model_id: str,
 ) -> list[SuiteModelSpec]:
     return [
@@ -839,6 +872,27 @@ def _suite_model_specs(
             },
         ),
         SuiteModelSpec(
+            name="semantic_jina_embeddings_v5_text_small_classification",
+            display_name="Semantic Jina v5 Text Small Classification",
+            family="semantic_embedding",
+            runner=_train_semantic_embedding_bundle_for_split,
+            kwargs={
+                "config": SemanticModelConfig(
+                    name="semantic_jina_embeddings_v5_text_small_classification",
+                    display_name="Semantic Jina v5 Text Small Classification",
+                    model_id=semantic_tertiary_model_id,
+                    backend="hf_embedding",
+                    config_version="v3_title_body_metadata_document_prefix",
+                    prompt_modes=("plain", "document_prefix"),
+                    normalize_embeddings=(False, True),
+                    logistic_c_values=(0.25, 1.0, 4.0, 16.0),
+                    encode_batch_size=8,
+                    prompt_prefix="Document:",
+                    pooling="last_token",
+                ),
+            },
+        ),
+        SuiteModelSpec(
             name="transformer_deberta_v3_small",
             display_name="Transformer DeBERTa-v3-small",
             family="transformer_sequence_classifier",
@@ -857,6 +911,28 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_secondary_model_id,
                 "display_name": "Transformer ModernBERT-base",
+                "config_version": "v2_pr_auc_early_stop",
+            },
+        ),
+        SuiteModelSpec(
+            name="transformer_neobert",
+            display_name="Transformer NeoBERT",
+            family="transformer_sequence_classifier",
+            runner=_train_transformer_bundle_for_split,
+            kwargs={
+                "model_id": transformer_tertiary_model_id,
+                "display_name": "Transformer NeoBERT",
+                "config_version": "v3_pr_auc_early_stop_remote_code",
+            },
+        ),
+        SuiteModelSpec(
+            name="transformer_modernbert_large",
+            display_name="Transformer ModernBERT-large",
+            family="transformer_sequence_classifier",
+            runner=_train_transformer_bundle_for_split,
+            kwargs={
+                "model_id": transformer_quaternary_model_id,
+                "display_name": "Transformer ModernBERT-large",
                 "config_version": "v2_pr_auc_early_stop",
             },
         ),
@@ -1951,8 +2027,11 @@ def _load_semantic_encoder(config: SemanticModelConfig) -> Any:
                 "Install with `python -m pip install -e \".[dev,models]\"`."
             ) from exc
         device = _resolve_semantic_encoder_device(config, torch)
+        tokenizer = AutoTokenizer.from_pretrained(config.model_id, use_fast=False)
+        if tokenizer.pad_token is None and tokenizer.eos_token is not None:
+            tokenizer.pad_token = tokenizer.eos_token
         return {
-            "tokenizer": AutoTokenizer.from_pretrained(config.model_id, use_fast=False),
+            "tokenizer": tokenizer,
             "model": AutoModel.from_pretrained(config.model_id),
             "device": device,
         }
@@ -1993,6 +2072,12 @@ def _semantic_component_texts(
             [f"{short_prefix} Title: {text}".strip() if short_prefix else f"Title: {text}" for text in title_texts],
             [f"{short_prefix} Body: {text}".strip() if short_prefix else f"Body: {text}" for text in body_texts],
         )
+    if prompt_mode == "document_prefix":
+        document_prefix = config.prompt_prefix or "Document:"
+        return (
+            [f"{document_prefix} {text}".strip() for text in title_texts],
+            [f"{document_prefix} {text}".strip() for text in body_texts],
+        )
     raise ValueError(f"Unsupported semantic prompt mode: {prompt_mode}")
 
 
@@ -2018,6 +2103,9 @@ def _semantic_texts(
         return [f"{config.prompt_prefix}\n{text}" if config.prompt_prefix else text for text in texts]
     if prompt_mode == "short_task_prefix":
         return [f"{config.short_prompt_prefix} {text}".strip() if config.short_prompt_prefix else text for text in texts]
+    if prompt_mode == "document_prefix":
+        document_prefix = config.prompt_prefix or "Document:"
+        return [f"{document_prefix} {text}".strip() for text in texts]
     raise ValueError(f"Unsupported semantic prompt mode: {prompt_mode}")
 
 
@@ -2219,11 +2307,13 @@ def _train_transformer_bundle_for_split(
     effective_runtime_profile = runtime_profile or detected_runtime
     use_mps = effective_runtime_profile == "mps"
     use_cpu = effective_runtime_profile in {"cpu", "cpu_fallback"}
-    is_modernbert = "modernbert" in model_id.lower()
+    load_options = transformer_load_options(model_id)
+    trust_remote_code = bool(load_options.get("trust_remote_code"))
+    is_long_context_encoder = "modernbert" in model_id.lower() or "neobert" in model_id.lower()
     per_device_train_batch_size = 8 if not use_cpu else 1
     per_device_eval_batch_size = 16 if not use_cpu else 2
     gradient_accumulation_steps = 1 if not use_cpu else 8
-    max_length = 384 if is_modernbert else 256
+    max_length = 384 if is_long_context_encoder else 256
     model_dtype = None
     num_train_epochs = 2
     if use_mps:
@@ -2258,7 +2348,8 @@ def _train_transformer_bundle_for_split(
     y_train = [row["label"] for row in train_rows]
     y_calibration = [row["label"] for row in calibration_rows]
 
-    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
+    ensure_transformer_custom_code_support(trust_remote_code=trust_remote_code)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False, **load_options)
 
     def tokenize(batch: dict[str, list[Any]]) -> dict[str, Any]:
         return tokenizer(batch["title"], batch["body"], truncation=True, max_length=max_length)
@@ -2374,6 +2465,7 @@ def _train_transformer_bundle_for_split(
                 id2label={0: "not_askseattle", 1: "askseattle"},
                 label2id={"not_askseattle": 0, "askseattle": 1},
                 torch_dtype=model_dtype,
+                **load_options,
             )
             candidate_dir = artifact_dir / f"checkpoints_{loss_mode}"
             training_args = TrainingArguments(
@@ -2506,6 +2598,7 @@ def _train_transformer_bundle_for_split(
         "class_weighting": selected_loss_mode,
         "runtime_profile": effective_runtime_profile,
         "optimizer": "adafactor" if use_mps else "adamw_torch",
+        "trust_remote_code": trust_remote_code,
         "class_weights": {
             "not_askseattle": float(class_weights[0].item()),
             "askseattle": float(class_weights[1].item()),
@@ -2519,8 +2612,9 @@ def _train_transformer_bundle_for_split(
             "model_name": _slugify_model_name(display_name or f"transformer {Path(model_id).name}"),
             "display_name": display_name or model_id,
             "model_id": model_id,
-            "artifact_path": str(model_dir.resolve()),
-            "model_dir": str(model_dir.resolve()),
+            "artifact_path": _portable_artifact_reference(model_dir, base_dir=artifact_dir),
+            "model_dir": _portable_artifact_reference(model_dir, base_dir=artifact_dir),
+            "load_options": load_options,
             "calibrator": calibrator,
             "threshold_policy": threshold_policy,
             "training_args": training_args_summary,
@@ -2534,9 +2628,10 @@ def _train_transformer_bundle_for_split(
                 "model_family": "transformer_sequence_classifier",
                 "model_name": "transformer_sequence_classifier",
                 "model_id": model_id,
-                "artifact_path": str(model_dir),
-                "bundle_path": str(bundle_path),
-                "calibrator_bundle_path": str(bundle_path),
+                "artifact_path": _portable_artifact_reference(model_dir, base_dir=artifact_dir),
+                "bundle_path": _portable_artifact_reference(bundle_path, base_dir=artifact_dir),
+                "calibrator_bundle_path": _portable_artifact_reference(bundle_path, base_dir=artifact_dir),
+                "load_options": load_options,
                 "threshold_policy": threshold_policy,
                 "training_args": training_args_summary,
                 "version": __version__,
@@ -2929,8 +3024,8 @@ def _train_causal_lm_bundle_for_split(
             "model_name": _slugify_model_name(display_name or f"decoder {Path(model_id).name}"),
             "display_name": display_name or model_id,
             "model_id": model_id,
-            "artifact_path": str(model_dir.resolve()),
-            "model_dir": str(model_dir.resolve()),
+            "artifact_path": _portable_artifact_reference(model_dir, base_dir=artifact_dir),
+            "model_dir": _portable_artifact_reference(model_dir, base_dir=artifact_dir),
             "calibrator": calibrator,
             "threshold_policy": threshold_policy,
             "training_args": training_args_summary,

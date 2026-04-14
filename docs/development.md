@@ -13,7 +13,7 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-If you need the full six-model benchmark suite:
+If you need the full nine-model benchmark suite:
 
 ```bash
 python -m pip install -e ".[dev,models]"

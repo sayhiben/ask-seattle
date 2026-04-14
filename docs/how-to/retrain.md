@@ -22,7 +22,7 @@ PYTHONPATH=src python3 -m ask_seattle.cli retrain-all \
 This retrains:
 
 - the operational TF-IDF model under `models/real-labels-precision-refresh/`
-- all six suite models under `models/benchmark-suite/`
+- all nine suite models under `models/benchmark-suite/`
 
 It does not run held-out benchmarks.
 
@@ -105,7 +105,7 @@ Use this when you want to compare:
 
 All variants run on the exact same split.
 
-## Compare The Full Six-Model Suite
+## Compare The Full Nine-Model Suite
 
 Install the optional model dependencies first:
 
@@ -138,12 +138,15 @@ The suite uses one shared split across all model families. Retraining writes:
 - `tfidf_recommended/training_summary.json`
 - `semantic_minilm_tuned/training_summary.json`
 - `semantic_qwen3_embedding_0_6b/training_summary.json`
+- `semantic_jina_embeddings_v5_text_small_classification/training_summary.json`
 - `transformer_deberta_v3_small/training_summary.json`
 - `transformer_modernbert_base/training_summary.json`
+- `transformer_neobert/training_summary.json`
+- `transformer_modernbert_large/training_summary.json`
 - `causal_lm_qwen3_1_7b_lora/training_summary.json`
 - `suite_training_summary.json`
 
-On Apple Silicon, the transformer-backed semantic embedding path (`semantic_qwen3_embedding_0_6b`) now bypasses MPS and uses CPU during training. That is slower, but it avoids current Metal backend failures for that model family on the supported Mac baseline.
+On Apple Silicon, the transformer-backed semantic embedding paths (`semantic_qwen3_embedding_0_6b` and `semantic_jina_embeddings_v5_text_small_classification`) now bypass MPS and use CPU during training. That is slower, but it avoids current Metal backend failures for those model families on the supported Mac baseline.
 
 Benchmarking writes:
 
@@ -151,13 +154,16 @@ Benchmarking writes:
 - `benchmark_history.json`
 - `history/<run_id>/benchmark_suite_summary.json`
 
-The default six-model suite is:
+The default nine-model suite is:
 
 - TF-IDF baseline
 - tuned MiniLM semantic model
 - Qwen3 embedding semantic model
+- Jina v5 text-small-classification semantic model
 - DeBERTa-v3-small sequence classifier
 - ModernBERT-base sequence classifier
+- NeoBERT sequence classifier
+- ModernBERT-large sequence classifier
 - Qwen3-1.7B LoRA causal-language-model classifier
 
 Important implementation details:

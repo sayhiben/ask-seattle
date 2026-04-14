@@ -11,7 +11,7 @@ Use it when you need to understand the current system, make changes safely, or f
 - Want maintainer-specific guardrails and repo rules: [AGENTS.md](../AGENTS.md)
 - Want to label posts in the browser: [How to label posts](how-to/label-posts.md)
 - Want to retrain the model: [How to retrain](how-to/retrain.md)
-- Want to compare the full six-model benchmark suite: [How to retrain](how-to/retrain.md)
+- Want to compare the full nine-model benchmark suite: [How to retrain](how-to/retrain.md)
 - Want the preferred remote training path: [How to run training on RunPod](how-to/runpod-training.md)
 - Want a no-cloud fallback on your own Windows GPU box: [How to run training on a remote Windows WSL box](how-to/remote-wsl-training.md)
 - Need the exact CLI surface: [CLI reference](reference/cli.md)
@@ -22,7 +22,7 @@ Use it when you need to understand the current system, make changes safely, or f
 
 ## Current System In One Paragraph
 
-The project is a local-only review and classification loop. A Tampermonkey userscript reads the visible Reddit post in the browser, sends title/body text to a localhost bridge for `/check`, and sends reviewed labels to the same bridge for `/train`. The operational training path reads the reviewed JSONL file, normalizes and dedupes it, performs a deterministic random train/calibration/test split by default, fits a TF-IDF + logistic regression model, calibrates probabilities, and writes a `.joblib` model bundle plus `training_summary.json`. The benchmark-suite path reuses one persisted split manifest to compare six model families on the same examples.
+The project is a local-only review and classification loop. A Tampermonkey userscript reads the visible Reddit post in the browser, sends title/body text to a localhost bridge for `/check`, and sends reviewed labels to the same bridge for `/train`. The operational training path reads the reviewed JSONL file, normalizes and dedupes it, performs a deterministic random train/calibration/test split by default, fits a TF-IDF + logistic regression model, calibrates probabilities, and writes a `.joblib` model bundle plus `training_summary.json`. The benchmark-suite path reuses one persisted split manifest to compare nine model families on the same examples.
 
 ## Documentation Map
 
@@ -77,6 +77,6 @@ These assumptions define the current project scope:
 - local files only
 - binary labels only: `askseattle` and `not_askseattle`
 - one TF-IDF + logistic regression operational model path
-- one six-model local benchmark suite for comparison work
+- one nine-model local benchmark suite for comparison work
 
 If any of those change, treat it as a documentation-impacting change, not just an implementation detail.

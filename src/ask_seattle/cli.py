@@ -71,6 +71,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Secondary embedding model for the semantic comparison path",
     )
     retrain_all.add_argument(
+        "--semantic-tertiary-model-id",
+        default="jinaai/jina-embeddings-v5-text-small-classification",
+        help="Tertiary embedding model for the semantic comparison path",
+    )
+    retrain_all.add_argument(
         "--transformer-model-id",
         default="microsoft/deberta-v3-small",
         help="Primary transformer checkpoint for the sequence classification comparison path",
@@ -79,6 +84,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--transformer-secondary-model-id",
         default="answerdotai/ModernBERT-base",
         help="Secondary transformer checkpoint for the sequence classification comparison path",
+    )
+    retrain_all.add_argument(
+        "--transformer-tertiary-model-id",
+        default="chandar-lab/NeoBERT",
+        help="Tertiary transformer checkpoint for the sequence classification comparison path",
+    )
+    retrain_all.add_argument(
+        "--transformer-quaternary-model-id",
+        default="answerdotai/ModernBERT-large",
+        help="Quaternary transformer checkpoint for the sequence classification comparison path",
     )
     retrain_all.add_argument(
         "--causal-lm-model-id",
@@ -122,6 +137,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Secondary embedding model for the semantic benchmark path",
     )
     benchmark_suite.add_argument(
+        "--semantic-tertiary-model-id",
+        default="jinaai/jina-embeddings-v5-text-small-classification",
+        help="Tertiary embedding model for the semantic benchmark path",
+    )
+    benchmark_suite.add_argument(
         "--transformer-model-id",
         default="microsoft/deberta-v3-small",
         help="Primary transformer checkpoint for the sequence classification benchmark path",
@@ -130,6 +150,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--transformer-secondary-model-id",
         default="answerdotai/ModernBERT-base",
         help="Secondary transformer checkpoint for the sequence classification benchmark path",
+    )
+    benchmark_suite.add_argument(
+        "--transformer-tertiary-model-id",
+        default="chandar-lab/NeoBERT",
+        help="Tertiary transformer checkpoint for the sequence classification benchmark path",
+    )
+    benchmark_suite.add_argument(
+        "--transformer-quaternary-model-id",
+        default="answerdotai/ModernBERT-large",
+        help="Quaternary transformer checkpoint for the sequence classification benchmark path",
     )
     benchmark_suite.add_argument(
         "--causal-lm-model-id",
@@ -249,8 +279,11 @@ def retrain_all_command(args: argparse.Namespace) -> int:
         evaluation_subreddit=args.eval_subreddit,
         semantic_model_id=args.semantic_model_id,
         semantic_secondary_model_id=args.semantic_secondary_model_id,
+        semantic_tertiary_model_id=args.semantic_tertiary_model_id,
         transformer_model_id=args.transformer_model_id,
         transformer_secondary_model_id=args.transformer_secondary_model_id,
+        transformer_tertiary_model_id=args.transformer_tertiary_model_id,
+        transformer_quaternary_model_id=args.transformer_quaternary_model_id,
         causal_lm_model_id=args.causal_lm_model_id,
     )
     print(json.dumps(summary, indent=2))
@@ -278,8 +311,11 @@ def benchmark_suite_command(args: argparse.Namespace) -> int:
         evaluation_subreddit=args.eval_subreddit,
         semantic_model_id=args.semantic_model_id,
         semantic_secondary_model_id=args.semantic_secondary_model_id,
+        semantic_tertiary_model_id=args.semantic_tertiary_model_id,
         transformer_model_id=args.transformer_model_id,
         transformer_secondary_model_id=args.transformer_secondary_model_id,
+        transformer_tertiary_model_id=args.transformer_tertiary_model_id,
+        transformer_quaternary_model_id=args.transformer_quaternary_model_id,
         causal_lm_model_id=args.causal_lm_model_id,
         notes=args.notes,
     )

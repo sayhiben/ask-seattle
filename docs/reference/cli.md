@@ -153,10 +153,10 @@ By default this command still evaluates the held-out test slice and writes bench
 
 ## `ask-seattle retrain-all`
 
-Retrain the operational TF-IDF model plus the full six-model comparison suite without running held-out benchmarks.
+Retrain the operational TF-IDF model plus the full nine-model comparison suite without running held-out benchmarks.
 
 ```bash
-ask-seattle retrain-all --data PATH --operational-output-dir PATH --benchmark-output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--causal-lm-model-id Qwen/Qwen3-1.7B]
+ask-seattle retrain-all --data PATH --operational-output-dir PATH --benchmark-output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--semantic-tertiary-model-id jinaai/jina-embeddings-v5-text-small-classification] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--causal-lm-model-id Qwen/Qwen3-1.7B]
 ```
 
 Arguments:
@@ -169,7 +169,7 @@ Arguments:
   - directory where the operational TF-IDF artifacts are written
 - `--benchmark-output-dir`
   - required
-  - directory where the six suite model artifacts are written
+  - directory where the nine suite model artifacts are written
 - `--eval-subreddit`
   - optional
   - when set, training still uses mixed reviewed data but restricts later calibration/test evaluation to the named subreddit
@@ -186,12 +186,21 @@ Arguments:
 - `--semantic-secondary-model-id`
   - optional
   - defaults to `Qwen/Qwen3-Embedding-0.6B`
+- `--semantic-tertiary-model-id`
+  - optional
+  - defaults to `jinaai/jina-embeddings-v5-text-small-classification`
 - `--transformer-model-id`
   - optional
   - defaults to `microsoft/deberta-v3-small`
 - `--transformer-secondary-model-id`
   - optional
   - defaults to `answerdotai/ModernBERT-base`
+- `--transformer-tertiary-model-id`
+  - optional
+  - defaults to `chandar-lab/NeoBERT`
+- `--transformer-quaternary-model-id`
+  - optional
+  - defaults to `answerdotai/ModernBERT-large`
 - `--causal-lm-model-id`
   - optional
   - defaults to `Qwen/Qwen3-1.7B`
@@ -239,10 +248,10 @@ Writes:
 
 ## `ask-seattle benchmark-suite`
 
-Benchmark the full six-model suite on one shared held-out split, using already-trained suite artifacts.
+Benchmark the full nine-model suite on one shared held-out split, using already-trained suite artifacts.
 
 ```bash
-ask-seattle benchmark-suite --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--causal-lm-model-id Qwen/Qwen3-1.7B] [--notes "free-form note"]
+ask-seattle benchmark-suite --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--semantic-tertiary-model-id jinaai/jina-embeddings-v5-text-small-classification] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--causal-lm-model-id Qwen/Qwen3-1.7B] [--notes "free-form note"]
 ```
 
 Arguments:
@@ -269,12 +278,21 @@ Arguments:
 - `--semantic-secondary-model-id`
   - optional
   - defaults to `Qwen/Qwen3-Embedding-0.6B`
+- `--semantic-tertiary-model-id`
+  - optional
+  - defaults to `jinaai/jina-embeddings-v5-text-small-classification`
 - `--transformer-model-id`
   - optional
   - defaults to `microsoft/deberta-v3-small`
 - `--transformer-secondary-model-id`
   - optional
   - defaults to `answerdotai/ModernBERT-base`
+- `--transformer-tertiary-model-id`
+  - optional
+  - defaults to `chandar-lab/NeoBERT`
+- `--transformer-quaternary-model-id`
+  - optional
+  - defaults to `answerdotai/ModernBERT-large`
 - `--causal-lm-model-id`
   - optional
   - defaults to `Qwen/Qwen3-1.7B`
@@ -286,8 +304,8 @@ Current suite details:
 
 - the command loads the shared `suite_input.json` manifest and benchmarks any compatible trained model artifacts already present for that manifest
 - if a family is missing or incompatible, the command logs a warning and skips it instead of retraining it
-- the semantic family includes a tuned MiniLM path and a Qwen3 embedding path
-- the transformer family includes DeBERTa-v3-small and ModernBERT-base
+- the semantic family includes a tuned MiniLM path, a Qwen3 embedding path, and a Jina v5 text-small-classification path
+- the transformer family includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
 - the decoder family includes a Qwen3-1.7B LoRA classifier scored via two candidate label continuations
 - on Apple Silicon, the decoder family currently defaults to `cpu_fallback` instead of MPS because the Qwen3 fine-tuning path is not stable on the current MPS stack
 - the shared model text includes normalized content metadata when available

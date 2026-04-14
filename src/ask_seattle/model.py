@@ -7,6 +7,8 @@ import json
 import logging
 from math import ceil
 from pathlib import Path
+import sys
+import types
 from typing import Any
 
 import joblib
@@ -166,6 +168,60 @@ class CheckResult:
     confidence_band: str
     time_source: str | None
     created_at: str
+
+
+def transformer_requires_trust_remote_code(model_id: str) -> bool:
+    return "neobert" in str(model_id).lower()
+
+
+def transformer_load_options(model_id: str) -> dict[str, Any]:
+    if transformer_requires_trust_remote_code(model_id):
+        return {"trust_remote_code": True}
+    return {}
+
+
+def ensure_transformer_custom_code_support(*, trust_remote_code: bool) -> None:
+    if not trust_remote_code:
+        return
+    _install_xformers_swiglu_fallback()
+
+
+def _install_xformers_swiglu_fallback() -> None:
+    try:
+        import xformers.ops  # noqa: F401
+        return
+    except Exception:
+        pass
+
+    import torch.nn.functional as functional
+    from torch import nn
+
+    class SwiGLU(nn.Module):
+        def __init__(
+            self,
+            in_features: int,
+            hidden_features: int,
+            out_features: int,
+            *,
+            bias: bool = True,
+        ) -> None:
+            super().__init__()
+            self.w12 = nn.Linear(in_features, hidden_features * 2, bias=bias)
+            self.w3 = nn.Linear(hidden_features, out_features, bias=bias)
+
+        def forward(self, inputs: Any) -> Any:
+            gated_inputs, linear_inputs = self.w12(inputs).chunk(2, dim=-1)
+            return self.w3(functional.silu(gated_inputs) * linear_inputs)
+
+    xformers_module = sys.modules.get("xformers")
+    if xformers_module is None:
+        xformers_module = types.ModuleType("xformers")
+        sys.modules["xformers"] = xformers_module
+
+    ops_module = types.ModuleType("xformers.ops")
+    ops_module.SwiGLU = SwiGLU
+    xformers_module.ops = ops_module
+    sys.modules["xformers.ops"] = ops_module
 
 
 def build_pipeline(*, min_df: int = 2) -> Pipeline:
@@ -1489,6 +1545,8 @@ def _load_semantic_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
                 "dependencies with `python -m pip install -e \".[dev,models]\"`."
             ) from exc
         normalized["tokenizer"] = AutoTokenizer.from_pretrained(str(bundle["model_id"]), use_fast=False)
+        if normalized["tokenizer"].pad_token is None and normalized["tokenizer"].eos_token is not None:
+            normalized["tokenizer"].pad_token = normalized["tokenizer"].eos_token
         normalized["encoder_model"] = AutoModel.from_pretrained(str(bundle["model_id"]))
     else:
         raise ValueError(f"Unsupported semantic embedding backend: {backend}")
@@ -1500,14 +1558,13 @@ def _load_semantic_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
 
 
 def _load_transformer_bundle_from_joblib(bundle: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
-    model_dir = bundle.get("artifact_path") or bundle.get("model_dir")
-    if not model_dir:
+    model_dir = _resolve_bundle_model_dir(bundle, source_path=source_path, family_label="transformer")
+    if model_dir is None:
         raise ValueError(f"{source_path} is missing transformer artifact metadata")
-    if not Path(model_dir).is_absolute():
-        model_dir = str((source_path.parent / str(model_dir)).resolve())
     normalized = dict(bundle)
     normalized["artifact_path"] = str(model_dir)
-    return _load_transformer_runtime_bundle(normalized, model_dir=Path(model_dir))
+    normalized["model_dir"] = str(model_dir)
+    return _load_transformer_runtime_bundle(normalized, model_dir=model_dir)
 
 
 def _load_transformer_bundle(model_dir: Path) -> dict[str, Any]:
@@ -1537,8 +1594,14 @@ def _load_transformer_runtime_bundle(metadata: dict[str, Any], *, model_dir: Pat
         ) from exc
 
     normalized = dict(metadata)
-    normalized["tokenizer"] = AutoTokenizer.from_pretrained(str(model_dir), use_fast=False)
-    normalized["model"] = AutoModelForSequenceClassification.from_pretrained(str(model_dir))
+    load_options = dict(
+        normalized.get("load_options")
+        or transformer_load_options(str(normalized.get("model_id") or model_dir))
+    )
+    trust_remote_code = bool(load_options.get("trust_remote_code"))
+    ensure_transformer_custom_code_support(trust_remote_code=trust_remote_code)
+    normalized["tokenizer"] = AutoTokenizer.from_pretrained(str(model_dir), use_fast=False, **load_options)
+    normalized["model"] = AutoModelForSequenceClassification.from_pretrained(str(model_dir), **load_options)
     normalized.setdefault("model_family", "transformer_sequence_classifier")
     normalized.setdefault("model_name", "transformer_sequence_classifier")
     normalized.setdefault("model_version", str(normalized.get("version") or __version__))
@@ -1548,14 +1611,47 @@ def _load_transformer_runtime_bundle(metadata: dict[str, Any], *, model_dir: Pat
 
 
 def _load_causal_lm_bundle_from_joblib(bundle: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
-    model_dir = bundle.get("artifact_path") or bundle.get("model_dir")
-    if not model_dir:
+    model_dir = _resolve_bundle_model_dir(bundle, source_path=source_path, family_label="causal-lm")
+    if model_dir is None:
         raise ValueError(f"{source_path} is missing causal-lm artifact metadata")
-    if not Path(model_dir).is_absolute():
-        model_dir = str((source_path.parent / str(model_dir)).resolve())
     normalized = dict(bundle)
     normalized["artifact_path"] = str(model_dir)
-    return _load_causal_lm_runtime_bundle(normalized, model_dir=Path(model_dir))
+    normalized["model_dir"] = str(model_dir)
+    return _load_causal_lm_runtime_bundle(normalized, model_dir=model_dir)
+
+
+def _resolve_bundle_model_dir(
+    bundle: dict[str, Any],
+    *,
+    source_path: Path,
+    family_label: str,
+) -> Path | None:
+    raw_model_dir = bundle.get("artifact_path") or bundle.get("model_dir")
+    if not raw_model_dir:
+        return None
+    candidate = Path(str(raw_model_dir))
+    if not candidate.is_absolute():
+        resolved = (source_path.parent / candidate).resolve()
+        if resolved.exists():
+            return resolved
+        raise ValueError(
+            f"{source_path} references missing {family_label} artifact directory {resolved}"
+        )
+    if candidate.exists():
+        return candidate
+    sibling = (source_path.parent / candidate.name).resolve()
+    if sibling.exists():
+        LOGGER.info(
+            "rebasing stale absolute %s artifact path bundle=%s from=%s to=%s",
+            family_label,
+            str(source_path),
+            str(candidate),
+            str(sibling),
+        )
+        return sibling
+    raise ValueError(
+        f"{source_path} references missing {family_label} artifact directory {candidate}"
+    )
 
 
 def _load_causal_lm_runtime_bundle(metadata: dict[str, Any], *, model_dir: Path) -> dict[str, Any]:
@@ -1635,6 +1731,9 @@ def _semantic_runtime_texts(bundle: dict[str, Any], rows: list[dict[str, str]]) 
         return [f"{prompt_prefix}\n{text}" for text in texts]
     if prompt_mode == "short_task_prefix" and prompt_prefix:
         return [f"{prompt_prefix} {text}".strip() for text in texts]
+    if prompt_mode == "document_prefix":
+        document_prefix = prompt_prefix or "Document:"
+        return [f"{document_prefix} {text}".strip() for text in texts]
     return texts
 
 
@@ -1669,6 +1768,9 @@ def _semantic_runtime_component_texts(
             else f"{component_label}: {text}"
             for text in raw_texts
         ]
+    if prompt_mode == "document_prefix":
+        document_prefix = prompt_prefix or "Document:"
+        return [f"{document_prefix} {text}".strip() for text in raw_texts]
     raise ValueError(f"Unsupported semantic prompt mode: {prompt_mode}")
 
 

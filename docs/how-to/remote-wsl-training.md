@@ -155,14 +155,14 @@ The current repository targets are:
 - `make benchmark-variants`
 - `make benchmark-suite`
 
-`make retrain` now retrains the operational TF-IDF model plus all six suite models without held-out benchmarking.
+`make retrain` now retrains the operational TF-IDF model plus all nine suite models without held-out benchmarking.
 
 `make benchmark` and `make benchmark-suite` are the same benchmark-only step.
 
 The GPU most strongly benefits:
 
-- two semantic embedding paths
-- two encoder transformer paths
+- three semantic embedding paths
+- four encoder transformer paths
 - one decoder-LLM LoRA path
 
 `make benchmark-variants` remains the lightweight CPU-oriented TF-IDF comparison path.

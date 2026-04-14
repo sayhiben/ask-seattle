@@ -591,6 +591,25 @@ def test_retrain_model_suite_writes_training_only_summary(tmp_path: Path, monkey
     assert [model["benchmark_status"] for model in summary["models"]] == ["not_run", "not_run"]
 
 
+def test_suite_model_specs_include_new_semantic_and_transformer_candidates() -> None:
+    specs = training._suite_model_specs(
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        semantic_tertiary_model_id="jinaai/jina-embeddings-v5-text-small-classification",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_tertiary_model_id="chandar-lab/NeoBERT",
+        transformer_quaternary_model_id="answerdotai/ModernBERT-large",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+    )
+
+    names = [spec.name for spec in specs]
+
+    assert "semantic_jina_embeddings_v5_text_small_classification" in names
+    assert "transformer_neobert" in names
+    assert "transformer_modernbert_large" in names
+
+
 def test_benchmark_model_suite_writes_aggregate_summary(tmp_path: Path, monkeypatch) -> None:
     labels_path = tmp_path / "labels.jsonl"
     records = [

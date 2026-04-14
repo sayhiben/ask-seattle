@@ -245,6 +245,9 @@ def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> Non
     assert "LABELS=/workspace/runpod-inputs/run/labels.jsonl" in args
     assert "EVAL_SUBREDDIT=seattle" in args
     assert "BENCHMARK_NOTES=after labels" in args
+    assert "SEMANTIC_TERTIARY_MODEL_ID=jinaai/jina-embeddings-v5-text-small-classification" in args
+    assert "TRANSFORMER_TERTIARY_MODEL_ID=chandar-lab/NeoBERT" in args
+    assert "TRANSFORMER_QUATERNARY_MODEL_ID=answerdotai/ModernBERT-large" in args
 
 
 def test_build_remote_bootstrap_command_quotes_make_args() -> None:
