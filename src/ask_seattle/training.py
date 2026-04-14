@@ -3027,6 +3027,7 @@ def _train_transformer_bundle_for_split(
                     eval_strategy="epoch",
                     save_strategy="epoch",
                     save_total_limit=1,
+                    save_only_model=True,
                     load_best_model_at_end=True,
                     metric_for_best_model="pr_auc",
                     greater_is_better=True,

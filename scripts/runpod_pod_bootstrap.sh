@@ -28,6 +28,16 @@ cleanup_remote_inputs() {
   rmdir "$(dirname "${REMOTE_LABELS_PATH}")" 2>/dev/null || true
 }
 
+cleanup_remote_history() {
+  rm -rf "${REMOTE_REPO_DIR}/models" "${REMOTE_REPO_DIR}/data/processed" || true
+  if [[ -d "/workspace/runpod-logs" ]]; then
+    find /workspace/runpod-logs -mindepth 1 -maxdepth 1 -type d ! -name "${RUN_ID}" -exec rm -rf {} +
+  fi
+  if [[ -d "/workspace/runpod-inputs" ]]; then
+    find /workspace/runpod-inputs -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
+  fi
+}
+
 trap cleanup_remote_inputs EXIT
 
 write_metadata() {
@@ -71,7 +81,8 @@ cd "${REMOTE_REPO_DIR}"
 git fetch --all --prune
 git checkout --detach "${COMMIT_SHA}"
 git reset --hard "${COMMIT_SHA}"
-git clean -fd
+git clean -fdx
+cleanup_remote_history
 
 cached_env_is_healthy() {
   if [[ ! -x "${REMOTE_VENV_DIR}/bin/python3" ]]; then
