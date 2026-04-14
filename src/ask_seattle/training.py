@@ -2845,9 +2845,14 @@ def _train_transformer_bundle_for_split(
     per_device_train_batch_size = 8 if not use_cpu else 1
     per_device_eval_batch_size = 16 if not use_cpu else 2
     gradient_accumulation_steps = 1 if not use_cpu else 8
+    allow_long_context = effective_runtime_profile == "cuda"
+    normalized_model_id = str(model_id).lower()
+    if "modernbert-large" in normalized_model_id:
+        total_cuda_memory_gb = _cuda_total_memory_gb(torch)
+        allow_long_context = bool(total_cuda_memory_gb is not None and total_cuda_memory_gb >= 40.0)
     candidate_profiles = _transformer_candidate_profiles(
         model_id,
-        allow_long_context=(effective_runtime_profile == "cuda"),
+        allow_long_context=allow_long_context,
     )
     default_max_length = int(candidate_profiles[0]["max_length"])
     max_length = default_max_length
@@ -4766,6 +4771,19 @@ def _torch_runtime_device(torch_module: Any) -> str:
     if getattr(torch_module.backends, "mps", None) and torch_module.backends.mps.is_available():
         return "mps"
     return "cpu"
+
+
+def _cuda_total_memory_gb(torch_module: Any) -> float | None:
+    if not torch_module.cuda.is_available():
+        return None
+    try:
+        properties = torch_module.cuda.get_device_properties(0)
+    except Exception:
+        return None
+    total_memory = getattr(properties, "total_memory", None)
+    if total_memory is None:
+        return None
+    return float(total_memory) / float(1024**3)
 
 
 def _clear_torch_memory() -> None:
