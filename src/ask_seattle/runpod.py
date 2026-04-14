@@ -289,6 +289,9 @@ def run_command(args: argparse.Namespace) -> int:
         _persist_local_metadata(stage="pod_ready", ssh_endpoint=ready_pod.ssh_endpoint.__dict__)
         run_remote_gpu_smoke(ready_pod.ssh_endpoint)
         ensure_remote_rsync(ready_pod.ssh_endpoint)
+        print_runpod("pruning stale remote artifacts")
+        _persist_local_metadata(stage="pruning_remote_artifacts")
+        cleanup_remote_workspace(config, ready_pod.ssh_endpoint)
         print_runpod("syncing labels to pod")
         _persist_local_metadata(stage="syncing_labels")
         remote_labels_path = sync_labels_to_pod(config, ready_pod.ssh_endpoint, run_id)
@@ -795,6 +798,33 @@ def ensure_remote_rsync(ssh_endpoint: PodSshEndpoint) -> None:
         raise RunPodOrchestrationError("timed out while preparing rsync inside the RunPod pod") from exc
     except subprocess.CalledProcessError as exc:
         raise RunPodOrchestrationError("failed to install or verify rsync inside the RunPod pod") from exc
+
+
+def cleanup_remote_workspace(config: RunPodConfig, ssh_endpoint: PodSshEndpoint) -> None:
+    command = (
+        "set -euo pipefail\n"
+        f"mkdir -p {shlex.quote(config.remote_dir)} {shlex.quote(REMOTE_LABEL_ROOT)} {shlex.quote(REMOTE_LOG_ROOT)}\n"
+        f"rm -rf {shlex.quote(f'{config.remote_dir}/models')} {shlex.quote(f'{config.remote_dir}/data/processed')}\n"
+        f"find {shlex.quote(REMOTE_LOG_ROOT)} -mindepth 1 -maxdepth 1 -type d -exec rm -rf {{}} + || true\n"
+        f"find {shlex.quote(REMOTE_LABEL_ROOT)} -mindepth 1 -maxdepth 1 -type d -exec rm -rf {{}} + || true\n"
+    )
+    try:
+        _run_subprocess(
+            (
+                "ssh",
+                "-p",
+                str(ssh_endpoint.port),
+                "-o",
+                "StrictHostKeyChecking=no",
+                f"{ssh_endpoint.user}@{ssh_endpoint.host}",
+                f"bash -lc {shlex.quote(command)}",
+            ),
+            timeout=600,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RunPodOrchestrationError("timed out while pruning stale artifacts on the RunPod volume") from exc
+    except subprocess.CalledProcessError as exc:
+        raise RunPodOrchestrationError("failed to prune stale artifacts on the RunPod volume") from exc
 
 
 def sync_labels_to_pod(config: RunPodConfig, ssh_endpoint: PodSshEndpoint, run_id: str) -> str:
