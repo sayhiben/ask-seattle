@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.8
+// @version      0.1.10
 // @description  Adds auto-checking, skip, re-check, binary labeling, and side-by-side model checks for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
@@ -319,6 +319,7 @@
   function setEvaluationResultsPending(message) {
     const container = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations`);
     if (!container) return;
+    updateEvaluationTitle([]);
 
     const row = document.createElement('div');
     row.textContent = message;
@@ -337,6 +338,17 @@
     }));
   }
 
+  function updateEvaluationTitle(entries) {
+    const title = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations-title`);
+    if (!title) return;
+    const total = Array.isArray(entries) ? entries.length : 0;
+    if (!total) {
+      title.textContent = 'Model checks';
+      return;
+    }
+    title.textContent = total > 6 ? `Model checks (${total}, scroll for more)` : `Model checks (${total})`;
+  }
+
   function comparisonStatusText(baseStatusText, completed, total) {
     if (!total || completed >= total) return baseStatusText;
     return `${baseStatusText} | model checks ${completed}/${total}`;
@@ -345,6 +357,7 @@
   function renderEvaluationResults(entries) {
     const container = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations`);
     if (!container) return;
+    updateEvaluationTitle(entries);
     container.replaceChildren();
 
     if (!entries || entries.length === 0) {
@@ -730,6 +743,8 @@
     panel.style.boxShadow = '0 2px 10px rgba(0, 0, 0, 0.2)';
     panel.style.fontFamily = 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
     panel.style.fontSize = '13px';
+    panel.style.maxHeight = 'calc(100vh - 112px)';
+    panel.style.overflow = 'hidden';
 
     const title = document.createElement('strong');
     title.textContent = 'Ask Seattle';
@@ -776,6 +791,7 @@
     verdict.style.fontWeight = '600';
 
     const evaluationsTitle = document.createElement('div');
+    evaluationsTitle.className = 'ask-seattle-evaluations-title';
     evaluationsTitle.textContent = 'Model checks';
     evaluationsTitle.style.fontWeight = '600';
 
@@ -784,6 +800,10 @@
     evaluations.style.display = 'grid';
     evaluations.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
     evaluations.style.gap = '6px';
+    evaluations.style.maxHeight = '50vh';
+    evaluations.style.overflowY = 'auto';
+    evaluations.style.paddingRight = '2px';
+    evaluations.style.alignContent = 'start';
 
     const queueStatus = document.createElement('div');
     queueStatus.className = 'ask-seattle-queue';

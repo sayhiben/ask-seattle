@@ -153,11 +153,14 @@ The current repository targets are:
 - `make retrain`
 - `make benchmark`
 - `make benchmark-variants`
+- `make benchmark-seed-sweep`
 - `make benchmark-suite`
 
 `make retrain` now retrains the operational TF-IDF model plus all nine suite models without held-out benchmarking.
 
 `make benchmark` and `make benchmark-suite` are the same benchmark-only step.
+
+`make benchmark-seed-sweep` retrains and benchmarks only the selected top neural models across multiple deterministic split seeds.
 
 The GPU most strongly benefits:
 
@@ -174,6 +177,7 @@ By default the helper pulls the target artifact directory back after the run:
 - `retrain` -> `models/real-labels-precision-refresh/`
 - `benchmark` -> `models/benchmark-suite/`
 - `benchmark-variants` -> `models/benchmark-variants/`
+- `benchmark-seed-sweep` -> `models/benchmark-suite/`
 - `benchmark-suite` -> `models/benchmark-suite/`
 
 If you want to leave the results on the remote machine only:

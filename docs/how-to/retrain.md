@@ -105,6 +105,25 @@ Use this when you want to compare:
 
 All variants run on the exact same split.
 
+## Run A Selected-Model Seed Sweep
+
+```bash
+make benchmark-seed-sweep EVAL_SUBREDDIT=seattle
+```
+
+This is the stability pass for the top neural candidates. It retrains and benchmarks the selected comparison models across multiple deterministic split seeds and writes:
+
+- `models/benchmark-suite/seed_sweeps/seed_sweep_summary.json`
+
+By default it evaluates:
+
+- `transformer_modernbert_base`
+- `transformer_neobert`
+- `transformer_modernbert_large`
+- `causal_lm_qwen3_1_7b_lora`
+
+Use it before promoting a model family change based on one benchmark run.
+
 ## Compare The Full Nine-Model Suite
 
 Install the optional model dependencies first:
@@ -171,11 +190,14 @@ Important implementation details:
 - every family consumes the same persisted `suite_input.json` manifest
 - rerunning `make retrain` resumes from any compatible completed per-model artifact already on disk for that manifest
 - `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
+- `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
 - the semantic family now encodes title and body separately, concatenates those embeddings with a metadata one-hot block, and then fits the calibrated logistic-regression head
-- the encoder transformer family uses title/body pair encoding, compares plain vs balanced cross-entropy, and keeps the better candidate by calibration PR-AUC with early stopping
+- the Jina v5 semantic path now uses a Jina-specific `Document:` component formatting mode instead of the generic semantic prompt wrapper
+- the encoder transformer family uses title/body pair encoding, compares plain vs balanced cross-entropy, keeps the better candidate by calibration PR-AUC with early stopping, and now runs a small config grid for NeoBERT and ModernBERT-large
 - the decoder-LLM family scores the two candidate label continuations directly instead of free-form generation
 - the decoder-LLM prompt now uses a compact contextual template with only the structured fields that materially helped on current data, so prompt-template changes still force that family to retrain instead of silently reusing an older summary
 - on Apple Silicon, the decoder-LLM family currently bypasses MPS and uses the CPU fallback profile by default because the Qwen3 fine-tuning path is not stable on the current MPS stack
+- CUDA neural training now enables TF32 matmul when available to reduce remote runtime cost
 
 ## What Training Does
 

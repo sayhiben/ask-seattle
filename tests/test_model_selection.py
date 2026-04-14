@@ -93,6 +93,14 @@ def test_semantic_runtime_component_texts_support_document_prefix() -> None:
     assert _semantic_runtime_component_texts(bundle, rows, component="body") == ["Document: Need Capitol Hill advice"]
 
 
+def test_semantic_runtime_component_texts_support_jina_document_component() -> None:
+    bundle = {"prompt_mode": "jina_document_component", "prompt_prefix": "Document:"}
+    rows = [{"title": "Where to park?", "body_raw": "Need Capitol Hill advice"}]
+
+    assert _semantic_runtime_component_texts(bundle, rows, component="title") == ["Document: Title: Where to park?"]
+    assert _semantic_runtime_component_texts(bundle, rows, component="body") == ["Document: Body: Need Capitol Hill advice"]
+
+
 def test_split_labeled_posts_can_use_explicit_time_strategy() -> None:
     posts = [
         LabeledPost(

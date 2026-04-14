@@ -8,9 +8,12 @@ from pathlib import Path
 
 from ask_seattle.model import classify_post, load_model
 from ask_seattle.training import (
+    DEFAULT_BENCHMARK_SEED_MODELS,
+    DEFAULT_BENCHMARK_SEED_SWEEP,
     DEFAULT_SPLIT_SEED,
     DEFAULT_SPLIT_STRATEGY,
     benchmark_model_suite_from_labels,
+    benchmark_seed_sweep_from_labels,
     benchmark_model_variants_from_labels,
     retrain_all_from_labels,
     train_model_bundle_from_labels,
@@ -172,6 +175,76 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmark_suite.set_defaults(func=benchmark_suite_command)
 
+    benchmark_seed_sweep = subparsers.add_parser(
+        "benchmark-seed-sweep",
+        help="Retrain and benchmark selected suite models across multiple deterministic split seeds",
+    )
+    benchmark_seed_sweep.add_argument("--data", required=True, type=Path, help="Path to reviewed .jsonl label data")
+    benchmark_seed_sweep.add_argument("--output-dir", required=True, type=Path, help="Where benchmark artifacts go")
+    benchmark_seed_sweep.add_argument(
+        "--eval-subreddit",
+        help="If set, train on mixed reviewed data but restrict calibration/test evaluation to this subreddit",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--benchmark-seeds",
+        type=_parse_int_csv,
+        default=DEFAULT_BENCHMARK_SEED_SWEEP,
+        help="Comma-separated split seeds for repeated selected-model evaluation",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--benchmark-seed-models",
+        type=_parse_csv,
+        default=DEFAULT_BENCHMARK_SEED_MODELS,
+        help="Comma-separated suite model names to include in the seed sweep",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--split-strategy",
+        choices=["random", "time"],
+        default=DEFAULT_SPLIT_STRATEGY,
+        help="How to split reviewed labels into train, calibration, and test sets",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--semantic-model-id",
+        default="sentence-transformers/all-MiniLM-L6-v2",
+        help="Primary sentence embedding model for the semantic benchmark path",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--semantic-secondary-model-id",
+        default="Qwen/Qwen3-Embedding-0.6B",
+        help="Secondary embedding model for the semantic benchmark path",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--semantic-tertiary-model-id",
+        default="jinaai/jina-embeddings-v5-text-small-classification",
+        help="Tertiary embedding model for the semantic benchmark path",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--transformer-model-id",
+        default="microsoft/deberta-v3-small",
+        help="Primary transformer checkpoint for the sequence classification benchmark path",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--transformer-secondary-model-id",
+        default="answerdotai/ModernBERT-base",
+        help="Secondary transformer checkpoint for the sequence classification benchmark path",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--transformer-tertiary-model-id",
+        default="chandar-lab/NeoBERT",
+        help="Tertiary transformer checkpoint for the sequence classification benchmark path",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--transformer-quaternary-model-id",
+        default="answerdotai/ModernBERT-large",
+        help="Quaternary transformer checkpoint for the sequence classification benchmark path",
+    )
+    benchmark_seed_sweep.add_argument(
+        "--causal-lm-model-id",
+        default="Qwen/Qwen3-1.7B",
+        help="Decoder LLM checkpoint for the causal language model benchmark path",
+    )
+    benchmark_seed_sweep.set_defaults(func=benchmark_seed_sweep_command)
+
     check = subparsers.add_parser("check", help="Classify a single post")
     add_inference_args(check)
     check.set_defaults(func=check_command)
@@ -246,6 +319,14 @@ def add_split_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _parse_csv(value: str) -> tuple[str, ...]:
+    return tuple(part.strip() for part in str(value).split(",") if part.strip())
+
+
+def _parse_int_csv(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in _parse_csv(value))
+
+
 def _configure_cli_logging(args: argparse.Namespace) -> None:
     command = getattr(getattr(args, "func", None), "__name__", "")
     if command == "serve_bridge_command":
@@ -318,6 +399,27 @@ def benchmark_suite_command(args: argparse.Namespace) -> int:
         transformer_quaternary_model_id=args.transformer_quaternary_model_id,
         causal_lm_model_id=args.causal_lm_model_id,
         notes=args.notes,
+    )
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
+def benchmark_seed_sweep_command(args: argparse.Namespace) -> int:
+    summary = benchmark_seed_sweep_from_labels(
+        args.data,
+        args.output_dir,
+        split_strategy=args.split_strategy,
+        split_seeds=tuple(args.benchmark_seeds),
+        model_names=tuple(args.benchmark_seed_models),
+        evaluation_subreddit=args.eval_subreddit,
+        semantic_model_id=args.semantic_model_id,
+        semantic_secondary_model_id=args.semantic_secondary_model_id,
+        semantic_tertiary_model_id=args.semantic_tertiary_model_id,
+        transformer_model_id=args.transformer_model_id,
+        transformer_secondary_model_id=args.transformer_secondary_model_id,
+        transformer_tertiary_model_id=args.transformer_tertiary_model_id,
+        transformer_quaternary_model_id=args.transformer_quaternary_model_id,
+        causal_lm_model_id=args.causal_lm_model_id,
     )
     print(json.dumps(summary, indent=2))
     return 0

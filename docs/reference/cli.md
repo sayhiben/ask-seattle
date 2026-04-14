@@ -23,6 +23,7 @@ The normal operator entry points are still the repository make targets:
 - `make retrain`
 - `make benchmark`
 - `make benchmark-variants`
+- `make benchmark-seed-sweep`
 - `make benchmark-suite`
 - `make bridge`
 
@@ -46,6 +47,7 @@ make secret-scan
 make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark-variants REMOTE=runpod EVAL_SUBREDDIT=seattle
+make benchmark-seed-sweep REMOTE=runpod EVAL_SUBREDDIT=seattle
 make retrain REMOTE=runpod RUNPOD_FALLBACK_GPU_TYPES="NVIDIA L4,NVIDIA RTX A4000" EVAL_SUBREDDIT=seattle
 make runpod-cleanup
 make retrain REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
@@ -322,6 +324,42 @@ This command requires the optional model dependencies:
 ```bash
 python -m pip install -e ".[dev,models]"
 ```
+
+## `ask-seattle benchmark-seed-sweep`
+
+Retrain and benchmark selected suite models across multiple deterministic split seeds.
+
+```bash
+ask-seattle benchmark-seed-sweep --data PATH --output-dir PATH [--split-strategy random|time] [--eval-subreddit seattle] [--benchmark-seeds 13,21,34] [--benchmark-seed-models transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--semantic-tertiary-model-id jinaai/jina-embeddings-v5-text-small-classification] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--causal-lm-model-id Qwen/Qwen3-1.7B]
+```
+
+Arguments:
+
+- `--data`
+  - required
+  - path to reviewed `.jsonl` label data
+- `--output-dir`
+  - required
+  - directory where the seed-sweep artifacts are written
+- `--eval-subreddit`
+  - optional
+  - when set, each seeded run restricts calibration and test evaluation to the named subreddit
+- `--split-strategy`
+  - optional
+  - defaults to `random`
+- `--benchmark-seeds`
+  - optional
+  - defaults to `13,21,34`
+  - comma-separated deterministic split seeds
+- `--benchmark-seed-models`
+  - optional
+  - defaults to `transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora`
+  - comma-separated suite model names to retrain and benchmark across those seeds
+
+Writes:
+
+- one per-seed subdirectory under `seed_sweeps/seed_<seed>/`
+- `seed_sweeps/seed_sweep_summary.json`
 
 ## `ask-seattle check`
 

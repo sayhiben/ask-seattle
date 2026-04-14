@@ -144,6 +144,25 @@ The current comparison set is:
   - `metadata_weight`
   - `min_df`
 
+### Run A Selected-Model Seed Sweep
+
+```bash
+make benchmark-seed-sweep EVAL_SUBREDDIT=seattle
+```
+
+This retrains and benchmarks the current top neural comparison models across multiple deterministic split seeds without changing the normal `make retrain` / `make benchmark` flow.
+
+By default it evaluates:
+
+- `transformer_modernbert_base`
+- `transformer_neobert`
+- `transformer_modernbert_large`
+- `causal_lm_qwen3_1_7b_lora`
+
+and writes:
+
+- `models/benchmark-suite/seed_sweeps/seed_sweep_summary.json`
+
 ### Compare The Full Benchmark Suite
 
 ```bash
@@ -251,7 +270,7 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 ## Core Behavior
 
 - the userscript can auto-check, re-check, skip through a seeded queue, and save binary labels
-- when benchmark-suite artifacts exist, the userscript also shows nine side-by-side model result cards for the current post
+- when benchmark-suite artifacts exist, the userscript also shows nine side-by-side model result cards for the current post in a scrollable `Model checks` section, with the loaded comparison-model count in the section title
 - the userscript now gets the main bridge verdict first, then fills in each comparison card as that model finishes instead of waiting for all nine models before updating the panel
 - the bridge only accepts browser-originated text and local file paths
 - `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs a deterministic random train, calibration, and test split by default
@@ -271,9 +290,12 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - rerunning `retrain-all` now resumes from compatible completed model artifacts for the same manifest, so a later failure does not force the whole suite to start over
 - benchmark summaries are written separately from training-only suite summaries, so retrain and benchmark are now two explicit steps
 - each benchmark run now records notes, a human-readable benchmark representation, and an immutable history snapshot so you can compare results over time
+- the benchmark suite also supports a selected-model multi-seed sweep, so you can compare mean/std for the top neural candidates without widening the default retrain/benchmark contract
 - the benchmark summaries now include threshold-independent comparison metrics such as `pr_auc`, `auto_recall_at_precision_95`, and `review_recall_at_precision_75`
+- training and benchmark summaries now record the input-data fingerprint plus runtime package metadata, so local-vs-remote environment drift is easier to spot
 - slice metrics now include support counts and `support_status`, so low-support cohorts like `sparse_media` can stay observational instead of steering recommendations
 - the semantic family now includes a tuned MiniLM path, a Qwen3 embedding path, and a Jina v5 text-small-classification path, all using split title/body embeddings plus a metadata one-hot block before the calibrated logistic-regression head
+- the Jina v5 classification path now uses a Jina-specific `Document:` component formatting pass instead of sharing the generic semantic prompt modes
 - the transformer family now includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
 - the decoder-LLM family uses Qwen3-1.7B with local LoRA fine-tuning and two-label continuation scoring
 - the decoder-LLM prompt now uses a compact contextual English template with title, body, post type, content domain, question-mark state, low-text state, and crosspost state
@@ -281,7 +303,8 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - on Apple Silicon, the transformer-backed semantic embedding benchmarks currently bypass MPS and use CPU during training because the current Metal backend is not stable for those model families
 - on Apple Silicon, the bridge also keeps the transformer-backed semantic comparison models off MPS during `/check`, so those comparisons stay stable even if they are slower
 - the bridge now returns the primary `/check` result without waiting for comparison models unless explicitly asked to include them, and the userscript loads comparison cards individually through `/check-comparison`
-- the encoder transformer benchmarks now compare plain vs balanced cross-entropy, stop early on calibration PR-AUC, and keep the better candidate
+- CUDA neural training now enables TF32 matmul when available to reduce remote GPU runtime cost
+- the encoder transformer benchmarks now compare plain vs balanced cross-entropy, stop early on calibration PR-AUC, keep the better candidate, and run a small config grid for NeoBERT and ModernBERT-large before final selection
 - all benchmark summaries now include the same operating metrics for:
   - the strict `high` bucket
   - the broader `low-or-higher` review queue
@@ -315,6 +338,7 @@ make secret-scan
 make retrain
 make benchmark
 make benchmark-variants EVAL_SUBREDDIT=seattle
+make benchmark-seed-sweep EVAL_SUBREDDIT=seattle
 make benchmark-suite EVAL_SUBREDDIT=seattle
 make bridge
 make bridge RETRAIN_EVERY=25

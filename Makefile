@@ -1,4 +1,4 @@
-.PHONY: help runpod-bootstrap runpod-cleanup install-git-hooks secret-scan retrain benchmark benchmark-variants benchmark-suite bridge
+.PHONY: help runpod-bootstrap runpod-cleanup install-git-hooks secret-scan retrain benchmark benchmark-variants benchmark-seed-sweep benchmark-suite bridge
 
 ASK_SEATTLE ?= PYTHONPATH=src python3 -m ask_seattle.cli
 RUNPOD_TRAIN ?= PYTHONPATH=src python3 scripts/runpod_train.py
@@ -24,6 +24,8 @@ TRANSFORMER_QUATERNARY_MODEL_ID ?= answerdotai/ModernBERT-large
 CAUSAL_LM_MODEL_ID ?= Qwen/Qwen3-1.7B
 BENCHMARK_NOTES ?=
 BENCHMARK_NOTES_ARG := $(if $(BENCHMARK_NOTES), --notes '$(BENCHMARK_NOTES)')
+BENCHMARK_SEEDS ?= 13,21,34
+BENCHMARK_SEED_MODELS ?= transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora
 LOG_LEVEL ?= INFO
 RETRAIN_EVERY ?= 0
 REMOTE ?= local
@@ -79,6 +81,8 @@ RUNPOD_COMMON_ARGS := \
 	--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
 	--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
 	--causal-lm-model-id $(CAUSAL_LM_MODEL_ID) \
+	--benchmark-seeds '$(BENCHMARK_SEEDS)' \
+	--benchmark-seed-models '$(BENCHMARK_SEED_MODELS)' \
 	--remote-run-timeout-seconds $(REMOTE_RUN_TIMEOUT) \
 	--pod-ready-timeout-seconds $(RUNPOD_READY_TIMEOUT)
 ifeq ($(filter 1 true yes,$(RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE)),)
@@ -111,7 +115,9 @@ WSL_COMMON_ARGS := \
 	--make-arg TRANSFORMER_SECONDARY_MODEL_ID='$(TRANSFORMER_SECONDARY_MODEL_ID)' \
 	--make-arg TRANSFORMER_TERTIARY_MODEL_ID='$(TRANSFORMER_TERTIARY_MODEL_ID)' \
 	--make-arg TRANSFORMER_QUATERNARY_MODEL_ID='$(TRANSFORMER_QUATERNARY_MODEL_ID)' \
-	--make-arg CAUSAL_LM_MODEL_ID='$(CAUSAL_LM_MODEL_ID)'
+	--make-arg CAUSAL_LM_MODEL_ID='$(CAUSAL_LM_MODEL_ID)' \
+	--make-arg BENCHMARK_SEEDS='$(BENCHMARK_SEEDS)' \
+	--make-arg BENCHMARK_SEED_MODELS='$(BENCHMARK_SEED_MODELS)'
 WSL_NOTES_ARG := $(if $(BENCHMARK_NOTES), --make-arg BENCHMARK_NOTES='$(BENCHMARK_NOTES)')
 
 help:
@@ -123,6 +129,7 @@ help:
 		'make retrain           Retrain the operational TF-IDF model and all suite models without benchmarking' \
 		'make benchmark         Benchmark trained suite models only; warn and skip any untrained models' \
 		'make benchmark-variants Compare lightweight TF-IDF variants on the same split' \
+		'make benchmark-seed-sweep Retrain and benchmark selected suite models across multiple split seeds' \
 		'make benchmark-suite   Alias for make benchmark' \
 		'make bridge            Start the local Tampermonkey bridge with the current model and benchmark comparisons when available' \
 		'' \
@@ -161,6 +168,9 @@ benchmark:
 
 benchmark-variants:
 	$(RUNPOD_TRAIN) run --target benchmark-variants $(RUNPOD_COMMON_ARGS) $(RUNPOD_EVICT_ARG)$(RUNPOD_EVAL_ARG)
+
+benchmark-seed-sweep:
+	$(RUNPOD_TRAIN) run --target benchmark-seed-sweep $(RUNPOD_COMMON_ARGS) $(RUNPOD_EVICT_ARG)$(RUNPOD_EVAL_ARG)
 else ifeq ($(REMOTE),wsl)
 retrain:
 	$(WSL_TRAIN) $(WSL_COMMON_ARGS) $(WSL_EVAL_ARG) --target retrain
@@ -170,6 +180,9 @@ benchmark:
 
 benchmark-variants:
 	$(WSL_TRAIN) $(WSL_COMMON_ARGS) $(WSL_EVAL_ARG) --target benchmark-variants
+
+benchmark-seed-sweep:
+	$(WSL_TRAIN) $(WSL_COMMON_ARGS) $(WSL_EVAL_ARG) --target benchmark-seed-sweep
 else
 retrain:
 	$(ASK_SEATTLE) retrain-all \
@@ -204,6 +217,22 @@ benchmark-variants:
 	$(ASK_SEATTLE) benchmark-variants \
 		--data $(LABELS) \
 		--output-dir $(BENCHMARK_VARIANTS_DIR) $(SPLIT_ARGS)$(EVAL_SUBREDDIT_ARG)
+
+benchmark-seed-sweep:
+	$(ASK_SEATTLE) benchmark-seed-sweep \
+		--data $(LABELS) \
+		--output-dir $(BENCHMARK_SUITE_DIR) \
+		--benchmark-seeds '$(BENCHMARK_SEEDS)' \
+		--benchmark-seed-models '$(BENCHMARK_SEED_MODELS)' \
+		--split-strategy $(SPLIT_STRATEGY) \
+		--semantic-model-id $(SEMANTIC_MODEL_ID) \
+		--semantic-secondary-model-id $(SEMANTIC_SECONDARY_MODEL_ID) \
+		--semantic-tertiary-model-id $(SEMANTIC_TERTIARY_MODEL_ID) \
+		--transformer-model-id $(TRANSFORMER_MODEL_ID) \
+		--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
+		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
+		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
+		--causal-lm-model-id $(CAUSAL_LM_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
 endif
 
 benchmark-suite:

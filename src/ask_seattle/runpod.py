@@ -122,6 +122,13 @@ class RunPodConfig:
     transformer_model_id: str
     transformer_secondary_model_id: str
     causal_lm_model_id: str
+    benchmark_seeds: tuple[int, ...] = (13, 21, 34)
+    benchmark_seed_models: tuple[str, ...] = (
+        "transformer_modernbert_base",
+        "transformer_neobert",
+        "transformer_modernbert_large",
+        "causal_lm_qwen3_1_7b_lora",
+    )
     semantic_tertiary_model_id: str = "jinaai/jina-embeddings-v5-text-small-classification"
     transformer_tertiary_model_id: str = "chandar-lab/NeoBERT"
     transformer_quaternary_model_id: str = "answerdotai/ModernBERT-large"
@@ -359,6 +366,11 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
     parser.add_argument("--split-seed", type=int, default=13)
     parser.add_argument("--eval-subreddit")
     parser.add_argument("--benchmark-notes")
+    parser.add_argument("--benchmark-seeds", default="13,21,34")
+    parser.add_argument(
+        "--benchmark-seed-models",
+        default="transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora",
+    )
     parser.add_argument("--semantic-model-id", default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--semantic-secondary-model-id", default="Qwen/Qwen3-Embedding-0.6B")
     parser.add_argument("--semantic-tertiary-model-id", default="jinaai/jina-embeddings-v5-text-small-classification")
@@ -382,7 +394,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
         parser.add_argument(
             "--target",
             required=True,
-            choices=("retrain", "benchmark", "benchmark-variants"),
+            choices=("retrain", "benchmark", "benchmark-variants", "benchmark-seed-sweep"),
         )
 
 
@@ -409,6 +421,8 @@ def config_from_args(args: argparse.Namespace) -> RunPodConfig:
         split_seed=int(args.split_seed),
         evaluation_subreddit=str(args.eval_subreddit) if args.eval_subreddit else None,
         benchmark_notes=str(args.benchmark_notes) if args.benchmark_notes else None,
+        benchmark_seeds=tuple(int(item) for item in _comma_list(args.benchmark_seeds)),
+        benchmark_seed_models=_comma_list(args.benchmark_seed_models),
         semantic_model_id=str(args.semantic_model_id),
         semantic_secondary_model_id=str(args.semantic_secondary_model_id),
         semantic_tertiary_model_id=str(args.semantic_tertiary_model_id),
@@ -1017,6 +1031,8 @@ def artifact_dirs_for_target(target: str) -> tuple[str, ...]:
         return ("models/benchmark-suite",)
     if target == "benchmark-variants":
         return ("models/benchmark-variants",)
+    if target == "benchmark-seed-sweep":
+        return ("models/benchmark-suite",)
     raise RunPodOrchestrationError(f"unsupported RunPod target: {target}")
 
 
@@ -1025,6 +1041,8 @@ def build_remote_make_args(config: RunPodConfig, *, target: str, remote_labels_p
         f"LABELS={remote_labels_path}",
         f"SPLIT_STRATEGY={config.split_strategy}",
         f"SPLIT_SEED={config.split_seed}",
+        f"BENCHMARK_SEEDS={','.join(str(seed) for seed in config.benchmark_seeds)}",
+        f"BENCHMARK_SEED_MODELS={','.join(config.benchmark_seed_models)}",
         f"SEMANTIC_MODEL_ID={config.semantic_model_id}",
         f"SEMANTIC_SECONDARY_MODEL_ID={config.semantic_secondary_model_id}",
         f"SEMANTIC_TERTIARY_MODEL_ID={config.semantic_tertiary_model_id}",

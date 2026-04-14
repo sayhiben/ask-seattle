@@ -30,9 +30,13 @@ The comparison stack currently includes:
 - ModernBERT-large encoder classifier
 - Qwen3-1.7B LoRA decoder classifier
 
-The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They now compare plain versus balanced cross-entropy, use calibration PR-AUC for early stopping, and keep the better candidate before test evaluation.
+The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They now compare plain versus balanced cross-entropy, use calibration PR-AUC for early stopping, and keep the better candidate before test evaluation. NeoBERT and ModernBERT-large also run a small learning-rate / weight-decay tuning grid before the final candidate is selected.
+
+The semantic Jina v5 classification path now uses a Jina-specific `Document:` component formatting mode rather than sharing the same generic prompt wrapper as the other embedding models.
 
 The decoder-LLM benchmark uses the same title/body/metadata content, but framed as a fixed binary prompt. The current prompt is a compact contextual English instruction that exposes only the fields that materially helped on current data: title, raw body, post type, content domain, question-mark presence, low-text state, and crosspost state. It is trained to continue with exactly `askseattle` or `not_askseattle`, then scored by comparing those two label continuations directly.
+
+On CUDA runs, the neural training paths now also enable TF32 float32 matmul. That is a speed optimization for Ampere-and-newer NVIDIA GPUs; it lowers remote wall-clock cost without changing the product-level threshold policy.
 
 ## How The Model Sees A Post
 

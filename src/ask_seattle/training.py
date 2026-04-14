@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import importlib.metadata
 import json
 import logging
+import platform
 import subprocess
 import time
 from collections import Counter
@@ -69,6 +71,13 @@ DEFAULT_TRANSFORMER_QUATERNARY_MODEL_ID = "answerdotai/ModernBERT-large"
 DEFAULT_CAUSAL_LM_MODEL_ID = "Qwen/Qwen3-1.7B"
 DEFAULT_MAX_SLICE_POSITIVE_WEIGHT = 2.0
 DEFAULT_TFIDF_REVIEW_PRECISION_TARGET = 0.70
+DEFAULT_BENCHMARK_SEED_SWEEP = (13, 21, 34)
+DEFAULT_BENCHMARK_SEED_MODELS = (
+    "transformer_modernbert_base",
+    "transformer_neobert",
+    "transformer_modernbert_large",
+    "causal_lm_qwen3_1_7b_lora",
+)
 SPARSE_MEDIA_ACTIVE_TRAIN_POSITIVES = 10
 SPARSE_MEDIA_ACTIVE_TEST_POSITIVES = 5
 MPS_PROACTIVE_AVAILABLE_MEMORY_FLOOR_BYTES = 8 * 1024**3
@@ -141,6 +150,68 @@ class OptionalModelDependencyError(RuntimeError):
 
 class MPSFallbackRequested(RuntimeError):
     pass
+
+
+def _package_version(name: str) -> str | None:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _runtime_environment_metadata() -> dict[str, Any]:
+    return {
+        "python_version": platform.python_version(),
+        "python_implementation": platform.python_implementation(),
+        "platform": platform.platform(),
+        "packages": {
+            "accelerate": _package_version("accelerate"),
+            "datasets": _package_version("datasets"),
+            "peft": _package_version("peft"),
+            "scikit_learn": _package_version("scikit-learn"),
+            "sentence_transformers": _package_version("sentence-transformers"),
+            "torch": _package_version("torch"),
+            "transformers": _package_version("transformers"),
+            "trl": _package_version("trl"),
+        },
+    }
+
+
+def _input_data_metadata(input_path: str | Path) -> dict[str, Any]:
+    resolved = Path(input_path).resolve()
+    return {
+        "path": str(resolved),
+        "fingerprint": _file_sha256(resolved),
+    }
+
+
+def _enable_cuda_tf32(torch_module: Any) -> dict[str, Any]:
+    summary = {
+        "device": _torch_runtime_device(torch_module),
+        "float32_matmul_precision": None,
+        "matmul_allow_tf32": None,
+        "cudnn_allow_tf32": None,
+        "enabled": False,
+    }
+    if summary["device"] != "cuda":
+        return summary
+    if hasattr(torch_module, "set_float32_matmul_precision"):
+        torch_module.set_float32_matmul_precision("high")
+        summary["float32_matmul_precision"] = "high"
+    if hasattr(torch_module.backends, "cuda") and hasattr(torch_module.backends.cuda, "matmul"):
+        torch_module.backends.cuda.matmul.allow_tf32 = True
+        summary["matmul_allow_tf32"] = bool(torch_module.backends.cuda.matmul.allow_tf32)
+    if hasattr(torch_module.backends, "cudnn"):
+        torch_module.backends.cudnn.allow_tf32 = True
+        summary["cudnn_allow_tf32"] = bool(torch_module.backends.cudnn.allow_tf32)
+    summary["enabled"] = True
+    LOGGER.info(
+        "enabled cuda tf32 float32_matmul_precision=%s matmul_allow_tf32=%s cudnn_allow_tf32=%s",
+        summary["float32_matmul_precision"] or "unchanged",
+        summary["matmul_allow_tf32"],
+        summary["cudnn_allow_tf32"],
+    )
+    return summary
 
 
 def _portable_artifact_reference(path: Path, *, base_dir: Path) -> str:
@@ -216,6 +287,7 @@ def train_model_bundle_from_labels(
     evaluate_on_test: bool = True,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
+    input_data = _input_data_metadata(input_path)
     LOGGER.info(
         "starting tfidf retrain input=%s output_dir=%s split_strategy=%s split_seed=%s evaluation_subreddit=%s",
         str(input_path),
@@ -239,6 +311,10 @@ def train_model_bundle_from_labels(
         prepared_data_summary=prepared_data_summary,
         evaluate_on_test=evaluate_on_test,
     )
+    summary["input_data"] = input_data
+    summary_path = Path(output_dir) / "training_summary.json"
+    if summary_path.exists():
+        summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     LOGGER.info(
         "completed tfidf retrain artifact=%s elapsed=%s",
         summary["artifact_path"],
@@ -256,6 +332,7 @@ def benchmark_model_variants_from_labels(
     evaluation_subreddit: str | None = None,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
+    input_data = _input_data_metadata(input_path)
     LOGGER.info(
         "starting variant benchmark input=%s output_dir=%s split_strategy=%s split_seed=%s evaluation_subreddit=%s",
         str(input_path),
@@ -379,6 +456,8 @@ def benchmark_model_variants_from_labels(
     aggregate = {
         "version": __version__,
         "benchmark_output_dir": str(benchmark_dir),
+        "input_data": input_data,
+        "runtime_environment": _runtime_environment_metadata(),
         "evaluation_subreddit": split.evaluation_subreddit,
         "production_gate": _production_gate_summary(),
         "prepared_data": prepared_data_summary,
@@ -423,6 +502,7 @@ def retrain_model_suite_from_labels(
     causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
+    input_data = _input_data_metadata(input_path)
     LOGGER.info(
         "starting suite retrain input=%s output_dir=%s split_strategy=%s split_seed=%s evaluation_subreddit=%s",
         str(input_path),
@@ -529,6 +609,8 @@ def retrain_model_suite_from_labels(
         "benchmark_output_dir": str(benchmark_dir),
         "suite_input_path": str(suite_input_path),
         "evaluation_subreddit": split.evaluation_subreddit,
+        "input_data": input_data,
+        "runtime_environment": _runtime_environment_metadata(),
         "prepared_data": prepared_data_summary,
         "split": _split_summary(split),
         "models": results,
@@ -563,6 +645,7 @@ def retrain_all_from_labels(
     causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
+    input_data = _input_data_metadata(input_path)
     LOGGER.info(
         "starting full retrain input=%s operational_output_dir=%s benchmark_output_dir=%s split_strategy=%s split_seed=%s evaluation_subreddit=%s",
         str(input_path),
@@ -598,6 +681,8 @@ def retrain_all_from_labels(
     summary = {
         "version": __version__,
         "input_path": str(input_path),
+        "input_data": input_data,
+        "runtime_environment": _runtime_environment_metadata(),
         "operational_output_dir": str(operational_output_dir),
         "benchmark_output_dir": str(benchmark_output_dir),
         "split_strategy": split_strategy,
@@ -628,6 +713,7 @@ def benchmark_model_suite_from_labels(
     notes: str | None = None,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
+    input_data = _input_data_metadata(input_path)
     LOGGER.info(
         "starting benchmark suite evaluation input=%s output_dir=%s split_strategy=%s split_seed=%s evaluation_subreddit=%s",
         str(input_path),
@@ -738,11 +824,14 @@ def benchmark_model_suite_from_labels(
         "benchmark_output_dir": str(benchmark_dir),
         "suite_input_path": str(suite_input_path),
         "evaluation_subreddit": split.evaluation_subreddit,
+        "input_data": input_data,
+        "runtime_environment": _runtime_environment_metadata(),
         "benchmark_run": _benchmark_run_metadata(
             benchmark_dir=benchmark_dir,
             suite_input_path=suite_input_path,
             split=split,
             prepared_data_summary=prepared_data_summary,
+            input_data=input_data,
             notes=notes,
         ),
         "production_gate": _production_gate_summary(),
@@ -761,6 +850,130 @@ def benchmark_model_suite_from_labels(
         _format_elapsed(time.perf_counter() - started_at),
     )
     _archive_benchmark_suite_summary(benchmark_dir=benchmark_dir, aggregate=aggregate)
+    return aggregate
+
+
+def benchmark_seed_sweep_from_labels(
+    input_path: str | Path,
+    output_dir: str | Path,
+    *,
+    split_strategy: str = DEFAULT_SPLIT_STRATEGY,
+    split_seeds: tuple[int, ...] = DEFAULT_BENCHMARK_SEED_SWEEP,
+    evaluation_subreddit: str | None = None,
+    model_names: tuple[str, ...] = DEFAULT_BENCHMARK_SEED_MODELS,
+    semantic_model_id: str = DEFAULT_SEMANTIC_MODEL_ID,
+    semantic_secondary_model_id: str = DEFAULT_SEMANTIC_SECONDARY_MODEL_ID,
+    semantic_tertiary_model_id: str = DEFAULT_SEMANTIC_TERTIARY_MODEL_ID,
+    transformer_model_id: str = DEFAULT_TRANSFORMER_MODEL_ID,
+    transformer_secondary_model_id: str = DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID,
+    transformer_tertiary_model_id: str = DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID,
+    transformer_quaternary_model_id: str = DEFAULT_TRANSFORMER_QUATERNARY_MODEL_ID,
+    causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
+) -> dict[str, Any]:
+    started_at = time.perf_counter()
+    benchmark_dir = Path(output_dir)
+    sweep_dir = benchmark_dir / "seed_sweeps"
+    sweep_dir.mkdir(parents=True, exist_ok=True)
+    posts, prepared_data_summary = prepare_training_posts(input_path)
+    selected_seeds = tuple(dict.fromkeys(int(seed) for seed in split_seeds))
+    selected_model_names = tuple(dict.fromkeys(str(name) for name in model_names))
+    input_data = _input_data_metadata(input_path)
+    specs = _suite_model_specs(
+        semantic_model_id=semantic_model_id,
+        semantic_secondary_model_id=semantic_secondary_model_id,
+        semantic_tertiary_model_id=semantic_tertiary_model_id,
+        transformer_model_id=transformer_model_id,
+        transformer_secondary_model_id=transformer_secondary_model_id,
+        transformer_tertiary_model_id=transformer_tertiary_model_id,
+        transformer_quaternary_model_id=transformer_quaternary_model_id,
+        causal_lm_model_id=causal_lm_model_id,
+    )
+    selected_specs = _select_seed_sweep_specs(specs, model_names=selected_model_names)
+    LOGGER.info(
+        "starting benchmark seed sweep input=%s output_dir=%s split_strategy=%s seeds=%s evaluation_subreddit=%s models=%s",
+        str(input_path),
+        str(output_dir),
+        split_strategy,
+        list(selected_seeds),
+        evaluation_subreddit or "all",
+        list(selected_model_names),
+    )
+    runs: list[dict[str, Any]] = []
+    for seed in selected_seeds:
+        split = split_labeled_posts(
+            posts,
+            calibration_size=DEFAULT_CALIBRATION_SIZE,
+            test_size=DEFAULT_TEST_SIZE,
+            split_strategy=split_strategy,
+            split_seed=seed,
+            evaluation_subreddit=evaluation_subreddit,
+        )
+        seed_result_dir = sweep_dir / f"seed_{seed}"
+        seed_models: list[dict[str, Any]] = []
+        for spec in selected_specs:
+            model_started_at = time.perf_counter()
+            LOGGER.info(
+                "benchmark seed sweep model start seed=%s name=%s family=%s display_name=%s",
+                seed,
+                spec.name,
+                spec.family,
+                spec.display_name,
+            )
+            _clear_torch_memory()
+            try:
+                summary = spec.runner(
+                    split=split,
+                    output_dir=seed_result_dir / spec.name,
+                    prepared_data_summary=prepared_data_summary,
+                    evaluate_on_test=True,
+                    **spec.kwargs,
+                )
+            finally:
+                _clear_torch_memory()
+            seed_models.append(_suite_entry_from_summary(spec, summary, result_source="seed_sweep"))
+            LOGGER.info(
+                "benchmark seed sweep model complete seed=%s name=%s auto_precision=%.3f auto_recall=%.3f review_precision=%.3f review_recall=%.3f elapsed=%s",
+                seed,
+                spec.name,
+                float(summary["operating_metrics"]["auto_band"]["precision"]),
+                float(summary["operating_metrics"]["auto_band"]["recall"]),
+                float(summary["operating_metrics"]["review_queue"]["precision"]),
+                float(summary["operating_metrics"]["review_queue"]["recall"]),
+                _format_elapsed(time.perf_counter() - model_started_at),
+            )
+        runs.append(
+            {
+                "seed": seed,
+                "split": _split_summary(split),
+                "models": seed_models,
+            }
+        )
+    aggregate = {
+        "version": __version__,
+        "benchmark_output_dir": str(benchmark_dir),
+        "output_path": str((sweep_dir / "seed_sweep_summary.json").resolve()),
+        "prepared_data": prepared_data_summary,
+        "input_data": input_data,
+        "runtime_environment": _runtime_environment_metadata(),
+        "selected_models": list(selected_model_names),
+        "split_strategy": split_strategy,
+        "evaluation_subreddit": evaluation_subreddit,
+        "split_seeds": list(selected_seeds),
+        "seed_runs": runs,
+        "model_aggregates": _benchmark_seed_sweep_aggregates(
+            runs,
+            model_names=selected_model_names,
+        ),
+    }
+    (sweep_dir / "seed_sweep_summary.json").write_text(
+        json.dumps(aggregate, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    LOGGER.info(
+        "benchmark seed sweep summary written path=%s elapsed=%s",
+        str(sweep_dir / "seed_sweep_summary.json"),
+        _format_elapsed(time.perf_counter() - started_at),
+    )
     return aggregate
 
 
@@ -882,8 +1095,8 @@ def _suite_model_specs(
                     display_name="Semantic Jina v5 Text Small Classification",
                     model_id=semantic_tertiary_model_id,
                     backend="hf_embedding",
-                    config_version="v3_title_body_metadata_document_prefix",
-                    prompt_modes=("plain", "document_prefix"),
+                    config_version="v4_title_body_metadata_jina_document_component",
+                    prompt_modes=("plain", "jina_document_component"),
                     normalize_embeddings=(False, True),
                     logistic_c_values=(0.25, 1.0, 4.0, 16.0),
                     encode_batch_size=8,
@@ -922,7 +1135,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_tertiary_model_id,
                 "display_name": "Transformer NeoBERT",
-                "config_version": "v3_pr_auc_early_stop_remote_code",
+                "config_version": "v4_pr_auc_grid_remote_code",
             },
         ),
         SuiteModelSpec(
@@ -933,7 +1146,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_quaternary_model_id,
                 "display_name": "Transformer ModernBERT-large",
-                "config_version": "v2_pr_auc_early_stop",
+                "config_version": "v3_pr_auc_grid",
             },
         ),
         SuiteModelSpec(
@@ -1043,6 +1256,7 @@ def _benchmark_run_metadata(
     suite_input_path: Path,
     split: DatasetSplit,
     prepared_data_summary: dict[str, int],
+    input_data: dict[str, Any],
     notes: str | None,
 ) -> dict[str, Any]:
     run_timestamp = datetime.now(UTC)
@@ -1053,6 +1267,7 @@ def _benchmark_run_metadata(
         "created_at": run_timestamp.isoformat().replace("+00:00", "Z"),
         "notes": clean_notes,
         "representation": _benchmark_representation(split=split, prepared_data_summary=prepared_data_summary),
+        "input_data_fingerprint": input_data.get("fingerprint"),
         "suite_manifest_fingerprint": _file_sha256(suite_input_path),
         "latest_summary_path": str((benchmark_dir / "benchmark_suite_summary.json").resolve()),
     }
@@ -1165,6 +1380,104 @@ def _benchmark_history_models_snapshot(models: Any) -> list[dict[str, Any]]:
             }
         )
     return snapshot
+
+
+def _select_seed_sweep_specs(specs: list[SuiteModelSpec], *, model_names: tuple[str, ...]) -> list[SuiteModelSpec]:
+    by_name = {spec.name: spec for spec in specs}
+    missing = [name for name in model_names if name not in by_name]
+    if missing:
+        raise ValueError(f"Unknown seed-sweep model names: {', '.join(missing)}")
+    return [by_name[name] for name in model_names]
+
+
+def _benchmark_seed_sweep_aggregates(
+    runs: list[dict[str, Any]],
+    *,
+    model_names: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    metric_extractors: dict[str, tuple[str, ...]] = {
+        "pr_auc": ("ranking_metrics", "pr_auc"),
+        "auto_precision": ("operating_metrics", "auto_band", "precision"),
+        "auto_recall": ("operating_metrics", "auto_band", "recall"),
+        "review_precision": ("operating_metrics", "review_queue", "precision"),
+        "review_recall": ("operating_metrics", "review_queue", "recall"),
+        "auto_recall_at_precision_95": ("constraint_metrics", "auto_recall_at_precision_95", "recall"),
+        "review_recall_at_precision_75": ("constraint_metrics", "review_recall_at_precision_75", "recall"),
+    }
+    aggregates: list[dict[str, Any]] = []
+    for model_name in model_names:
+        model_runs: list[dict[str, Any]] = []
+        for run in runs:
+            if not isinstance(run, dict):
+                continue
+            seed = int(run.get("seed"))
+            for model in run.get("models") or []:
+                if isinstance(model, dict) and model.get("name") == model_name:
+                    model_runs.append({"seed": seed, "model": model})
+                    break
+        if not model_runs:
+            continue
+        sample = model_runs[0]["model"]
+        aggregates.append(
+            {
+                "name": model_name,
+                "display_name": sample.get("display_name"),
+                "model_family": sample.get("model_family"),
+                "model_id": sample.get("model_id"),
+                "production_ready_rate": _safe_rate(
+                    sum(1 for item in model_runs if bool(item["model"].get("production_ready"))),
+                    len(model_runs),
+                ),
+                "metric_summary": {
+                    metric_name: _seed_sweep_metric_summary(
+                        [_nested_metric_value(item["model"], path) for item in model_runs]
+                    )
+                    for metric_name, path in metric_extractors.items()
+                },
+                "per_seed": [
+                    {
+                        "seed": item["seed"],
+                        "production_ready": bool(item["model"].get("production_ready")),
+                        "pr_auc": _nested_metric_value(item["model"], metric_extractors["pr_auc"]),
+                        "auto_recall_at_precision_95": _nested_metric_value(
+                            item["model"],
+                            metric_extractors["auto_recall_at_precision_95"],
+                        ),
+                        "review_recall_at_precision_75": _nested_metric_value(
+                            item["model"],
+                            metric_extractors["review_recall_at_precision_75"],
+                        ),
+                    }
+                    for item in model_runs
+                ],
+            }
+        )
+    return aggregates
+
+
+def _nested_metric_value(payload: dict[str, Any], path: tuple[str, ...]) -> float | None:
+    current: Any = payload
+    for key in path:
+        if not isinstance(current, dict):
+            return None
+        current = current.get(key)
+    if current is None:
+        return None
+    return float(current)
+
+
+def _seed_sweep_metric_summary(values: list[float | None]) -> dict[str, Any]:
+    realized = [float(value) for value in values if value is not None]
+    if not realized:
+        return {"mean": None, "std": None, "min": None, "max": None, "count": 0}
+    array = np.asarray(realized, dtype=np.float64)
+    return {
+        "mean": float(array.mean()),
+        "std": float(array.std(ddof=0)),
+        "min": float(array.min()),
+        "max": float(array.max()),
+        "count": int(array.size),
+    }
 
 
 def _serialize_posts(posts: list[LabeledPost]) -> list[dict[str, Any]]:
@@ -1480,6 +1793,7 @@ def _train_model_bundle_for_split(
         "version": __version__,
         "model_name": "tfidf_logreg",
         "model_family": "tfidf",
+        "runtime_environment": _runtime_environment_metadata(),
         "variant": {
             "name": variant.name,
             "extra_word_stopwords": sorted(variant.extra_word_stopwords),
@@ -1858,6 +2172,7 @@ def _train_semantic_embedding_bundle_for_split(
         "version": __version__,
         "model_name": semantic_config.name,
         "model_family": "semantic_embedding",
+        "runtime_environment": _runtime_environment_metadata(),
         "display_name": semantic_config.display_name,
         "model_id": semantic_config.model_id,
         "artifact_path": str(artifact_path),
@@ -2010,12 +2325,14 @@ def _train_semantic_embedding_bundle_for_split(
 def _load_semantic_encoder(config: SemanticModelConfig) -> Any:
     if config.backend == "sentence_transformers":
         try:
+            import torch
             from sentence_transformers import SentenceTransformer
         except ImportError as exc:
             raise OptionalModelDependencyError(
                 "Semantic embedding benchmarks require sentence-transformers. "
                 "Install with `python -m pip install -e \".[dev,models]\"`."
             ) from exc
+        _enable_cuda_tf32(torch)
         return SentenceTransformer(config.model_id)
     if config.backend == "hf_embedding":
         try:
@@ -2026,6 +2343,7 @@ def _load_semantic_encoder(config: SemanticModelConfig) -> Any:
                 "Transformer-backed embedding benchmarks require transformers and torch. "
                 "Install with `python -m pip install -e \".[dev,models]\"`."
             ) from exc
+        _enable_cuda_tf32(torch)
         device = _resolve_semantic_encoder_device(config, torch)
         tokenizer = AutoTokenizer.from_pretrained(config.model_id, use_fast=False)
         if tokenizer.pad_token is None and tokenizer.eos_token is not None:
@@ -2078,6 +2396,12 @@ def _semantic_component_texts(
             [f"{document_prefix} {text}".strip() for text in title_texts],
             [f"{document_prefix} {text}".strip() for text in body_texts],
         )
+    if prompt_mode == "jina_document_component":
+        document_prefix = config.prompt_prefix or "Document:"
+        return (
+            [f"{document_prefix} Title: {text}".strip() for text in title_texts],
+            [f"{document_prefix} Body: {text}".strip() for text in body_texts],
+        )
     raise ValueError(f"Unsupported semantic prompt mode: {prompt_mode}")
 
 
@@ -2104,6 +2428,9 @@ def _semantic_texts(
     if prompt_mode == "short_task_prefix":
         return [f"{config.short_prompt_prefix} {text}".strip() if config.short_prompt_prefix else text for text in texts]
     if prompt_mode == "document_prefix":
+        document_prefix = config.prompt_prefix or "Document:"
+        return [f"{document_prefix} {text}".strip() for text in texts]
+    if prompt_mode == "jina_document_component":
         document_prefix = config.prompt_prefix or "Document:"
         return [f"{document_prefix} {text}".strip() for text in texts]
     raise ValueError(f"Unsupported semantic prompt mode: {prompt_mode}")
@@ -2158,6 +2485,24 @@ def _semantic_embeddings(
         _format_elapsed(time.perf_counter() - started_at),
     )
     return output
+
+
+def _transformer_candidate_profiles(model_id: str) -> list[dict[str, Any]]:
+    normalized = str(model_id).lower()
+    if "modernbert-large" in normalized:
+        return [
+            {"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 384},
+            {"name": "precision_tuned", "learning_rate": 1.0e-5, "weight_decay": 0.03, "max_length": 384},
+            {"name": "balanced_tuned", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 384},
+        ]
+    if "neobert" in normalized:
+        return [
+            {"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 384},
+            {"name": "long_context", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 512},
+        ]
+    if "modernbert" in normalized:
+        return [{"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 384}]
+    return [{"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 256}]
 
 
 def _hf_embedding_encode(
@@ -2304,16 +2649,18 @@ def _train_transformer_bundle_for_split(
     artifact_dir = Path(output_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     detected_runtime = _torch_runtime_device(torch)
+    cuda_runtime = _enable_cuda_tf32(torch)
     effective_runtime_profile = runtime_profile or detected_runtime
     use_mps = effective_runtime_profile == "mps"
     use_cpu = effective_runtime_profile in {"cpu", "cpu_fallback"}
     load_options = transformer_load_options(model_id)
     trust_remote_code = bool(load_options.get("trust_remote_code"))
-    is_long_context_encoder = "modernbert" in model_id.lower() or "neobert" in model_id.lower()
     per_device_train_batch_size = 8 if not use_cpu else 1
     per_device_eval_batch_size = 16 if not use_cpu else 2
     gradient_accumulation_steps = 1 if not use_cpu else 8
-    max_length = 384 if is_long_context_encoder else 256
+    candidate_profiles = _transformer_candidate_profiles(model_id)
+    default_max_length = int(candidate_profiles[0]["max_length"])
+    max_length = default_max_length
     model_dtype = None
     num_train_epochs = 2
     if use_mps:
@@ -2325,7 +2672,7 @@ def _train_transformer_bundle_for_split(
         gc.collect()
         torch.mps.empty_cache()
     LOGGER.info(
-        "transformer training start model_id=%s display_name=%s output_dir=%s runtime_profile=%s train=%s calibration=%s test=%s batch_train=%s batch_eval=%s grad_accum=%s epochs=%s max_length=%s dtype=%s",
+        "transformer training start model_id=%s display_name=%s output_dir=%s runtime_profile=%s train=%s calibration=%s test=%s batch_train=%s batch_eval=%s grad_accum=%s epochs=%s candidate_profiles=%s default_max_length=%s dtype=%s",
         model_id,
         display_name or model_id,
         str(artifact_dir),
@@ -2337,7 +2684,8 @@ def _train_transformer_bundle_for_split(
         per_device_eval_batch_size,
         gradient_accumulation_steps,
         num_train_epochs,
-        max_length,
+        [profile["name"] for profile in candidate_profiles],
+        default_max_length,
         str(model_dtype).replace("torch.", "") if model_dtype is not None else "default",
     )
 
@@ -2350,24 +2698,6 @@ def _train_transformer_bundle_for_split(
 
     ensure_transformer_custom_code_support(trust_remote_code=trust_remote_code)
     tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False, **load_options)
-
-    def tokenize(batch: dict[str, list[Any]]) -> dict[str, Any]:
-        return tokenizer(batch["title"], batch["body"], truncation=True, max_length=max_length)
-
-    previous_transformers_verbosity = transformers_logging.get_verbosity()
-    transformers_logging.set_verbosity_error()
-    try:
-        LOGGER.info("transformer tokenization start model_id=%s split=train examples=%s", model_id, len(train_rows))
-        train_dataset = Dataset.from_list(train_rows).map(tokenize, batched=True)
-        LOGGER.info(
-            "transformer tokenization start model_id=%s split=calibration examples=%s",
-            model_id,
-            len(calibration_rows),
-        )
-        calibration_dataset = Dataset.from_list(calibration_rows).map(tokenize, batched=True)
-    finally:
-        transformers_logging.set_verbosity(previous_transformers_verbosity)
-    LOGGER.info("transformer tokenization complete model_id=%s", model_id)
 
     class_weights = torch.tensor(_balanced_class_weights(y_train), dtype=torch.float32)
 
@@ -2452,100 +2782,138 @@ def _train_transformer_bundle_for_split(
         return {"pr_auc": _safe_average_precision(y_calibration, scores)}
 
     best_candidate: dict[str, Any] | None = None
-    candidate_results: dict[str, dict[str, float]] = {}
+    candidate_results: dict[str, dict[str, float | int | str]] = {}
     loss_modes = ("plain_cross_entropy", "balanced_cross_entropy")
     previous_transformers_verbosity = transformers_logging.get_verbosity()
     transformers_logging.set_verbosity_error()
     try:
-        for loss_mode in loss_modes:
-            LOGGER.info("transformer candidate start model_id=%s loss_mode=%s", model_id, loss_mode)
-            model = AutoModelForSequenceClassification.from_pretrained(
-                model_id,
-                num_labels=2,
-                id2label={0: "not_askseattle", 1: "askseattle"},
-                label2id={"not_askseattle": 0, "askseattle": 1},
-                torch_dtype=model_dtype,
-                **load_options,
-            )
-            candidate_dir = artifact_dir / f"checkpoints_{loss_mode}"
-            training_args = TrainingArguments(
-                output_dir=str(candidate_dir),
-                learning_rate=2e-5,
-                per_device_train_batch_size=per_device_train_batch_size,
-                per_device_eval_batch_size=per_device_eval_batch_size,
-                gradient_accumulation_steps=gradient_accumulation_steps,
-                num_train_epochs=num_train_epochs,
-                weight_decay=0.01,
-                use_cpu=use_cpu,
-                eval_strategy="epoch",
-                save_strategy="no",
-                load_best_model_at_end=False,
-                metric_for_best_model="pr_auc",
-                greater_is_better=True,
-                logging_strategy="no",
-                optim="adafactor" if use_mps else "adamw_torch",
-                report_to=[],
-            )
-            trainer = WeightedSequenceClassificationTrainer(
-                model=model,
-                args=training_args,
-                train_dataset=train_dataset,
-                eval_dataset=calibration_dataset,
-                processing_class=tokenizer,
-                class_weights=class_weights if loss_mode == "balanced_cross_entropy" else None,
-                loss_mode=loss_mode,
-                callbacks=[
-                    ProgressLoggingCallback(f"transformer {display_name or model_id} {loss_mode}"),
-                    EarlyStoppingCallback(early_stopping_patience=1),
-                ],
-                compute_metrics=compute_pr_auc,
-            )
-            LOGGER.info("transformer trainer fit start model_id=%s loss_mode=%s", model_id, loss_mode)
-            try:
-                trainer.train()
-            except (RuntimeError, MPSFallbackRequested) as exc:
-                if effective_runtime_profile == "mps" and _should_retry_transformer_on_cpu(exc):
-                    LOGGER.warning(
-                        "transformer training leaving mps model_id=%s reason=%s retrying_runtime=cpu_fallback",
-                        model_id,
-                        str(exc),
-                    )
-                    _clear_torch_memory()
-                    return _train_transformer_bundle_for_split(
-                        split=split,
-                        output_dir=output_dir,
-                        model_id=model_id,
-                        display_name=display_name,
-                        prepared_data_summary=prepared_data_summary,
-                        runtime_profile="cpu_fallback",
-                        config_version=config_version,
-                        evaluate_on_test=evaluate_on_test,
-                    )
-                raise
-            LOGGER.info("transformer trainer fit complete model_id=%s loss_mode=%s", model_id, loss_mode)
-            raw_calibration_scores = _positive_scores_from_logits(trainer.predict(calibration_dataset).predictions)
-            candidate_pr_auc = _safe_average_precision(y_calibration, raw_calibration_scores)
-            candidate = {
-                "loss_mode": loss_mode,
-                "trainer": trainer,
-                "raw_calibration_scores": raw_calibration_scores,
-                "pr_auc": candidate_pr_auc,
-            }
-            candidate_results[loss_mode] = {"pr_auc": float(candidate_pr_auc)}
+        for profile in candidate_profiles:
+            max_length = int(profile["max_length"])
+            def tokenize(batch: dict[str, list[Any]]) -> dict[str, Any]:
+                return tokenizer(batch["title"], batch["body"], truncation=True, max_length=max_length)
+
+            LOGGER.info("transformer tokenization start model_id=%s profile=%s split=train examples=%s", model_id, profile["name"], len(train_rows))
+            train_dataset = Dataset.from_list(train_rows).map(tokenize, batched=True)
             LOGGER.info(
-                "transformer candidate evaluated model_id=%s loss_mode=%s pr_auc=%.3f",
+                "transformer tokenization start model_id=%s profile=%s split=calibration examples=%s",
                 model_id,
-                loss_mode,
-                candidate_pr_auc,
+                profile["name"],
+                len(calibration_rows),
             )
-            if best_candidate is None or _transformer_candidate_key(candidate) > _transformer_candidate_key(best_candidate):
-                if best_candidate is not None:
+            calibration_dataset = Dataset.from_list(calibration_rows).map(tokenize, batched=True)
+            for loss_mode in loss_modes:
+                LOGGER.info(
+                    "transformer candidate start model_id=%s profile=%s loss_mode=%s",
+                    model_id,
+                    profile["name"],
+                    loss_mode,
+                )
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    model_id,
+                    num_labels=2,
+                    id2label={0: "not_askseattle", 1: "askseattle"},
+                    label2id={"not_askseattle": 0, "askseattle": 1},
+                    torch_dtype=model_dtype,
+                    **load_options,
+                )
+                candidate_dir = artifact_dir / f"checkpoints_{profile['name']}_{loss_mode}"
+                training_args = TrainingArguments(
+                    output_dir=str(candidate_dir),
+                    learning_rate=float(profile["learning_rate"]),
+                    per_device_train_batch_size=per_device_train_batch_size,
+                    per_device_eval_batch_size=per_device_eval_batch_size,
+                    gradient_accumulation_steps=gradient_accumulation_steps,
+                    num_train_epochs=num_train_epochs,
+                    weight_decay=float(profile["weight_decay"]),
+                    use_cpu=use_cpu,
+                    eval_strategy="epoch",
+                    save_strategy="no",
+                    load_best_model_at_end=False,
+                    metric_for_best_model="pr_auc",
+                    greater_is_better=True,
+                    logging_strategy="no",
+                    optim="adafactor" if use_mps else "adamw_torch",
+                    report_to=[],
+                )
+                trainer = WeightedSequenceClassificationTrainer(
+                    model=model,
+                    args=training_args,
+                    train_dataset=train_dataset,
+                    eval_dataset=calibration_dataset,
+                    processing_class=tokenizer,
+                    class_weights=class_weights if loss_mode == "balanced_cross_entropy" else None,
+                    loss_mode=loss_mode,
+                    callbacks=[
+                        ProgressLoggingCallback(f"transformer {display_name or model_id} {profile['name']} {loss_mode}"),
+                        EarlyStoppingCallback(early_stopping_patience=1),
+                    ],
+                    compute_metrics=compute_pr_auc,
+                )
+                LOGGER.info(
+                    "transformer trainer fit start model_id=%s profile=%s loss_mode=%s",
+                    model_id,
+                    profile["name"],
+                    loss_mode,
+                )
+                try:
+                    trainer.train()
+                except (RuntimeError, MPSFallbackRequested) as exc:
+                    if effective_runtime_profile == "mps" and _should_retry_transformer_on_cpu(exc):
+                        LOGGER.warning(
+                            "transformer training leaving mps model_id=%s reason=%s retrying_runtime=cpu_fallback",
+                            model_id,
+                            str(exc),
+                        )
+                        _clear_torch_memory()
+                        return _train_transformer_bundle_for_split(
+                            split=split,
+                            output_dir=output_dir,
+                            model_id=model_id,
+                            display_name=display_name,
+                            prepared_data_summary=prepared_data_summary,
+                            runtime_profile="cpu_fallback",
+                            config_version=config_version,
+                            evaluate_on_test=evaluate_on_test,
+                        )
+                    raise
+                LOGGER.info(
+                    "transformer trainer fit complete model_id=%s profile=%s loss_mode=%s",
+                    model_id,
+                    profile["name"],
+                    loss_mode,
+                )
+                raw_calibration_scores = _positive_scores_from_logits(trainer.predict(calibration_dataset).predictions)
+                candidate_pr_auc = _safe_average_precision(y_calibration, raw_calibration_scores)
+                candidate = {
+                    "profile": dict(profile),
+                    "loss_mode": loss_mode,
+                    "trainer": trainer,
+                    "raw_calibration_scores": raw_calibration_scores,
+                    "pr_auc": candidate_pr_auc,
+                }
+                candidate_results[f"{profile['name']}:{loss_mode}"] = {
+                    "profile_name": str(profile["name"]),
+                    "learning_rate": float(profile["learning_rate"]),
+                    "weight_decay": float(profile["weight_decay"]),
+                    "max_length": int(profile["max_length"]),
+                    "loss_mode": loss_mode,
+                    "pr_auc": float(candidate_pr_auc),
+                }
+                LOGGER.info(
+                    "transformer candidate evaluated model_id=%s profile=%s loss_mode=%s pr_auc=%.3f",
+                    model_id,
+                    profile["name"],
+                    loss_mode,
+                    candidate_pr_auc,
+                )
+                if best_candidate is None or _transformer_candidate_key(candidate) > _transformer_candidate_key(best_candidate):
+                    if best_candidate is not None:
+                        _clear_torch_memory()
+                    best_candidate = candidate
+                else:
+                    del trainer
+                    del model
                     _clear_torch_memory()
-                best_candidate = candidate
-            else:
-                del trainer
-                del model
-                _clear_torch_memory()
     finally:
         transformers_logging.set_verbosity(previous_transformers_verbosity)
 
@@ -2554,14 +2922,17 @@ def _train_transformer_bundle_for_split(
 
     trainer = best_candidate["trainer"]
     selected_loss_mode = str(best_candidate["loss_mode"])
+    selected_profile = dict(best_candidate["profile"])
+    max_length = int(selected_profile["max_length"])
     raw_calibration_scores = list(best_candidate["raw_calibration_scores"])
     if use_mps and hasattr(torch.mps, "empty_cache"):
         gc.collect()
         torch.mps.empty_cache()
 
     LOGGER.info(
-        "transformer candidate selected model_id=%s loss_mode=%s pr_auc=%.3f",
+        "transformer candidate selected model_id=%s profile=%s loss_mode=%s pr_auc=%.3f",
         model_id,
+        selected_profile["name"],
         selected_loss_mode,
         float(best_candidate["pr_auc"]),
     )
@@ -2587,7 +2958,8 @@ def _train_transformer_bundle_for_split(
     metadata_path = artifact_dir / "transformer_metadata.json"
     bundle_path = artifact_dir / "transformer_bundle.joblib"
     training_args_summary = {
-        "learning_rate": 2e-5,
+        "learning_rate": float(selected_profile["learning_rate"]),
+        "candidate_profile": selected_profile,
         "per_device_train_batch_size": per_device_train_batch_size,
         "per_device_eval_batch_size": per_device_eval_batch_size,
         "gradient_accumulation_steps": gradient_accumulation_steps,
@@ -2598,7 +2970,9 @@ def _train_transformer_bundle_for_split(
         "class_weighting": selected_loss_mode,
         "runtime_profile": effective_runtime_profile,
         "optimizer": "adafactor" if use_mps else "adamw_torch",
+        "weight_decay": float(selected_profile["weight_decay"]),
         "trust_remote_code": trust_remote_code,
+        "cuda_matmul": cuda_runtime,
         "class_weights": {
             "not_askseattle": float(class_weights[0].item()),
             "askseattle": float(class_weights[1].item()),
@@ -2647,6 +3021,7 @@ def _train_transformer_bundle_for_split(
         "version": __version__,
         "model_name": _slugify_model_name(display_name or f"transformer {Path(model_id).name}"),
         "model_family": "transformer_sequence_classifier",
+        "runtime_environment": _runtime_environment_metadata(),
         "display_name": display_name or model_id,
         "model_id": model_id,
         "artifact_path": str(bundle_path),
@@ -2777,6 +3152,7 @@ def _train_causal_lm_bundle_for_split(
     artifact_dir = Path(output_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     detected_runtime = _torch_runtime_device(torch)
+    cuda_runtime = _enable_cuda_tf32(torch)
     effective_runtime_profile = _resolve_causal_lm_runtime_profile(
         detected_runtime=detected_runtime,
         requested_runtime_profile=runtime_profile,
@@ -3015,6 +3391,7 @@ def _train_causal_lm_bundle_for_split(
         "prompt_template_version": prompt_template_version,
         "runtime_profile": effective_runtime_profile,
         "torch_dtype": str(model_dtype).replace("torch.", "") if model_dtype is not None else "default",
+        "cuda_matmul": cuda_runtime,
         "optimizer": "adafactor" if use_mps else "adamw_torch",
         "lora": {"r": 8, "alpha": 16, "dropout": 0.05, "target_modules": "all-linear"},
     }
@@ -3039,6 +3416,7 @@ def _train_causal_lm_bundle_for_split(
         "version": __version__,
         "model_name": _slugify_model_name(display_name or f"decoder {Path(model_id).name}"),
         "model_family": "causal_lm_classifier",
+        "runtime_environment": _runtime_environment_metadata(),
         "display_name": display_name or model_id,
         "model_id": model_id,
         "artifact_path": str(artifact_path),
@@ -3602,6 +3980,7 @@ def _benchmark_existing_suite_model(
         {
             "high_precision_target": DEFAULT_HIGH_PRECISION_TARGET,
             "production_gate": _production_gate_summary(),
+            "runtime_environment": _runtime_environment_metadata(),
             "split": _split_summary(split),
             "ranking_metrics": _ranking_metrics_summary(y_test, calibrated_test_scores),
             "constraint_metrics": _constraint_metrics_summary(y_test, calibrated_test_scores),

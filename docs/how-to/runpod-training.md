@@ -78,6 +78,12 @@ Run TF-IDF variants remotely:
 make benchmark-variants REMOTE=runpod EVAL_SUBREDDIT=seattle
 ```
 
+Run the selected-model neural seed sweep remotely:
+
+```bash
+make benchmark-seed-sweep REMOTE=runpod EVAL_SUBREDDIT=seattle
+```
+
 These commands now enforce a generous 6-hour remote target timeout by default. Override it with:
 
 ```bash

@@ -741,6 +741,8 @@ def test_benchmark_model_suite_writes_aggregate_summary(tmp_path: Path, monkeypa
     benchmarked_summary = json.loads((tmp_path / "suite" / "semantic_minilm_tuned" / "training_summary.json").read_text())
     assert benchmarked_summary["benchmark_status"] == "complete"
     assert "metrics" in benchmarked_summary
+    assert "runtime_environment" in benchmarked_summary
+    assert "input_data" in summary
 
 
 def test_benchmark_model_suite_skips_untrained_models(tmp_path: Path, monkeypatch) -> None:
@@ -802,6 +804,112 @@ def test_benchmark_model_suite_skips_untrained_models(tmp_path: Path, monkeypatc
 
     assert [model["status"] for model in summary["models"]] == ["skipped", "skipped"]
     assert all(model["reason"] == "not_trained" for model in summary["models"])
+
+
+def test_benchmark_seed_sweep_writes_aggregate_summary(tmp_path: Path, monkeypatch) -> None:
+    labels_path = tmp_path / "labels.jsonl"
+    records = [
+        {
+            "id": f"sea_pos{index}",
+            "title": f"Best coffee {index}?",
+            "selftext": "Any suggestions in Seattle?",
+            "label": "askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2),
+        }
+        for index in range(10)
+    ] + [
+        {
+            "id": f"sea_neg{index}",
+            "title": f"Local update {index}",
+            "selftext": "Policy discussion and civic news",
+            "label": "not_askseattle",
+            "subreddit": "seattle",
+            "created_utc": float(index * 2 + 1),
+        }
+        for index in range(10)
+    ]
+    write_jsonl_records(labels_path, records)
+
+    def make_runner(name: str, family: str, model_id: str):
+        def runner(*, split, output_dir, prepared_data_summary=None, evaluate_on_test=True, **kwargs):
+            assert evaluate_on_test is True
+            output_dir.mkdir(parents=True, exist_ok=True)
+            artifact_path = output_dir / f"{name}.joblib"
+            artifact_path.write_text(name, encoding="utf-8")
+            seed = int(split.split_seed or 0)
+            pr_auc = 0.8 + (seed / 1000.0)
+            auto_recall = 0.3 + (seed / 1000.0)
+            review_recall = 0.7 + (seed / 1000.0)
+            return {
+                "model_name": name,
+                "model_family": family,
+                "display_name": name,
+                "model_id": model_id,
+                "artifact_path": str(artifact_path),
+                "calibration": {"available": True, "method": "sigmoid", "positive_count": 3, "negative_count": 3, "calibration_size": 6},
+                "threshold_selection": {"high_threshold": 0.7, "high_threshold_selection": {"production_ready": True}},
+                "threshold_policy": {"low_threshold": 0.3, "high_threshold": 0.7},
+                "metrics": {"high_confidence_precision": 1.0, "high_confidence_recall": auto_recall, "high_confidence_f1": auto_recall, "support": 5, "confidence_band_counts": {"high": 2, "borderline": 1, "low": 1}},
+                "operating_metrics": {
+                    "auto_band": {"precision": 1.0, "recall": auto_recall, "f1": auto_recall, "predicted_positive": 2, "support": 5},
+                    "review_queue": {"precision": 0.8, "recall": review_recall, "f1": review_recall, "predicted_positive": 4, "support": 5},
+                    "queue_counts": {"high": 2, "borderline": 2, "low": 1},
+                    "queue_rates": {"auto_rate": 0.2, "review_rate": 0.4, "borderline_rate": 0.2},
+                    "positive_prevalence": 0.5,
+                    "positive_count": 5,
+                    "total_count": 10,
+                    "slice_metrics": {},
+                },
+                "constraint_metrics": {
+                    "auto_recall_at_precision_95": {"recall": auto_recall, "precision_target": 0.95, "threshold": 0.7, "precision": 1.0, "f1": auto_recall, "predicted_positive": 2, "support": 5, "target_met": True},
+                    "review_recall_at_precision_75": {"recall": review_recall, "precision_target": 0.75, "threshold": 0.3, "precision": 0.8, "f1": review_recall, "predicted_positive": 4, "support": 5, "target_met": True},
+                },
+                "ranking_metrics": {"pr_auc": pr_auc},
+                "benchmark_status": "complete",
+                "production_ready": True,
+                "production_ready_blocked_reason": None,
+                "split": training._split_summary(split),
+                "prepared_data": prepared_data_summary or {},
+            }
+        return runner
+
+    def fake_suite_specs(**kwargs):
+        return [
+            SuiteModelSpec(
+                name="transformer_modernbert_base",
+                display_name="Transformer ModernBERT-base",
+                family="transformer_sequence_classifier",
+                runner=make_runner("transformer_modernbert_base", "transformer_sequence_classifier", kwargs["transformer_secondary_model_id"]),
+                kwargs={"model_id": kwargs["transformer_secondary_model_id"], "display_name": "Transformer ModernBERT-base"},
+            ),
+            SuiteModelSpec(
+                name="transformer_neobert",
+                display_name="Transformer NeoBERT",
+                family="transformer_sequence_classifier",
+                runner=make_runner("transformer_neobert", "transformer_sequence_classifier", kwargs["transformer_tertiary_model_id"]),
+                kwargs={"model_id": kwargs["transformer_tertiary_model_id"], "display_name": "Transformer NeoBERT"},
+            ),
+        ]
+
+    monkeypatch.setattr(training, "_suite_model_specs", fake_suite_specs)
+
+    summary = training.benchmark_seed_sweep_from_labels(
+        labels_path,
+        tmp_path / "suite",
+        evaluation_subreddit="seattle",
+        split_seeds=(13, 21),
+        model_names=("transformer_modernbert_base", "transformer_neobert"),
+    )
+
+    assert summary["split_seeds"] == [13, 21]
+    assert summary["selected_models"] == ["transformer_modernbert_base", "transformer_neobert"]
+    assert len(summary["seed_runs"]) == 2
+    assert len(summary["model_aggregates"]) == 2
+    assert Path(tmp_path / "suite" / "seed_sweeps" / "seed_sweep_summary.json").exists()
+    aggregate = next(item for item in summary["model_aggregates"] if item["name"] == "transformer_modernbert_base")
+    assert aggregate["metric_summary"]["pr_auc"]["count"] == 2
+    assert aggregate["metric_summary"]["review_recall"]["mean"] > 0.7
 
 
 def test_retrain_all_trains_operational_and_suite_without_benchmark(tmp_path: Path, monkeypatch) -> None:
@@ -1178,6 +1286,44 @@ def test_semantic_component_texts_split_title_body_and_prefixes() -> None:
 
     assert title_texts == ["Short prefix Title: Who is this?"]
     assert body_texts == ["Short prefix Body: Seen near Fremont."]
+
+
+def test_semantic_component_texts_support_jina_document_component() -> None:
+    posts = [
+        training.LabeledPost(title="Who is this?", selftext="Seen near Fremont.", label=1),
+    ]
+    config = training.SemanticModelConfig(
+        name="semantic_jina_embeddings_v5_text_small_classification",
+        display_name="Semantic Jina v5 Text Small Classification",
+        model_id="jinaai/jina-embeddings-v5-text-small-classification",
+        backend="hf_embedding",
+        config_version="v4_title_body_metadata_jina_document_component",
+        prompt_modes=("plain", "jina_document_component"),
+        normalize_embeddings=(False, True),
+        logistic_c_values=(1.0,),
+        prompt_prefix="Document:",
+    )
+
+    title_texts, body_texts = training._semantic_component_texts(
+        posts,
+        prompt_mode="jina_document_component",
+        config=config,
+    )
+
+    assert title_texts == ["Document: Title: Who is this?"]
+    assert body_texts == ["Document: Body: Seen near Fremont."]
+
+
+def test_transformer_candidate_profiles_apply_tuning_grid_to_neobert_and_modernbert_large() -> None:
+    neobert = training._transformer_candidate_profiles("chandar-lab/NeoBERT")
+    modernbert_large = training._transformer_candidate_profiles("answerdotai/ModernBERT-large")
+    deberta = training._transformer_candidate_profiles("microsoft/deberta-v3-small")
+
+    assert len(neobert) == 2
+    assert {profile["max_length"] for profile in neobert} == {384, 512}
+    assert len(modernbert_large) == 3
+    assert any(profile["weight_decay"] > 0.01 for profile in modernbert_large)
+    assert len(deberta) == 1
 
 
 def test_semantic_component_texts_fill_empty_values_with_placeholders() -> None:

@@ -198,7 +198,7 @@ done
 }
 
 case "$TARGET" in
-  retrain|benchmark|benchmark-variants|benchmark-suite)
+  retrain|benchmark|benchmark-variants|benchmark-suite|benchmark-seed-sweep)
     ;;
   *)
     die "unsupported target: $TARGET"
@@ -239,6 +239,9 @@ if [[ -z "$ARTIFACT_DIR_REL" ]]; then
     benchmark-variants)
       ARTIFACT_DIR_REL="models/benchmark-variants"
       ;;
+    benchmark-seed-sweep)
+      ARTIFACT_DIR_REL="models/benchmark-suite"
+      ;;
     benchmark-suite)
       ARTIFACT_DIR_REL="models/benchmark-suite"
       ;;
@@ -246,7 +249,7 @@ if [[ -z "$ARTIFACT_DIR_REL" ]]; then
 fi
 
 NEEDS_MODEL_DEPS=0
-if [[ "$TARGET" == "benchmark-suite" || "$FORCE_MODEL_DEPS" -eq 1 ]]; then
+if [[ "$TARGET" == "benchmark-suite" || "$TARGET" == "benchmark-seed-sweep" || "$FORCE_MODEL_DEPS" -eq 1 ]]; then
   NEEDS_MODEL_DEPS=1
 fi
 if [[ "$SKIP_MODEL_DEPS" -eq 1 ]]; then

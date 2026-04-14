@@ -132,13 +132,17 @@ The benchmark suite writes:
 - `tfidf_recommended/training_summary.json`
 - `semantic_minilm_tuned/training_summary.json`
 - `semantic_qwen3_embedding_0_6b/training_summary.json`
+- `semantic_jina_embeddings_v5_text_small_classification/training_summary.json`
 - `transformer_deberta_v3_small/training_summary.json`
 - `transformer_modernbert_base/training_summary.json`
+- `transformer_neobert/training_summary.json`
+- `transformer_modernbert_large/training_summary.json`
 - `causal_lm_qwen3_1_7b_lora/training_summary.json`
 - `suite_input.json`
 - `benchmark_suite_summary.json`
 - `benchmark_history.json`
 - `history/<run_id>/benchmark_suite_summary.json`
+- `seed_sweeps/seed_sweep_summary.json`
 
 The optional RunPod remote wrapper also writes local pulled metadata and logs under:
 
@@ -175,6 +179,10 @@ The saved bundle includes:
 
 Important sections:
 
+- `input_data`
+  - the local reviewed-label path plus a SHA-256 fingerprint for the corpus snapshot used by the run
+- `runtime_environment`
+  - Python/platform metadata plus package versions for the model stack used to write the summary
 - `prepared_data`
   - counts after normalization and dedupe
 - `benchmark_run`
@@ -184,6 +192,7 @@ Important sections:
     - `created_at`
     - optional `notes`
     - `representation`
+    - `input_data_fingerprint`
     - `suite_manifest_fingerprint`
 - `suite_resume`
   - benchmark-suite-only metadata used to decide whether an existing per-model artifact can be reused on a later run
@@ -236,6 +245,20 @@ Neural benchmark summaries replace `feature_audit` with model-specific metadata 
 
 Training-only suite summaries intentionally omit `metrics` and `operating_metrics` until a later benchmark step writes them.
 
+The selected-model seed sweep writes `seed_sweeps/seed_sweep_summary.json`, which includes:
+
+- the selected model names
+- the evaluated split seeds
+- one per-seed run block with per-model metrics
+- per-model aggregate mean/std summaries for:
+  - `pr_auc`
+  - `auto_precision`
+  - `auto_recall`
+  - `review_precision`
+  - `review_recall`
+  - `auto_recall_at_precision_95`
+  - `review_recall_at_precision_75`
+
 ## `benchmark_history.json`
 
 The suite benchmark also appends a compact historical index.
@@ -259,6 +282,9 @@ Transformer benchmark summaries also include the current input and loss setup un
 - `body_includes_metadata_tokens`
 - `class_weighting`
 - `class_weights`
+- `candidate_profile`
+- `candidate_results`
+- `cuda_matmul`
 
 Semantic benchmark summaries also include a model-family-specific `embedding_summary`, including fields such as:
 
@@ -271,6 +297,8 @@ Semantic benchmark summaries also include a model-family-specific `embedding_sum
 - `normalize_embeddings`
 - `pooling`
 - `logreg_c`
+
+For Jina v5 classification specifically, the prompt mode can now be `jina_document_component`, which formats split title/body inputs as `Document: Title: ...` and `Document: Body: ...`.
 
 The Qwen3 embedding and Jina v5 classification embedding paths use a Transformers-based backend rather than SentenceTransformers, but they still end in the same calibrated logistic-regression head shape as the MiniLM path.
 

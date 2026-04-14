@@ -1734,6 +1734,9 @@ def _semantic_runtime_texts(bundle: dict[str, Any], rows: list[dict[str, str]]) 
     if prompt_mode == "document_prefix":
         document_prefix = prompt_prefix or "Document:"
         return [f"{document_prefix} {text}".strip() for text in texts]
+    if prompt_mode == "jina_document_component":
+        document_prefix = prompt_prefix or "Document:"
+        return [f"{document_prefix} {text}".strip() for text in texts]
     return texts
 
 
@@ -1771,6 +1774,9 @@ def _semantic_runtime_component_texts(
     if prompt_mode == "document_prefix":
         document_prefix = prompt_prefix or "Document:"
         return [f"{document_prefix} {text}".strip() for text in raw_texts]
+    if prompt_mode == "jina_document_component":
+        document_prefix = prompt_prefix or "Document:"
+        return [f"{document_prefix} {component_label}: {text}".strip() for text in raw_texts]
     raise ValueError(f"Unsupported semantic prompt mode: {prompt_mode}")
 
 

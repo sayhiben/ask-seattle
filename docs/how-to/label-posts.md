@@ -45,7 +45,7 @@ The verdict block shows the active bridge model verdict:
 - `Looks like askseattle (...)`
 - `Does not look like askseattle`
 
-If benchmark-suite artifacts are available, the panel also shows a `Model checks` section with one card per suite model so you can read all results at a glance.
+If benchmark-suite artifacts are available, the panel also shows a scrollable `Model checks` section with one card per suite model so you can read all results at a glance, even when the suite grows beyond one screen. The section title also shows the loaded comparison-model count.
 
 The panel now renders those comparison cards incrementally. The main bridge verdict appears first, then each benchmark-suite model card updates as its own `/check-comparison` request finishes.
 
