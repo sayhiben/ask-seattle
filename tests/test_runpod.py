@@ -724,13 +724,69 @@ def test_cleanup_remote_workspace_prunes_logs_inputs_and_repo_artifacts(
     cleanup_remote_workspace(
         config,
         ssh_endpoint=PodSshEndpoint(host="1.2.3.4", port=2222, user="root"),
+        target="retrain",
     )
 
     assert len(commands) == 1
     assert commands[0][0] == "ssh"
-    assert "rm -rf /workspace/ask-seattle/models /workspace/ask-seattle/data/processed" in commands[0][-1]
+    assert "rm -rf /workspace/ask-seattle/models" in commands[0][-1]
+    assert "rm -rf /workspace/ask-seattle/data/processed" in commands[0][-1]
     assert "find /workspace/runpod-logs -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +" in commands[0][-1]
     assert "find /workspace/runpod-inputs -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +" in commands[0][-1]
+
+
+def test_cleanup_remote_workspace_preserves_models_for_benchmark(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from ask_seattle import runpod
+
+    config = RunPodConfig(
+        repo_root=tmp_path,
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=tmp_path / "id.pub",
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA RTX A5000",),
+        fallback_gpu_types=("NVIDIA L4",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=tmp_path / "labels.jsonl",
+        benchmark_meta_dir=tmp_path / "meta",
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="microsoft/deberta-v3-small",
+        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
+    )
+    commands: list[tuple[str, ...]] = []
+
+    def fake_run(command: tuple[str, ...], *args: object, **kwargs: object) -> None:
+        commands.append(command)
+
+    monkeypatch.setattr(runpod, "_run_subprocess", fake_run)
+
+    cleanup_remote_workspace(
+        config,
+        ssh_endpoint=PodSshEndpoint(host="1.2.3.4", port=2222, user="root"),
+        target="benchmark",
+    )
+
+    assert len(commands) == 1
+    assert commands[0][0] == "ssh"
+    assert "rm -rf /workspace/ask-seattle/models" not in commands[0][-1]
+    assert "rm -rf /workspace/ask-seattle/data/processed" in commands[0][-1]
 
 
 def test_provision_volume_and_pod_preserves_existing_cache_without_eviction(

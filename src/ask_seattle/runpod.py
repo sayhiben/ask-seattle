@@ -291,7 +291,7 @@ def run_command(args: argparse.Namespace) -> int:
         ensure_remote_rsync(ready_pod.ssh_endpoint)
         print_runpod("pruning stale remote artifacts")
         _persist_local_metadata(stage="pruning_remote_artifacts")
-        cleanup_remote_workspace(config, ready_pod.ssh_endpoint)
+        cleanup_remote_workspace(config, ready_pod.ssh_endpoint, target=target)
         print_runpod("syncing labels to pod")
         _persist_local_metadata(stage="syncing_labels")
         remote_labels_path = sync_labels_to_pod(config, ready_pod.ssh_endpoint, run_id)
@@ -800,14 +800,20 @@ def ensure_remote_rsync(ssh_endpoint: PodSshEndpoint) -> None:
         raise RunPodOrchestrationError("failed to install or verify rsync inside the RunPod pod") from exc
 
 
-def cleanup_remote_workspace(config: RunPodConfig, ssh_endpoint: PodSshEndpoint) -> None:
-    command = (
-        "set -euo pipefail\n"
-        f"mkdir -p {shlex.quote(config.remote_dir)} {shlex.quote(REMOTE_LABEL_ROOT)} {shlex.quote(REMOTE_LOG_ROOT)}\n"
-        f"rm -rf {shlex.quote(f'{config.remote_dir}/models')} {shlex.quote(f'{config.remote_dir}/data/processed')}\n"
-        f"find {shlex.quote(REMOTE_LOG_ROOT)} -mindepth 1 -maxdepth 1 -type d -exec rm -rf {{}} + || true\n"
-        f"find {shlex.quote(REMOTE_LABEL_ROOT)} -mindepth 1 -maxdepth 1 -type d -exec rm -rf {{}} + || true\n"
-    )
+def cleanup_remote_workspace(config: RunPodConfig, ssh_endpoint: PodSshEndpoint, *, target: str) -> None:
+    cleanup_lines = [
+        "set -euo pipefail",
+        f"mkdir -p {shlex.quote(config.remote_dir)} {shlex.quote(REMOTE_LABEL_ROOT)} {shlex.quote(REMOTE_LOG_ROOT)}",
+        f"rm -rf {shlex.quote(f'{config.remote_dir}/data/processed')}",
+        f"find {shlex.quote(REMOTE_LOG_ROOT)} -mindepth 1 -maxdepth 1 -type d -exec rm -rf {{}} + || true",
+        f"find {shlex.quote(REMOTE_LABEL_ROOT)} -mindepth 1 -maxdepth 1 -type d -exec rm -rf {{}} + || true",
+    ]
+    if target != "benchmark":
+        cleanup_lines.insert(
+            2,
+            f"rm -rf {shlex.quote(f'{config.remote_dir}/models')}",
+        )
+    command = "\n".join(cleanup_lines) + "\n"
     try:
         _run_subprocess(
             (
