@@ -71,6 +71,10 @@ The shared text also includes lightweight structural tokens derived from the vis
 - `HAS_QUESTION_MARK:yes|no`
 - `LOW_TEXT:yes|no`
 - `SPARSE_MEDIA:yes` for link or image posts with low body text
+- `IMAGE_NO_BODY:yes` for image posts with no visible body text
+- `LOW_TEXT_IMAGE:yes` for image posts that are otherwise low-text
+
+`SPARSE_MEDIA:yes` is now representation-gated. It remains present in slice metrics and coverage summaries, but low-support splits keep it out of model inputs until the train/test positive counts are high enough to trust it.
 
 ## Label Normalization
 
@@ -173,6 +177,7 @@ The saved bundle includes:
 - the calibrator
 - low and high thresholds
 - threshold policy metadata
+- representation metadata describing whether sparse-media and image-specific markers were included in model inputs
 - model version metadata
 
 ## `training_summary.json`
@@ -215,6 +220,8 @@ Important sections:
 - `threshold_selection`
   - low/high thresholds and threshold sweeps
   - includes the current review precision target for low-threshold selection and the high precision target for strict auto selection
+  - includes `minimum_high_confidence_calibration_predictions`
+  - includes `high_threshold_fallback_used`
 - `metrics`
   - held-out high-confidence precision, recall, F1, and band counts
 - `operating_metrics`
@@ -242,6 +249,8 @@ Important sections:
 - `production_ready_blocked_reason`
 
 Neural benchmark summaries replace `feature_audit` with model-specific metadata such as `embedding_summary`, `training_args`, or `prompt_template`, but keep the same `split`, `calibration`, `threshold_selection`, `metrics`, and `operating_metrics` structure so results can be compared consistently.
+
+Neural summaries now also record the active `representation_config`, so later benchmark or inference runs can reconstruct the same metadata-token policy that the model was trained with.
 
 Training-only suite summaries intentionally omit `metrics` and `operating_metrics` until a later benchmark step writes them.
 

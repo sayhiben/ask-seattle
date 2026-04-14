@@ -143,6 +143,9 @@ The current comparison set is:
   - `char_weight`
   - `metadata_weight`
   - `min_df`
+  - `max_slice_positive_weight`
+
+If `models/benchmark-suite/suite_input.json` already exists, the variants command reuses that exact suite manifest so TF-IDF sweeps stay directly comparable to the latest full-suite run.
 
 ### Run A Selected-Model Seed Sweep
 
@@ -154,6 +157,7 @@ This retrains and benchmarks the current top neural comparison models across mul
 
 By default it evaluates:
 
+- `semantic_qwen3_embedding_0_6b`
 - `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
@@ -278,12 +282,13 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - `ask-seattle benchmark-suite` reads those trained suite artifacts later and computes held-out metrics only for models that are already trained for the current manifest
 - the same split object is reused across all nine benchmark evaluators so comparisons are apples-to-apples
 - if you later want future-facing evaluation on a longer collection window, you can opt into `SPLIT_STRATEGY=time`
-- the shared model text now includes normalized content metadata when available, such as post type, content domain, crosspost status, and whether the post has body text
-- the shared model text also includes light structural cues such as title/body length buckets, question-mark presence, and a sparse-media marker for image/link posts with very little text
+- the shared model text now includes normalized content metadata when available, such as post type, content domain, crosspost status, whether the post has body text, and explicit `IMAGE_NO_BODY` / `LOW_TEXT_IMAGE` markers for title-only image cases
+- the shared model text also includes light structural cues such as title/body length buckets and question-mark presence; the `SPARSE_MEDIA` marker stays in slice metrics but is withheld from model inputs until that cohort has enough positive support
 - the default TF-IDF model keeps metadata in its own exact-token feature channel, so character n-grams only see natural title/body text instead of synthetic markers like `HAS_QUESTION_MARK:yes`
 - the default TF-IDF model also normalizes raw URLs in lexical channels to a neutral `URL` token, so transport syntax like `https` or `://` does not dominate the word and character features while domain/post-type signal stays available in metadata
 - the default TF-IDF word stopword list now also excludes `just`, `one`, and `some`, which benchmarked better than leaving them active on the current `/r/seattle` split
 - the default TF-IDF model also scales `min_df` upward as the corpus grows so low-support phrases do not dominate once the label set is larger
+- the high-threshold selector now also requires a minimum calibration support count for the strict bucket; if calibration cannot satisfy both precision and support, the summary records a flagged fallback to the best precision-only threshold
 - the TF-IDF review threshold now uses a looser review-queue target than the strict auto bucket, so review recall does not collapse on the latest label snapshots
 - the training harness now reports cohort coverage and applies conservative slice-aware positive weighting, but only `image` and `low_text` remain active tuning levers
 - `ask-seattle retrain-all` writes the shared `suite_input.json` manifest plus nine training-only suite summaries, and `ask-seattle benchmark-suite` adds held-out metrics later
@@ -294,17 +299,17 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the benchmark summaries now include threshold-independent comparison metrics such as `pr_auc`, `auto_recall_at_precision_95`, and `review_recall_at_precision_75`
 - training and benchmark summaries now record the input-data fingerprint plus runtime package metadata, so local-vs-remote environment drift is easier to spot
 - slice metrics now include support counts and `support_status`, so low-support cohorts like `sparse_media` can stay observational instead of steering recommendations
-- the semantic family now includes a tuned MiniLM path, a Qwen3 embedding path, and a Jina v5 text-small-classification path, all using split title/body embeddings plus a metadata one-hot block before the calibrated logistic-regression head
+- the semantic family now includes a tuned MiniLM path, a Qwen3 embedding path, and a Jina v5 text-small-classification path, all using split title/body embeddings plus a metadata one-hot block before the calibrated logistic-regression head, with title/body weighting chosen on calibration
 - the Jina v5 classification path now uses a Jina-specific `Document:` component formatting pass instead of sharing the generic semantic prompt modes
 - the transformer family now includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
-- the decoder-LLM family uses Qwen3-1.7B with local LoRA fine-tuning and two-label continuation scoring
-- the decoder-LLM prompt now uses a compact contextual English template with title, body, post type, content domain, question-mark state, low-text state, and crosspost state
+- the encoder transformer benchmarks now search a small per-model config grid, restore the best epoch checkpoint, and rank candidates with the same precision-first calibration key used by the semantic family
+- the decoder-LLM family uses Qwen3-1.7B with local LoRA fine-tuning, two-label continuation scoring, and a four-profile prompt/rank/learning-rate/epoch search
+- the decoder-LLM prompt grid now includes an image-aware `v4_image_low_text` template that explicitly covers title-only image asks
 - on Apple Silicon, the Qwen3-1.7B benchmark path bypasses MPS and trains on CPU by default because the current MPS stack is not stable for that family
 - on Apple Silicon, the transformer-backed semantic embedding benchmarks currently bypass MPS and use CPU during training because the current Metal backend is not stable for those model families
 - on Apple Silicon, the bridge keeps all neural comparison models off MPS during `/check` and `/check-comparison`, so local comparison inference stays stable even if it is slower
 - the bridge now returns the primary `/check` result without waiting for comparison models unless explicitly asked to include them, and the userscript loads comparison cards individually through `/check-comparison`
 - CUDA neural training now enables TF32 matmul when available to reduce remote GPU runtime cost
-- the encoder transformer benchmarks now compare plain vs balanced cross-entropy, stop early on calibration PR-AUC, keep the better candidate, and run a small config grid for NeoBERT and ModernBERT-large before final selection
 - all benchmark summaries now include the same operating metrics for:
   - the strict `high` bucket
   - the broader `low-or-higher` review queue

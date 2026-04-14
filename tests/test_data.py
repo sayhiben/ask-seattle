@@ -45,7 +45,8 @@ def test_post_text_includes_normalized_metadata_tokens() -> None:
         == "TITLE: Question\n"
         "HAS_BODY:no TITLE_LEN_BUCKET:short BODY_LEN_BUCKET:none "
         "HAS_QUESTION_MARK:no LOW_TEXT:yes POST_TYPE:image "
-        "CONTENT_DOMAIN:instagram_com CROSSPOST:yes SPARSE_MEDIA:yes\n"
+        "CONTENT_DOMAIN:instagram_com CROSSPOST:yes SPARSE_MEDIA:yes "
+        "IMAGE_NO_BODY:yes LOW_TEXT_IMAGE:yes\n"
         "BODY:"
     )
     assert (
@@ -59,6 +60,21 @@ def test_post_text_includes_normalized_metadata_tokens() -> None:
         == "HAS_BODY:yes TITLE_LEN_BUCKET:short BODY_LEN_BUCKET:short "
         "HAS_QUESTION_MARK:no LOW_TEXT:yes POST_TYPE:link CONTENT_DOMAIN:example_org "
         "CROSSPOST:no SPARSE_MEDIA:yes"
+    )
+
+
+def test_post_metadata_text_can_disable_sparse_media_token_but_keep_image_low_text_tokens() -> None:
+    assert (
+        post_metadata_text(
+            title="What is this?",
+            selftext="",
+            post_type="image",
+            content_domain="i.redd.it",
+            include_sparse_media_token=False,
+        )
+        == "HAS_BODY:no TITLE_LEN_BUCKET:short BODY_LEN_BUCKET:none "
+        "HAS_QUESTION_MARK:yes LOW_TEXT:yes POST_TYPE:image CONTENT_DOMAIN:i_redd_it "
+        "IMAGE_NO_BODY:yes LOW_TEXT_IMAGE:yes"
     )
 
 

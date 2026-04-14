@@ -101,9 +101,9 @@ Use this when you want to compare:
 
 - the legacy baseline
 - the current recommended default
-- a TF-IDF tuning grid over `C`, `char_weight`, `metadata_weight`, and `min_df`
+- a TF-IDF tuning grid over `C`, `char_weight`, `metadata_weight`, `min_df`, and `max_slice_positive_weight`
 
-All variants run on the exact same split.
+If `models/benchmark-suite/suite_input.json` already exists, the variants run reuses that exact manifest. Otherwise it creates one fresh split and uses it for every variant in the sweep.
 
 ## Run A Selected-Model Seed Sweep
 
@@ -117,6 +117,7 @@ This is the stability pass for the top neural candidates. It retrains and benchm
 
 By default it evaluates:
 
+- `semantic_qwen3_embedding_0_6b`
 - `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
@@ -191,11 +192,11 @@ Important implementation details:
 - rerunning `make retrain` resumes from any compatible completed per-model artifact already on disk for that manifest
 - `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
 - `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
-- the semantic family now encodes title and body separately, concatenates those embeddings with a metadata one-hot block, and then fits the calibrated logistic-regression head
+- the semantic family now encodes title and body separately, searches a bounded title/body weighting mix, concatenates those embeddings with a metadata one-hot block, and then fits the calibrated logistic-regression head
 - the Jina v5 semantic path now uses a Jina-specific `Document:` component formatting mode instead of the generic semantic prompt wrapper
-- the encoder transformer family uses title/body pair encoding, compares plain vs balanced cross-entropy, keeps the better candidate by calibration PR-AUC with early stopping, and now runs a small config grid for NeoBERT and ModernBERT-large
+- the encoder transformer family uses title/body pair encoding, keeps the better candidate by a precision-first calibration ranking key, restores the best epoch checkpoint, and now runs a small config grid for DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
 - the decoder-LLM family scores the two candidate label continuations directly instead of free-form generation
-- the decoder-LLM prompt now uses a compact contextual template with only the structured fields that materially helped on current data, so prompt-template changes still force that family to retrain instead of silently reusing an older summary
+- the decoder-LLM family now searches a small prompt / learning-rate / LoRA-rank / epoch grid and includes an image-aware `v4_image_low_text` prompt template
 - on Apple Silicon, the decoder-LLM family currently bypasses MPS and uses the CPU fallback profile by default because the Qwen3 fine-tuning path is not stable on the current MPS stack
 - CUDA neural training now enables TF32 matmul when available to reduce remote runtime cost
 
@@ -242,6 +243,7 @@ The current default model applies these conservative refinements relative to the
 - lexical title/body text normalizes visible URLs to `URL`, so raw transport syntax like `https`, `www`, and `://` does not carry direct weight
 - the TF-IDF word stopword list also excludes `just`, `one`, and `some`, because that benchmarked better than leaving them active on the current `/r/seattle` split
 - default `min_df` now scales with corpus size so larger label sets suppress more brittle low-support phrases
+- high-threshold selection now requires both the precision target and at least `5` calibration predictions in the strict bucket; if calibration cannot satisfy both, the summary records a fallback to the best precision-only threshold
 - TF-IDF review-threshold selection now maximizes review recall subject to `review precision >= 0.70`, while the strict auto bucket still targets `high precision >= 0.95`
 - slice-aware positive weighting during training now uses only `image` and `low_text` as active tuning levers
 
@@ -256,8 +258,10 @@ The shared post representation still includes normalized content metadata when a
 - `HAS_QUESTION_MARK`
 - `LOW_TEXT`
 - `SPARSE_MEDIA`
+- `IMAGE_NO_BODY`
+- `LOW_TEXT_IMAGE`
 
-For the operational TF-IDF model specifically, those metadata tokens now live in a separate metadata feature channel instead of being mixed into the natural-language body and character channels.
+`SPARSE_MEDIA` still appears in slice metrics and summaries, but model inputs only include it once the shared split has enough positive support to trust that signal. For the operational TF-IDF model specifically, the active metadata tokens live in a separate metadata feature channel instead of being mixed into the natural-language body and character channels.
 
 The same TF-IDF path also normalizes visible URLs to a neutral `URL` token before vectorization. Domain and post-type information still survive in the metadata channel, but raw URL scaffolding no longer dominates the word or character audit.
 
@@ -335,7 +339,7 @@ Important benchmarked fields:
 - `calibration`
 - `production_gate`
 - `threshold_selection`
-  - includes the review precision target used for the low threshold and the high precision target used for the strict bucket
+  - includes the review precision target used for the low threshold, the high precision target used for the strict bucket, the minimum calibration support required for the strict bucket, and whether strict-threshold selection had to fall back
 - `metrics`
 - `operating_metrics`
 - `training_balance`

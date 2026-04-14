@@ -216,7 +216,7 @@ Writes:
 
 ## `ask-seattle benchmark-variants`
 
-Compare the current TF-IDF default, the legacy baseline, and a small TF-IDF tuning grid on the same held-out split.
+Compare the current TF-IDF default, the legacy baseline, and a bounded TF-IDF tuning grid on the same held-out split.
 
 ```bash
 ask-seattle benchmark-variants --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle]
@@ -247,6 +247,11 @@ Writes:
   - `tfidf_logreg.joblib`
   - `training_summary.json`
 - `variant_benchmark_summary.json`
+
+Current behavior:
+
+- if `models/benchmark-suite/suite_input.json` already exists next to the requested output directory, the command reuses that exact manifest instead of creating a new split
+- the TF-IDF sweep varies `classifier_c`, `char_weight`, `metadata_weight`, `min_df`, and `max_slice_positive_weight`
 
 ## `ask-seattle benchmark-suite`
 
@@ -308,7 +313,9 @@ Current suite details:
 - if a family is missing or incompatible, the command logs a warning and skips it instead of retraining it
 - the semantic family includes a tuned MiniLM path, a Qwen3 embedding path, and a Jina v5 text-small-classification path
 - the transformer family includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
-- the decoder family includes a Qwen3-1.7B LoRA classifier scored via two candidate label continuations
+- the semantic family searches bounded title/body weighting mixes before fitting the calibrated logistic head
+- the transformer family restores the best epoch checkpoint and ranks candidates with the same precision-first calibration key used by the semantic family
+- the decoder family includes a Qwen3-1.7B LoRA classifier scored via two candidate label continuations and selected from a small prompt / rank / learning-rate / epoch grid
 - on Apple Silicon, the decoder family currently defaults to `cpu_fallback` instead of MPS because the Qwen3 fine-tuning path is not stable on the current MPS stack
 - the shared model text includes normalized content metadata when available
 
@@ -330,7 +337,7 @@ python -m pip install -e ".[dev,models]"
 Retrain and benchmark selected suite models across multiple deterministic split seeds.
 
 ```bash
-ask-seattle benchmark-seed-sweep --data PATH --output-dir PATH [--split-strategy random|time] [--eval-subreddit seattle] [--benchmark-seeds 13,21,34] [--benchmark-seed-models transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--semantic-tertiary-model-id jinaai/jina-embeddings-v5-text-small-classification] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--causal-lm-model-id Qwen/Qwen3-1.7B]
+ask-seattle benchmark-seed-sweep --data PATH --output-dir PATH [--split-strategy random|time] [--eval-subreddit seattle] [--benchmark-seeds 13,21,34] [--benchmark-seed-models semantic_qwen3_embedding_0_6b,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--semantic-tertiary-model-id jinaai/jina-embeddings-v5-text-small-classification] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--causal-lm-model-id Qwen/Qwen3-1.7B]
 ```
 
 Arguments:
@@ -353,7 +360,7 @@ Arguments:
   - comma-separated deterministic split seeds
 - `--benchmark-seed-models`
   - optional
-  - defaults to `transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora`
+  - defaults to `semantic_qwen3_embedding_0_6b,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora`
   - comma-separated suite model names to retrain and benchmark across those seeds
 
 Writes:

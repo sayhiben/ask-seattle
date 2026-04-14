@@ -30,11 +30,11 @@ The comparison stack currently includes:
 - ModernBERT-large encoder classifier
 - Qwen3-1.7B LoRA decoder classifier
 
-The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They now compare plain versus balanced cross-entropy, use calibration PR-AUC for early stopping, and keep the better candidate before test evaluation. NeoBERT and ModernBERT-large also run a small learning-rate / weight-decay tuning grid before the final candidate is selected.
+The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by a precision-first calibration ranking key. DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection.
 
 The semantic Jina v5 classification path now uses a Jina-specific `Document:` component formatting mode rather than sharing the same generic prompt wrapper as the other embedding models.
 
-The decoder-LLM benchmark uses the same title/body/metadata content, but framed as a fixed binary prompt. The current prompt is a compact contextual English instruction that exposes only the fields that materially helped on current data: title, raw body, post type, content domain, question-mark presence, low-text state, and crosspost state. It is trained to continue with exactly `askseattle` or `not_askseattle`, then scored by comparing those two label continuations directly.
+The decoder-LLM benchmark uses the same title/body/metadata content, but framed as a fixed binary prompt. It now searches a small four-profile grid across prompt template, learning rate, LoRA rank, and epoch count. The prompt family includes a compact contextual template plus an image-aware variant that explicitly tells the model title-only image posts can still be `askseattle` when the title is asking for local help, identification, explanation, or recommendations.
 
 On CUDA runs, the neural training paths now also enable TF32 float32 matmul. That is a speed optimization for Ampere-and-newer NVIDIA GPUs; it lowers remote wall-clock cost without changing the product-level threshold policy.
 
@@ -64,8 +64,12 @@ When available, the shared representation also carries normalized content metada
 - `HAS_QUESTION_MARK`
 - `LOW_TEXT`
 - `SPARSE_MEDIA` for link or image posts with very little text
+- `IMAGE_NO_BODY` for image posts with no visible body text
+- `LOW_TEXT_IMAGE` for image posts that are otherwise low-text
 
 That is especially useful for link, image, and crosspost submissions where the title alone often underspecifies the moderation intent.
+
+`SPARSE_MEDIA` is intentionally more conservative than the other markers. The system still reports sparse-media slice metrics at all times, but it only feeds that token into model inputs once the shared split has enough positive support to trust it.
 
 For the operational TF-IDF model, those metadata tokens now live in a dedicated metadata feature channel rather than being mixed into the natural-language word and character channels. That keeps the feature audit cleaner and prevents the `char_wb` branch from overfitting our own synthetic marker syntax.
 
@@ -147,7 +151,9 @@ The system uses two thresholds.
 
 This is the conservative threshold for the `high` confidence band.
 
-Training chooses it by maximizing recall subject to meeting the precision target on the calibration slice.
+Training chooses it by maximizing recall subject to meeting the precision target on the calibration slice and reaching a minimum number of predicted positives in that strict bucket.
+
+The current minimum calibration support for the strict bucket is `5`. If no calibration threshold satisfies both precision and support, the training summary records a flagged fallback to the best precision-only threshold instead of pretending the stricter evidence existed.
 
 ### Low threshold
 

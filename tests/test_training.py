@@ -160,6 +160,7 @@ def test_train_model_bundle_requires_test_precision_for_production_ready(
                 precision=1.0,
                 recall=1.0,
                 f1=1.0,
+                predicted_positive=2,
                 support=2,
                 production_ready=True,
             ),
@@ -167,6 +168,8 @@ def test_train_model_bundle_requires_test_precision_for_production_ready(
             high_threshold_sweep=[],
             low_threshold_sweep=[],
             abstain_enabled=True,
+            minimum_high_confidence_calibration_predictions=5,
+            high_threshold_fallback_used=False,
         ),
     )
     monkeypatch.setattr(
@@ -238,6 +241,7 @@ def test_train_model_bundle_requires_minimum_high_confidence_predictions_for_pro
                 precision=1.0,
                 recall=1.0,
                 f1=1.0,
+                predicted_positive=2,
                 support=2,
                 production_ready=True,
             ),
@@ -245,6 +249,8 @@ def test_train_model_bundle_requires_minimum_high_confidence_predictions_for_pro
             high_threshold_sweep=[],
             low_threshold_sweep=[],
             abstain_enabled=True,
+            minimum_high_confidence_calibration_predictions=5,
+            high_threshold_fallback_used=False,
         ),
     )
     monkeypatch.setattr(
@@ -449,7 +455,7 @@ def test_benchmark_model_variants_writes_aggregate_summary(tmp_path: Path) -> No
     assert summary["production_gate"]["minimum_high_confidence_test_predictions"] == 5
     variant_names = [variant["name"] for variant in summary["variants"]]
     assert variant_names[0:2] == ["legacy_baseline", "recommended"]
-    assert any(name.startswith("grid_c0_5") for name in variant_names)
+    assert any(name.startswith("grid_c1_0") for name in variant_names)
     assert any(name.startswith("grid_c4_0") for name in variant_names)
     assert Path(tmp_path / "variants" / "variant_benchmark_summary.json").exists()
 
@@ -1195,6 +1201,30 @@ def test_causal_lm_prompt_v3_uses_compact_contextual_fields() -> None:
     assert prompt.endswith("Label:")
 
 
+def test_causal_lm_prompt_v4_adds_image_low_text_guidance() -> None:
+    row = {
+        "title": "Anyone know what this plant is?",
+        "body_raw": "",
+        "post_type": "image",
+        "content_domain": "i.redd.it",
+        "has_body": "no",
+        "has_question_mark": "yes",
+        "is_low_text": "yes",
+        "is_sparse_media": True,
+        "is_crosspost": "no",
+    }
+
+    prompt = training.causal_lm_prompt_for_row(
+        row,
+        prompt_template_version="v4_image_low_text",
+    )
+
+    assert "Title-only image posts can still be askseattle" in prompt
+    assert "Has body: no" in prompt
+    assert "Sparse media: yes" in prompt
+    assert prompt.endswith("Label:")
+
+
 def test_suite_summary_matches_spec_checks_causal_lm_prompt_template_version() -> None:
     spec = SuiteModelSpec(
         name="causal_lm_qwen3_1_7b_lora",
@@ -1319,11 +1349,12 @@ def test_transformer_candidate_profiles_apply_tuning_grid_to_neobert_and_modernb
     modernbert_large = training._transformer_candidate_profiles("answerdotai/ModernBERT-large")
     deberta = training._transformer_candidate_profiles("microsoft/deberta-v3-small")
 
-    assert len(neobert) == 2
+    assert len(neobert) == 3
+    assert any(profile["name"] == "precision_tuned" for profile in neobert)
     assert {profile["max_length"] for profile in neobert} == {384, 512}
     assert len(modernbert_large) == 3
     assert any(profile["weight_decay"] > 0.01 for profile in modernbert_large)
-    assert len(deberta) == 1
+    assert len(deberta) == 3
 
 
 def test_semantic_component_texts_fill_empty_values_with_placeholders() -> None:

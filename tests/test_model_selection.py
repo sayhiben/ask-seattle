@@ -153,6 +153,22 @@ def test_select_decision_thresholds_uses_review_precision_target_for_low_thresho
     assert thresholds.low_threshold <= thresholds.high_threshold
 
 
+def test_select_decision_thresholds_falls_back_when_precision_ready_threshold_lacks_support() -> None:
+    thresholds = select_decision_thresholds(
+        [1, 0, 1, 0],
+        [0.91, 0.62, 0.61, 0.1],
+        auto_precision_target=0.95,
+        minimum_high_confidence_calibration_predictions=2,
+        thresholds=(0.61, 0.62, 0.91),
+    )
+
+    assert thresholds.high_threshold == 0.91
+    assert thresholds.high_threshold_selection.production_ready is False
+    assert thresholds.high_threshold_selection.predicted_positive == 1
+    assert thresholds.minimum_high_confidence_calibration_predictions == 2
+    assert thresholds.high_threshold_fallback_used is True
+
+
 def test_tensor_to_float32_numpy_handles_bfloat16() -> None:
     torch = pytest.importorskip("torch")
 
@@ -437,6 +453,7 @@ def test_build_inference_row_separates_metadata_and_raw_text_views() -> None:
     assert "CONTENT_DOMAIN:instagram_com" in row["body"]
     assert "CROSSPOST:yes" in row["body"]
     assert "SPARSE_MEDIA:yes" in row["body"]
+    assert "LOW_TEXT_IMAGE:yes" in row["body"]
     assert row["body_length_bucket"] == "short"
     assert row["is_sparse_media"] is True
     assert row["body_raw"] == "See https://example.com/image"
@@ -448,6 +465,21 @@ def test_build_inference_row_separates_metadata_and_raw_text_views() -> None:
     assert row["text_lexical"] == "Looking for ideas URL\nSee URL"
     assert row["text_lexical_stripped"] == "Looking for ideas\nSee"
     assert row["text"].startswith("TITLE: Looking for ideas https://example.com/post")
+
+
+def test_build_inference_row_can_disable_sparse_media_token_for_runtime_representation() -> None:
+    row = build_inference_row(
+        title="Who is this?",
+        selftext="",
+        post_type="image",
+        content_domain="i.redd.it",
+        include_sparse_media_token=False,
+    )
+
+    assert "SPARSE_MEDIA:yes" not in row["metadata_text"]
+    assert "IMAGE_NO_BODY:yes" in row["metadata_text"]
+    assert "LOW_TEXT_IMAGE:yes" in row["metadata_text"]
+    assert row["is_sparse_media"] is True
 
 
 def test_default_min_df_scales_with_corpus_size() -> None:

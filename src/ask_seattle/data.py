@@ -15,6 +15,8 @@ DELETED_TEXT_MARKERS = {"[deleted]", "[removed]", "[deleted by user]"}
 MEDIA_POST_TYPES = frozenset({"image", "link"})
 LOW_TEXT_BODY_CHAR_THRESHOLD = 80
 URL_PLACEHOLDER = "URL"
+DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN = True
+DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS = True
 URL_PATTERN = re.compile(
     r"(?i)\b(?:https?://|www\.)\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?"
 )
@@ -79,15 +81,19 @@ def post_metadata_text(
     post_type: str | None = None,
     content_domain: str | None = None,
     is_crosspost: Any = None,
+    include_sparse_media_token: bool = DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+    include_image_low_text_tokens: bool = DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
 ) -> str:
     normalized_title = str(title or "").strip()
     normalized_body = normalize_body(selftext).strip()
+    has_body = bool(normalized_body)
+    low_text = is_low_text_body(normalized_body)
     tokens = [
-        f"HAS_BODY:{'yes' if normalized_body else 'no'}",
+        f"HAS_BODY:{'yes' if has_body else 'no'}",
         f"TITLE_LEN_BUCKET:{title_length_bucket(normalized_title)}",
         f"BODY_LEN_BUCKET:{body_length_bucket(normalized_body)}",
         f"HAS_QUESTION_MARK:{'yes' if has_question_mark(normalized_title, normalized_body) else 'no'}",
-        f"LOW_TEXT:{'yes' if is_low_text_body(normalized_body) else 'no'}",
+        f"LOW_TEXT:{'yes' if low_text else 'no'}",
     ]
 
     normalized_post_type = _normalize_metadata_token(post_type)
@@ -104,8 +110,14 @@ def post_metadata_text(
     if normalized_crosspost is not None:
         tokens.append(f"CROSSPOST:{normalized_crosspost}")
 
-    if is_sparse_media_post(post_type=post_type, selftext=normalized_body):
+    normalized_post_type = _normalize_metadata_token(post_type) or ""
+    sparse_media = is_sparse_media_post(post_type=post_type, selftext=normalized_body)
+    if include_sparse_media_token and sparse_media:
         tokens.append("SPARSE_MEDIA:yes")
+    if include_image_low_text_tokens and normalized_post_type == "image" and not has_body:
+        tokens.append("IMAGE_NO_BODY:yes")
+    if include_image_low_text_tokens and normalized_post_type == "image" and low_text:
+        tokens.append("LOW_TEXT_IMAGE:yes")
 
     return " ".join(tokens)
 
@@ -117,6 +129,8 @@ def post_text(
     post_type: str | None = None,
     content_domain: str | None = None,
     is_crosspost: Any = None,
+    include_sparse_media_token: bool = DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+    include_image_low_text_tokens: bool = DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
 ) -> str:
     body = normalize_body(selftext).strip()
     metadata = post_metadata_text(
@@ -125,6 +139,8 @@ def post_text(
         post_type=post_type,
         content_domain=content_domain,
         is_crosspost=is_crosspost,
+        include_sparse_media_token=include_sparse_media_token,
+        include_image_low_text_tokens=include_image_low_text_tokens,
     )
 
     parts = [f"TITLE: {str(title).strip()}"]

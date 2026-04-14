@@ -6,6 +6,7 @@ import importlib.metadata
 import json
 import logging
 import platform
+import shutil
 import subprocess
 import time
 from collections import Counter
@@ -22,12 +23,20 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import average_precision_score, precision_recall_fscore_support
 
 from ask_seattle import __version__
-from ask_seattle.data import LabeledPost, post_text, prepare_training_posts
+from ask_seattle.data import (
+    DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
+    DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+    LabeledPost,
+    is_sparse_media_post,
+    post_text,
+    prepare_training_posts,
+)
 from ask_seattle.model import (
     CalibrationResult,
     DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
     DEFAULT_CHAR_WEIGHT,
     DEFAULT_EXTRA_WORD_STOPWORDS,
+    DEFAULT_MIN_HIGH_CONFIDENCE_CALIBRATION_PREDICTIONS,
     DEFAULT_REVIEW_PRECISION_TARGET,
     DEFAULT_METADATA_WEIGHT,
     DEFAULT_SPLIT_SEED,
@@ -73,6 +82,7 @@ DEFAULT_MAX_SLICE_POSITIVE_WEIGHT = 2.0
 DEFAULT_TFIDF_REVIEW_PRECISION_TARGET = 0.70
 DEFAULT_BENCHMARK_SEED_SWEEP = (13, 21, 34)
 DEFAULT_BENCHMARK_SEED_MODELS = (
+    "semantic_qwen3_embedding_0_6b",
     "transformer_modernbert_base",
     "transformer_neobert",
     "transformer_modernbert_large",
@@ -98,6 +108,7 @@ class VariantConfig:
     min_df: int | None = None
     classifier_c: float = 1.0
     classifier_class_weight: str | dict[int, float] | None = "balanced"
+    max_slice_positive_weight: float = DEFAULT_MAX_SLICE_POSITIVE_WEIGHT
 
 
 @dataclass(frozen=True)
@@ -127,6 +138,8 @@ class SemanticModelConfig:
     prompt_modes: tuple[str, ...]
     normalize_embeddings: tuple[bool, ...]
     logistic_c_values: tuple[float, ...]
+    title_weight_values: tuple[float, ...] = (1.0,)
+    body_weight_values: tuple[float, ...] = (1.0,)
     config_version: str = "v1"
     encode_batch_size: int = 16
     prompt_prefix: str = ""
@@ -150,6 +163,27 @@ class OptionalModelDependencyError(RuntimeError):
 
 class MPSFallbackRequested(RuntimeError):
     pass
+
+
+def _representation_config_for_split(split: DatasetSplit) -> dict[str, bool]:
+    sparse_train_positive = sum(
+        1
+        for post in split.train
+        if post.label == 1 and is_sparse_media_post(post_type=post.post_type, selftext=post.selftext)
+    )
+    sparse_test_positive = sum(
+        1
+        for post in split.test
+        if post.label == 1 and is_sparse_media_post(post_type=post.post_type, selftext=post.selftext)
+    )
+    include_sparse_media_token = (
+        sparse_train_positive >= SPARSE_MEDIA_ACTIVE_TRAIN_POSITIVES
+        and sparse_test_positive >= SPARSE_MEDIA_ACTIVE_TEST_POSITIVES
+    )
+    return {
+        "include_sparse_media_token": include_sparse_media_token,
+        "include_image_low_text_tokens": DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
+    }
 
 
 def _package_version(name: str) -> str | None:
@@ -341,18 +375,29 @@ def benchmark_model_variants_from_labels(
         split_seed,
         evaluation_subreddit or "all",
     )
-    posts, prepared_data_summary = prepare_training_posts(input_path)
-    split = split_labeled_posts(
-        posts,
-        calibration_size=DEFAULT_CALIBRATION_SIZE,
-        test_size=DEFAULT_TEST_SIZE,
-        split_strategy=split_strategy,
-        split_seed=split_seed,
-        evaluation_subreddit=evaluation_subreddit,
-    )
-
     benchmark_dir = Path(output_dir)
     benchmark_dir.mkdir(parents=True, exist_ok=True)
+    suite_input_path = benchmark_dir.parent / "benchmark-suite" / "suite_input.json"
+    reused_suite_manifest = suite_input_path.exists()
+    if reused_suite_manifest:
+        split, prepared_data_summary = _load_suite_input_manifest(suite_input_path)
+        LOGGER.info(
+            "variant benchmark reusing suite manifest path=%s train=%s calibration=%s test=%s",
+            str(suite_input_path),
+            len(split.train),
+            len(split.calibration),
+            len(split.test),
+        )
+    else:
+        posts, prepared_data_summary = prepare_training_posts(input_path)
+        split = split_labeled_posts(
+            posts,
+            calibration_size=DEFAULT_CALIBRATION_SIZE,
+            test_size=DEFAULT_TEST_SIZE,
+            split_strategy=split_strategy,
+            split_seed=split_seed,
+            evaluation_subreddit=evaluation_subreddit,
+        )
     variants = [
         VariantConfig(
             name="legacy_baseline",
@@ -376,28 +421,31 @@ def benchmark_model_variants_from_labels(
             min_df=None,
         ),
     ]
-    for classifier_c in (0.5, 1.0, 4.0):
+    for classifier_c in (1.0, 4.0):
         for char_weight in (0.1, 0.25):
-            for metadata_weight in (0.5, 1.0):
+            for metadata_weight in (0.4, 0.5, 0.75):
                 for min_df in (3, 5):
-                    variants.append(
-                        VariantConfig(
-                            name=(
-                                f"grid_c{str(classifier_c).replace('.', '_')}"
-                                f"_char{str(char_weight).replace('.', '_')}"
-                                f"_meta{str(metadata_weight).replace('.', '_')}"
-                                f"_mindf{min_df}"
-                            ),
-                            extra_word_stopwords=DEFAULT_EXTRA_WORD_STOPWORDS,
-                            char_weight=char_weight,
-                            metadata_weight=metadata_weight,
-                            normalize_urls=True,
-                            strip_urls=False,
-                            review_precision_target=DEFAULT_TFIDF_REVIEW_PRECISION_TARGET,
-                            classifier_c=classifier_c,
-                            min_df=min_df,
+                    for max_slice_positive_weight in (2.0, 3.0):
+                        variants.append(
+                            VariantConfig(
+                                name=(
+                                    f"grid_c{str(classifier_c).replace('.', '_')}"
+                                    f"_char{str(char_weight).replace('.', '_')}"
+                                    f"_meta{str(metadata_weight).replace('.', '_')}"
+                                    f"_mindf{min_df}"
+                                    f"_slice{str(max_slice_positive_weight).replace('.', '_')}"
+                                ),
+                                extra_word_stopwords=DEFAULT_EXTRA_WORD_STOPWORDS,
+                                char_weight=char_weight,
+                                metadata_weight=metadata_weight,
+                                normalize_urls=True,
+                                strip_urls=False,
+                                review_precision_target=DEFAULT_TFIDF_REVIEW_PRECISION_TARGET,
+                                classifier_c=classifier_c,
+                                min_df=min_df,
+                                max_slice_positive_weight=max_slice_positive_weight,
+                            )
                         )
-                    )
     results: list[dict[str, Any]] = []
 
     for variant in variants:
@@ -441,6 +489,7 @@ def benchmark_model_variants_from_labels(
                 "classifier_c": variant.classifier_c,
                 "classifier_class_weight": variant.classifier_class_weight,
                 "min_df": variant.min_df,
+                "max_slice_positive_weight": variant.max_slice_positive_weight,
                 "production_ready": summary["production_ready"],
                 "production_ready_blocked_reason": summary["production_ready_blocked_reason"],
                 "metrics": summary["metrics"],
@@ -459,8 +508,10 @@ def benchmark_model_variants_from_labels(
         "input_data": input_data,
         "runtime_environment": _runtime_environment_metadata(),
         "evaluation_subreddit": split.evaluation_subreddit,
+        "reused_suite_manifest": reused_suite_manifest,
         "production_gate": _production_gate_summary(),
         "prepared_data": prepared_data_summary,
+        "suite_input_path": str(suite_input_path) if reused_suite_manifest else None,
         "split": {
             "train": len(split.train),
             "calibration": len(split.calibration),
@@ -991,6 +1042,7 @@ def _select_thresholds_or_default(
             probabilities,
             auto_precision_target=high_precision_target,
             review_precision_target=review_precision_target,
+            minimum_high_confidence_calibration_predictions=DEFAULT_MIN_HIGH_CONFIDENCE_CALIBRATION_PREDICTIONS,
         )
 
     support = Counter(y_calibration)[1]
@@ -1008,6 +1060,8 @@ def _select_thresholds_or_default(
         high_threshold_sweep=[],
         low_threshold_sweep=[],
         abstain_enabled=False,
+        minimum_high_confidence_calibration_predictions=DEFAULT_MIN_HIGH_CONFIDENCE_CALIBRATION_PREDICTIONS,
+        high_threshold_fallback_used=False,
     )
 
 
@@ -1052,12 +1106,15 @@ def _suite_model_specs(
                     display_name="Semantic MiniLM",
                     model_id=semantic_model_id,
                     backend="sentence_transformers",
-                    config_version="v2_title_body_metadata",
-                    prompt_modes=("plain", "task_prefix"),
+                    config_version="v3_title_body_metadata_weighted",
+                    prompt_modes=("plain", "task_prefix", "short_task_prefix"),
                     normalize_embeddings=(False, True),
-                    logistic_c_values=(0.25, 1.0, 4.0, 16.0, 64.0),
+                    logistic_c_values=(4.0, 16.0, 64.0),
+                    title_weight_values=(1.0, 1.5, 2.0),
+                    body_weight_values=(1.0, 0.75),
                     encode_batch_size=16,
                     prompt_prefix="Classify Reddit post intent:",
+                    short_prompt_prefix="Classify askseattle intent.",
                     pooling="sentence_transformers",
                 ),
             },
@@ -1073,10 +1130,12 @@ def _suite_model_specs(
                     display_name="Semantic Qwen3-Embedding",
                     model_id=semantic_secondary_model_id,
                     backend="hf_embedding",
-                    config_version="v2_title_body_metadata",
+                    config_version="v3_title_body_metadata_weighted",
                     prompt_modes=("plain", "short_task_prefix"),
                     normalize_embeddings=(False, True),
-                    logistic_c_values=(0.25, 1.0, 4.0, 16.0),
+                    logistic_c_values=(4.0, 8.0, 16.0),
+                    title_weight_values=(1.0, 1.5, 2.0),
+                    body_weight_values=(1.0, 0.75),
                     encode_batch_size=8,
                     prompt_prefix="Instruct: classify the Reddit post as askseattle or not_askseattle.\nQuery:",
                     short_prompt_prefix="Classify askseattle intent.",
@@ -1095,12 +1154,15 @@ def _suite_model_specs(
                     display_name="Semantic Jina v5 Text Small Classification",
                     model_id=semantic_tertiary_model_id,
                     backend="hf_embedding",
-                    config_version="v4_title_body_metadata_jina_document_component",
-                    prompt_modes=("plain", "jina_document_component"),
+                    config_version="v5_title_body_metadata_weighted_jina_document_component",
+                    prompt_modes=("plain", "short_task_prefix", "jina_document_component"),
                     normalize_embeddings=(False, True),
-                    logistic_c_values=(0.25, 1.0, 4.0, 16.0),
+                    logistic_c_values=(4.0, 16.0, 64.0),
+                    title_weight_values=(1.0, 1.5, 2.0),
+                    body_weight_values=(1.0, 0.75),
                     encode_batch_size=8,
                     prompt_prefix="Document:",
+                    short_prompt_prefix="Classify askseattle intent.",
                     pooling="last_token",
                 ),
             },
@@ -1113,7 +1175,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_model_id,
                 "display_name": "Transformer DeBERTa-v3-small",
-                "config_version": "v2_pr_auc_early_stop",
+                "config_version": "v3_pr_auc_precision_profiles",
             },
         ),
         SuiteModelSpec(
@@ -1124,7 +1186,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_secondary_model_id,
                 "display_name": "Transformer ModernBERT-base",
-                "config_version": "v2_pr_auc_early_stop",
+                "config_version": "v4_pr_auc_precision_grid",
             },
         ),
         SuiteModelSpec(
@@ -1135,7 +1197,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_tertiary_model_id,
                 "display_name": "Transformer NeoBERT",
-                "config_version": "v4_pr_auc_grid_remote_code",
+                "config_version": "v5_pr_auc_precision_grid_remote_code",
             },
         ),
         SuiteModelSpec(
@@ -1146,7 +1208,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_quaternary_model_id,
                 "display_name": "Transformer ModernBERT-large",
-                "config_version": "v3_pr_auc_grid",
+                "config_version": "v4_pr_auc_precision_grid",
             },
         ),
         SuiteModelSpec(
@@ -1157,8 +1219,11 @@ def _suite_model_specs(
             kwargs={
                 "model_id": causal_lm_model_id,
                 "display_name": "Decoder Qwen3-1.7B LoRA",
-                "prompt_template_version": DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
-                "config_version": "v2_compact_prompt_two_epoch",
+                "prompt_template_version": (
+                    DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
+                    "v4_image_low_text",
+                ),
+                "config_version": "v3_prompt_grid_precision_selection",
             },
         ),
     ]
@@ -1611,7 +1676,10 @@ def _suite_summary_matches_spec(summary: dict[str, Any], spec: SuiteModelSpec) -
         actual_prompt_template_version = summary.get("prompt_template_version")
         if actual_prompt_template_version is None and isinstance(summary.get("training_args"), dict):
             actual_prompt_template_version = summary["training_args"].get("prompt_template_version")
-        if actual_prompt_template_version != expected_prompt_template_version:
+        if isinstance(expected_prompt_template_version, (tuple, list, set)):
+            if actual_prompt_template_version not in expected_prompt_template_version:
+                return False
+        elif actual_prompt_template_version != expected_prompt_template_version:
             return False
     variant = spec.kwargs.get("variant")
     if variant is not None:
@@ -1623,6 +1691,10 @@ def _suite_summary_matches_spec(summary: dict[str, Any], spec: SuiteModelSpec) -
         if bool(actual_variant.get("normalize_urls")) != bool(variant.normalize_urls):
             return False
         if bool(actual_variant.get("strip_urls")) != bool(variant.strip_urls):
+            return False
+        if float(actual_variant.get("max_slice_positive_weight", DEFAULT_MAX_SLICE_POSITIVE_WEIGHT)) != float(
+            variant.max_slice_positive_weight
+        ):
             return False
     return True
 
@@ -1718,6 +1790,9 @@ def _threshold_summary(
         "review_precision_target": review_precision_target,
         "high_precision_target": high_precision_target,
         "low_threshold_strategy": "max_recall_subject_to_review_precision_target",
+        "high_threshold_strategy": "max_recall_subject_to_high_precision_target_and_minimum_calibration_predictions",
+        "minimum_high_confidence_calibration_predictions": thresholds.minimum_high_confidence_calibration_predictions,
+        "high_threshold_fallback_used": thresholds.high_threshold_fallback_used,
         "abstain_enabled": thresholds.abstain_enabled,
         "high_threshold_selection": asdict(thresholds.high_threshold_selection),
         "low_threshold_metrics": thresholds.low_threshold_metrics,
@@ -1746,12 +1821,17 @@ def _train_model_bundle_for_split(
         len(split.test),
     )
 
-    train_rows = _inference_rows(split.train)
-    calibration_rows = _inference_rows(split.calibration)
-    test_rows = _inference_rows(split.test)
     y_calibration = [post.label for post in split.calibration]
     y_test = [post.label for post in split.test]
-    slice_weighting = _slice_aware_positive_weighting(split.train, rows=train_rows)
+    representation_config = _representation_config_for_split(split)
+    train_rows = _inference_rows(split.train, representation_config=representation_config)
+    calibration_rows = _inference_rows(split.calibration, representation_config=representation_config)
+    test_rows = _inference_rows(split.test, representation_config=representation_config)
+    slice_weighting = _slice_aware_positive_weighting(
+        split.train,
+        rows=train_rows,
+        max_slice_positive_weight=variant.max_slice_positive_weight,
+    )
 
     model = train_model(
         split.train,
@@ -1764,6 +1844,8 @@ def _train_model_bundle_for_split(
         min_df=variant.min_df,
         classifier_c=variant.classifier_c,
         classifier_class_weight=variant.classifier_class_weight,
+        include_sparse_media_token=representation_config["include_sparse_media_token"],
+        include_image_low_text_tokens=representation_config["include_image_low_text_tokens"],
     )
     raw_calibration_scores = positive_probabilities(model, calibration_rows)
     calibrator, calibration = fit_sigmoid_calibrator(y_calibration, raw_calibration_scores)
@@ -1787,6 +1869,7 @@ def _train_model_bundle_for_split(
         artifact_path,
         calibrator=calibrator,
         decision_policy=threshold_policy,
+        representation_config=representation_config,
     )
 
     summary = {
@@ -1806,8 +1889,10 @@ def _train_model_bundle_for_split(
             "classifier_c": variant.classifier_c,
             "classifier_class_weight": variant.classifier_class_weight,
             "min_df": variant.min_df,
+            "max_slice_positive_weight": variant.max_slice_positive_weight,
         },
         "artifact_path": str(artifact_path),
+        "representation_config": representation_config,
         "high_precision_target": DEFAULT_HIGH_PRECISION_TARGET,
         "production_gate": _production_gate_summary(),
         "split": _split_summary(split),
@@ -1910,18 +1995,21 @@ def _train_semantic_embedding_bundle_for_split(
         display_name="Semantic",
         model_id=str(model_id or DEFAULT_SEMANTIC_MODEL_ID),
         backend="sentence_transformers",
-        config_version="v2_title_body_metadata",
+        config_version="v3_title_body_metadata_weighted",
         prompt_modes=("plain",),
         normalize_embeddings=(False,),
         logistic_c_values=(1.0,),
+        title_weight_values=(1.0,),
+        body_weight_values=(1.0,),
         encode_batch_size=16,
         prompt_prefix="",
         pooling="sentence_transformers",
     )
     artifact_dir = Path(output_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    train_rows = _inference_rows(split.train)
-    calibration_rows = _inference_rows(split.calibration)
+    representation_config = _representation_config_for_split(split)
+    train_rows = _inference_rows(split.train, representation_config=representation_config)
+    calibration_rows = _inference_rows(split.calibration, representation_config=representation_config)
     slice_weighting = _slice_aware_positive_weighting(split.train, rows=train_rows)
     y_train = [post.label for post in split.train]
     y_calibration = [post.label for post in split.calibration]
@@ -1942,7 +2030,7 @@ def _train_semantic_embedding_bundle_for_split(
         dtype=np.float32,
     )
     LOGGER.info(
-        "semantic training start name=%s model_id=%s backend=%s train=%s calibration=%s test=%s prompt_modes=%s normalize_options=%s c_values=%s",
+        "semantic training start name=%s model_id=%s backend=%s train=%s calibration=%s test=%s prompt_modes=%s normalize_options=%s title_weights=%s body_weights=%s c_values=%s",
         semantic_config.name,
         semantic_config.model_id,
         semantic_config.backend,
@@ -1951,6 +2039,8 @@ def _train_semantic_embedding_bundle_for_split(
         len(split.test),
         list(semantic_config.prompt_modes),
         list(semantic_config.normalize_embeddings),
+        list(semantic_config.title_weight_values),
+        list(semantic_config.body_weight_values),
         list(semantic_config.logistic_c_values),
     )
 
@@ -2023,58 +2113,77 @@ def _train_semantic_embedding_bundle_for_split(
             normalize=False,
         )
         for normalize_embeddings in semantic_config.normalize_embeddings:
-            normalized_train = np.hstack(
-                [
-                    _normalize_embedding_matrix(train_title_embeddings, enabled=normalize_embeddings),
-                    _normalize_embedding_matrix(train_body_embeddings, enabled=normalize_embeddings),
-                    metadata_train,
-                ]
-            ).astype(np.float32)
-            normalized_calibration = np.hstack(
-                [
-                    _normalize_embedding_matrix(calibration_title_embeddings, enabled=normalize_embeddings),
-                    _normalize_embedding_matrix(calibration_body_embeddings, enabled=normalize_embeddings),
-                    metadata_calibration,
-                ]
-            ).astype(np.float32)
-            for logistic_c in semantic_config.logistic_c_values:
-                classifier = LogisticRegression(
-                    class_weight="balanced",
-                    max_iter=2_000,
-                    solver="liblinear",
-                    C=logistic_c,
-                )
-                classifier.fit(normalized_train, y_train, sample_weight=slice_weighting.sample_weights)
-                calibration_scores = [float(row[1]) for row in classifier.predict_proba(normalized_calibration)]
-                candidate = {
-                    "prompt_mode": prompt_mode,
-                    "normalize_embeddings": normalize_embeddings,
-                    "logistic_c": logistic_c,
-                    "classifier": classifier,
-                    "calibration_scores": calibration_scores,
-                    "encoder": encoder,
-                    "metadata_vectorizer": metadata_vectorizer,
-                }
-                candidate_metrics = _classification_metrics(
-                    y_calibration,
-                    [1 if score >= 0.5 else 0 for score in calibration_scores],
-                )
-                candidate_metrics["pr_auc"] = _safe_average_precision(y_calibration, calibration_scores)
-                candidate["candidate_metrics"] = candidate_metrics
-                LOGGER.info(
-                    "semantic candidate evaluated name=%s prompt_mode=%s normalize=%s logistic_c=%s precision=%.3f recall=%.3f f1=%.3f pr_auc=%.3f predicted_positive=%s",
-                    semantic_config.name,
-                    prompt_mode,
-                    normalize_embeddings,
-                    logistic_c,
-                    float(candidate_metrics["precision"]),
-                    float(candidate_metrics["recall"]),
-                    float(candidate_metrics["f1"]),
-                    float(candidate_metrics["pr_auc"]),
-                    int(candidate_metrics["predicted_positive"]),
-                )
-                if best_candidate is None or _semantic_candidate_key(candidate) > _semantic_candidate_key(best_candidate):
-                    best_candidate = candidate
+            normalized_train_title = _normalize_embedding_matrix(train_title_embeddings, enabled=normalize_embeddings)
+            normalized_train_body = _normalize_embedding_matrix(train_body_embeddings, enabled=normalize_embeddings)
+            normalized_calibration_title = _normalize_embedding_matrix(
+                calibration_title_embeddings,
+                enabled=normalize_embeddings,
+            )
+            normalized_calibration_body = _normalize_embedding_matrix(
+                calibration_body_embeddings,
+                enabled=normalize_embeddings,
+            )
+            for title_weight in semantic_config.title_weight_values:
+                for body_weight in semantic_config.body_weight_values:
+                    weighted_train = np.hstack(
+                        [
+                            normalized_train_title * float(title_weight),
+                            normalized_train_body * float(body_weight),
+                            metadata_train,
+                        ]
+                    ).astype(np.float32)
+                    weighted_calibration = np.hstack(
+                        [
+                            normalized_calibration_title * float(title_weight),
+                            normalized_calibration_body * float(body_weight),
+                            metadata_calibration,
+                        ]
+                    ).astype(np.float32)
+                    for logistic_c in semantic_config.logistic_c_values:
+                        classifier = LogisticRegression(
+                            class_weight="balanced",
+                            max_iter=2_000,
+                            solver="liblinear",
+                            C=logistic_c,
+                        )
+                        classifier.fit(weighted_train, y_train, sample_weight=slice_weighting.sample_weights)
+                        calibration_scores = [float(row[1]) for row in classifier.predict_proba(weighted_calibration)]
+                        candidate = {
+                            "prompt_mode": prompt_mode,
+                            "normalize_embeddings": normalize_embeddings,
+                            "title_weight": float(title_weight),
+                            "body_weight": float(body_weight),
+                            "logistic_c": logistic_c,
+                            "classifier": classifier,
+                            "calibration_scores": calibration_scores,
+                            "encoder": encoder,
+                            "metadata_vectorizer": metadata_vectorizer,
+                        }
+                        candidate_metrics = _classification_metrics(
+                            y_calibration,
+                            [1 if score >= 0.5 else 0 for score in calibration_scores],
+                        )
+                        candidate_metrics["pr_auc"] = _safe_average_precision(y_calibration, calibration_scores)
+                        candidate["candidate_metrics"] = candidate_metrics
+                        candidate["constraint_metrics"] = _constraint_metrics_summary(y_calibration, calibration_scores)
+                        LOGGER.info(
+                            "semantic candidate evaluated name=%s prompt_mode=%s normalize=%s title_weight=%s body_weight=%s logistic_c=%s precision=%.3f recall=%.3f f1=%.3f pr_auc=%.3f auto95_recall=%.3f review75_recall=%.3f predicted_positive=%s",
+                            semantic_config.name,
+                            prompt_mode,
+                            normalize_embeddings,
+                            float(title_weight),
+                            float(body_weight),
+                            logistic_c,
+                            float(candidate_metrics["precision"]),
+                            float(candidate_metrics["recall"]),
+                            float(candidate_metrics["f1"]),
+                            float(candidate_metrics["pr_auc"]),
+                            float(candidate["constraint_metrics"]["auto_recall_at_precision_95"]["recall"]),
+                            float(candidate["constraint_metrics"]["review_recall_at_precision_75"]["recall"]),
+                            int(candidate_metrics["predicted_positive"]),
+                        )
+                        if best_candidate is None or _semantic_candidate_key(candidate) > _semantic_candidate_key(best_candidate):
+                            best_candidate = candidate
 
     if best_candidate is None:
         raise RuntimeError("semantic tuning did not produce a candidate")
@@ -2083,12 +2192,16 @@ def _train_semantic_embedding_bundle_for_split(
     metadata_vectorizer = best_candidate["metadata_vectorizer"]
     normalize_embeddings = bool(best_candidate["normalize_embeddings"])
     prompt_mode = str(best_candidate["prompt_mode"])
+    title_weight = float(best_candidate["title_weight"])
+    body_weight = float(best_candidate["body_weight"])
     classifier = best_candidate["classifier"]
     LOGGER.info(
-        "semantic candidate selected name=%s prompt_mode=%s normalize=%s logistic_c=%s",
+        "semantic candidate selected name=%s prompt_mode=%s normalize=%s title_weight=%s body_weight=%s logistic_c=%s",
         semantic_config.name,
         prompt_mode,
         normalize_embeddings,
+        float(best_candidate["title_weight"]),
+        float(best_candidate["body_weight"]),
         best_candidate["logistic_c"],
     )
     LOGGER.info(
@@ -2123,7 +2236,11 @@ def _train_semantic_embedding_bundle_for_split(
         normalize=normalize_embeddings,
     )
     calibration_features = np.hstack(
-        [calibration_title_embeddings, calibration_body_embeddings, metadata_calibration]
+        [
+            calibration_title_embeddings * title_weight,
+            calibration_body_embeddings * body_weight,
+            metadata_calibration,
+        ]
     ).astype(np.float32)
     raw_calibration_scores = [float(row[1]) for row in classifier.predict_proba(calibration_features)]
     calibrator, calibration = fit_sigmoid_calibrator(y_calibration, raw_calibration_scores)
@@ -2156,6 +2273,8 @@ def _train_semantic_embedding_bundle_for_split(
             "short_prompt_prefix": semantic_config.short_prompt_prefix,
             "normalize_embeddings": normalize_embeddings,
             "pooling": semantic_config.pooling,
+            "title_weight": title_weight,
+            "body_weight": body_weight,
             "encode_batch_size": semantic_config.encode_batch_size,
             "embedding_dimension": int(np.asarray(calibration_title_embeddings).shape[1]),
             "metadata_vectorizer": metadata_vectorizer,
@@ -2163,6 +2282,7 @@ def _train_semantic_embedding_bundle_for_split(
             "classifier": classifier,
             "calibrator": calibrator,
             "threshold_policy": threshold_policy,
+            "representation_config": representation_config,
             "version": __version__,
         },
         artifact_path,
@@ -2176,6 +2296,7 @@ def _train_semantic_embedding_bundle_for_split(
         "display_name": semantic_config.display_name,
         "model_id": semantic_config.model_id,
         "artifact_path": str(artifact_path),
+        "representation_config": representation_config,
         "high_precision_target": DEFAULT_HIGH_PRECISION_TARGET,
         "production_gate": _production_gate_summary(),
         "split": _split_summary(split),
@@ -2200,7 +2321,10 @@ def _train_semantic_embedding_bundle_for_split(
             "pooling": semantic_config.pooling,
             "metadata_feature_count": int(metadata_calibration.shape[1]),
             "logistic_c": float(best_candidate["logistic_c"]),
+            "title_weight": title_weight,
+            "body_weight": body_weight,
             "candidate_metrics": best_candidate["candidate_metrics"],
+            "constraint_metrics": best_candidate["constraint_metrics"],
         },
         "training_balance": slice_weighting.summary,
         "benchmark_status": "not_run",
@@ -2210,7 +2334,7 @@ def _train_semantic_embedding_bundle_for_split(
     if prepared_data_summary is not None:
         summary["prepared_data"] = prepared_data_summary
     if evaluate_on_test:
-        test_rows = _inference_rows(split.test)
+        test_rows = _inference_rows(split.test, representation_config=representation_config)
         y_test = [post.label for post in split.test]
         LOGGER.info(
             "semantic encoding start name=%s prompt_mode=%s split=test_title examples=%s normalize=%s",
@@ -2219,7 +2343,6 @@ def _train_semantic_embedding_bundle_for_split(
             len(split.test),
             normalize_embeddings,
         )
-        test_rows = _inference_rows(split.test)
         test_title_texts, test_body_texts = _semantic_component_texts(
             split.test,
             prompt_mode=prompt_mode,
@@ -2248,7 +2371,13 @@ def _train_semantic_embedding_bundle_for_split(
             metadata_vectorizer.transform([str(row.get("metadata_text") or "") for row in test_rows]).toarray(),
             dtype=np.float32,
         )
-        test_features = np.hstack([test_title_embeddings, test_body_embeddings, test_metadata]).astype(np.float32)
+        test_features = np.hstack(
+            [
+                test_title_embeddings * title_weight,
+                test_body_embeddings * body_weight,
+                test_metadata,
+            ]
+        ).astype(np.float32)
         raw_test_scores = [float(row[1]) for row in classifier.predict_proba(test_features)]
         calibrated_test_scores = apply_probability_calibrator(calibrator, raw_test_scores)
         band_metrics = evaluate_decision_policy(
@@ -2487,22 +2616,72 @@ def _semantic_embeddings(
     return output
 
 
-def _transformer_candidate_profiles(model_id: str) -> list[dict[str, Any]]:
+def _transformer_candidate_profiles(model_id: str, *, allow_long_context: bool = False) -> list[dict[str, Any]]:
     normalized = str(model_id).lower()
     if "modernbert-large" in normalized:
-        return [
+        profiles = [
             {"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 384},
             {"name": "precision_tuned", "learning_rate": 1.0e-5, "weight_decay": 0.03, "max_length": 384},
             {"name": "balanced_tuned", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 384},
         ]
+        if allow_long_context:
+            profiles.append({"name": "long_context", "learning_rate": 1.25e-5, "weight_decay": 0.02, "max_length": 512})
+        return profiles
     if "neobert" in normalized:
         return [
             {"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 384},
+            {"name": "precision_tuned", "learning_rate": 1.0e-5, "weight_decay": 0.03, "max_length": 384},
             {"name": "long_context", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 512},
         ]
     if "modernbert" in normalized:
-        return [{"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 384}]
+        profiles = [
+            {"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 384},
+            {"name": "precision_tuned", "learning_rate": 1.0e-5, "weight_decay": 0.03, "max_length": 384},
+            {"name": "balanced_tuned", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 384},
+        ]
+        if allow_long_context:
+            profiles.append({"name": "long_context", "learning_rate": 1.25e-5, "weight_decay": 0.02, "max_length": 512})
+        return profiles
+    if "deberta-v3-small" in normalized:
+        return [
+            {"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 256},
+            {"name": "balanced_tuned", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 384},
+            {"name": "precision_tuned", "learning_rate": 1.0e-5, "weight_decay": 0.03, "max_length": 256},
+        ]
     return [{"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 256}]
+
+
+def _causal_lm_candidate_profiles() -> list[dict[str, Any]]:
+    return [
+        {
+            "name": "v3_baseline",
+            "prompt_template_version": DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
+            "learning_rate": 5e-5,
+            "lora_rank": 8,
+            "num_train_epochs": 2,
+        },
+        {
+            "name": "v3_precision",
+            "prompt_template_version": DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
+            "learning_rate": 2e-5,
+            "lora_rank": 8,
+            "num_train_epochs": 3,
+        },
+        {
+            "name": "v4_low_text",
+            "prompt_template_version": "v4_image_low_text",
+            "learning_rate": 5e-5,
+            "lora_rank": 8,
+            "num_train_epochs": 2,
+        },
+        {
+            "name": "v4_capacity",
+            "prompt_template_version": "v4_image_low_text",
+            "learning_rate": 2e-5,
+            "lora_rank": 16,
+            "num_train_epochs": 3,
+        },
+    ]
 
 
 def _hf_embedding_encode(
@@ -2598,20 +2777,28 @@ def _normalize_embedding_matrix(embeddings: np.ndarray, *, enabled: bool) -> np.
     return np.asarray(embeddings / norms, dtype=np.float32)
 
 
-def _semantic_candidate_key(candidate: dict[str, Any]) -> tuple[float, float, float, float, float]:
-    metrics = candidate["candidate_metrics"]
+def _precision_first_candidate_key(candidate: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
+    metrics = candidate.get("candidate_metrics", {})
+    constraint_metrics = candidate.get("constraint_metrics", {})
+    auto_band = constraint_metrics.get("auto_recall_at_precision_95", {})
+    review_queue = constraint_metrics.get("review_recall_at_precision_75", {})
     return (
         float(metrics.get("pr_auc", 0.0)),
-        float(metrics["f1"]),
-        float(metrics["recall"]),
-        float(metrics["precision"]),
-        -float(candidate["logistic_c"]),
+        float(auto_band.get("recall", 0.0)),
+        float(review_queue.get("recall", 0.0)),
+        float(review_queue.get("precision", 0.0)),
+        float(metrics.get("recall", 0.0)),
+        float(metrics.get("precision", 0.0)),
     )
 
 
-def _transformer_candidate_key(candidate: dict[str, Any]) -> tuple[float, int]:
+def _semantic_candidate_key(candidate: dict[str, Any]) -> tuple[float, float, float, float, float, float, float]:
+    return _precision_first_candidate_key(candidate) + (-float(candidate["logistic_c"]),)
+
+
+def _transformer_candidate_key(candidate: dict[str, Any]) -> tuple[float, float, float, float, float, float, int]:
     return (
-        float(candidate.get("pr_auc", 0.0)),
+        *_precision_first_candidate_key(candidate),
         1 if str(candidate.get("loss_mode")) == "plain_cross_entropy" else 0,
     )
 
@@ -2658,7 +2845,10 @@ def _train_transformer_bundle_for_split(
     per_device_train_batch_size = 8 if not use_cpu else 1
     per_device_eval_batch_size = 16 if not use_cpu else 2
     gradient_accumulation_steps = 1 if not use_cpu else 8
-    candidate_profiles = _transformer_candidate_profiles(model_id)
+    candidate_profiles = _transformer_candidate_profiles(
+        model_id,
+        allow_long_context=(effective_runtime_profile == "cuda"),
+    )
     default_max_length = int(candidate_profiles[0]["max_length"])
     max_length = default_max_length
     model_dtype = None
@@ -2689,10 +2879,18 @@ def _train_transformer_bundle_for_split(
         str(model_dtype).replace("torch.", "") if model_dtype is not None else "default",
     )
 
-    train_inference_rows = _inference_rows(split.train)
+    representation_config = _representation_config_for_split(split)
+    train_inference_rows = _inference_rows(split.train, representation_config=representation_config)
     slice_weighting = _slice_aware_positive_weighting(split.train, rows=train_inference_rows)
-    train_rows = _sequence_classification_rows(split.train, example_weights=slice_weighting.sample_weights)
-    calibration_rows = _sequence_classification_rows(split.calibration)
+    train_rows = _sequence_classification_rows(
+        split.train,
+        example_weights=slice_weighting.sample_weights,
+        representation_config=representation_config,
+    )
+    calibration_rows = _sequence_classification_rows(
+        split.calibration,
+        representation_config=representation_config,
+    )
     y_train = [row["label"] for row in train_rows]
     y_calibration = [row["label"] for row in calibration_rows]
 
@@ -2827,8 +3025,9 @@ def _train_transformer_bundle_for_split(
                     weight_decay=float(profile["weight_decay"]),
                     use_cpu=use_cpu,
                     eval_strategy="epoch",
-                    save_strategy="no",
-                    load_best_model_at_end=False,
+                    save_strategy="epoch",
+                    save_total_limit=1,
+                    load_best_model_at_end=True,
                     metric_for_best_model="pr_auc",
                     greater_is_better=True,
                     logging_strategy="no",
@@ -2891,6 +3090,14 @@ def _train_transformer_bundle_for_split(
                     "raw_calibration_scores": raw_calibration_scores,
                     "pr_auc": candidate_pr_auc,
                 }
+                candidate["candidate_metrics"] = {
+                    **_classification_metrics(
+                        y_calibration,
+                        [1 if score >= 0.5 else 0 for score in raw_calibration_scores],
+                    ),
+                    "pr_auc": candidate_pr_auc,
+                }
+                candidate["constraint_metrics"] = _constraint_metrics_summary(y_calibration, raw_calibration_scores)
                 candidate_results[f"{profile['name']}:{loss_mode}"] = {
                     "profile_name": str(profile["name"]),
                     "learning_rate": float(profile["learning_rate"]),
@@ -2898,13 +3105,21 @@ def _train_transformer_bundle_for_split(
                     "max_length": int(profile["max_length"]),
                     "loss_mode": loss_mode,
                     "pr_auc": float(candidate_pr_auc),
+                    "auto_recall_at_precision_95": float(
+                        candidate["constraint_metrics"]["auto_recall_at_precision_95"]["recall"]
+                    ),
+                    "review_recall_at_precision_75": float(
+                        candidate["constraint_metrics"]["review_recall_at_precision_75"]["recall"]
+                    ),
                 }
                 LOGGER.info(
-                    "transformer candidate evaluated model_id=%s profile=%s loss_mode=%s pr_auc=%.3f",
+                    "transformer candidate evaluated model_id=%s profile=%s loss_mode=%s pr_auc=%.3f auto95_recall=%.3f review75_recall=%.3f",
                     model_id,
                     profile["name"],
                     loss_mode,
                     candidate_pr_auc,
+                    float(candidate["constraint_metrics"]["auto_recall_at_precision_95"]["recall"]),
+                    float(candidate["constraint_metrics"]["review_recall_at_precision_75"]["recall"]),
                 )
                 if best_candidate is None or _transformer_candidate_key(candidate) > _transformer_candidate_key(best_candidate):
                     if best_candidate is not None:
@@ -2973,11 +3188,13 @@ def _train_transformer_bundle_for_split(
         "weight_decay": float(selected_profile["weight_decay"]),
         "trust_remote_code": trust_remote_code,
         "cuda_matmul": cuda_runtime,
+        "representation_config": representation_config,
         "class_weights": {
             "not_askseattle": float(class_weights[0].item()),
             "askseattle": float(class_weights[1].item()),
         },
         "early_stopping": {"metric": "pr_auc", "patience": 1},
+        "best_checkpoint_restored": True,
         "candidate_results": candidate_results,
     }
     joblib.dump(
@@ -2991,6 +3208,7 @@ def _train_transformer_bundle_for_split(
             "load_options": load_options,
             "calibrator": calibrator,
             "threshold_policy": threshold_policy,
+            "representation_config": representation_config,
             "training_args": training_args_summary,
             "version": __version__,
         },
@@ -3007,6 +3225,7 @@ def _train_transformer_bundle_for_split(
                 "calibrator_bundle_path": _portable_artifact_reference(bundle_path, base_dir=artifact_dir),
                 "load_options": load_options,
                 "threshold_policy": threshold_policy,
+                "representation_config": representation_config,
                 "training_args": training_args_summary,
                 "version": __version__,
             },
@@ -3027,6 +3246,7 @@ def _train_transformer_bundle_for_split(
         "artifact_path": str(bundle_path),
         "model_dir": str(model_dir),
         "artifact_metadata_path": str(metadata_path),
+        "representation_config": representation_config,
         "high_precision_target": DEFAULT_HIGH_PRECISION_TARGET,
         "production_gate": _production_gate_summary(),
         "split": _split_summary(split),
@@ -3047,8 +3267,8 @@ def _train_transformer_bundle_for_split(
     if prepared_data_summary is not None:
         summary["prepared_data"] = prepared_data_summary
     if evaluate_on_test:
-        test_rows = _sequence_classification_rows(split.test)
-        test_inference_rows = _inference_rows(split.test)
+        test_rows = _sequence_classification_rows(split.test, representation_config=representation_config)
+        test_inference_rows = _inference_rows(split.test, representation_config=representation_config)
         y_test = [row["label"] for row in test_rows]
         previous_transformers_verbosity = transformers_logging.get_verbosity()
         transformers_logging.set_verbosity_error()
@@ -3165,13 +3385,11 @@ def _train_causal_lm_bundle_for_split(
     target_max_length = 24 if use_mps else 32
     sequence_max_length = 320 if use_mps else 448
     gradient_accumulation_steps = 8 if use_mps else 4
-    num_train_epochs = 2
     if effective_runtime_profile == "cpu_fallback":
         prompt_max_length = 224
         target_max_length = 24
         sequence_max_length = 320
         gradient_accumulation_steps = 8
-        num_train_epochs = 2
         if detected_runtime == "mps" and runtime_profile is None:
             LOGGER.info(
                 "causal lm training bypassing mps model_id=%s reason=%s fallback_runtime=cpu_fallback",
@@ -3179,7 +3397,7 @@ def _train_causal_lm_bundle_for_split(
                 "qwen causal-lm fine-tuning is not stable on this MPS stack",
             )
     LOGGER.info(
-        "causal lm training start model_id=%s display_name=%s output_dir=%s runtime_profile=%s train=%s calibration=%s test=%s epochs=%s grad_accum=%s sequence_max_length=%s dtype=%s",
+        "causal lm training start model_id=%s display_name=%s output_dir=%s runtime_profile=%s train=%s calibration=%s test=%s candidate_count=%s grad_accum=%s sequence_max_length=%s dtype=%s",
         model_id,
         display_name or model_id,
         str(artifact_dir),
@@ -3187,54 +3405,21 @@ def _train_causal_lm_bundle_for_split(
         len(split.train),
         len(split.calibration),
         len(split.test),
-        num_train_epochs,
+        len(_causal_lm_candidate_profiles()),
         gradient_accumulation_steps,
         sequence_max_length,
         str(model_dtype).replace("torch.", "") if model_dtype is not None else "default",
     )
 
-    train_inference_rows = _inference_rows(split.train)
+    representation_config = _representation_config_for_split(split)
+    train_inference_rows = _inference_rows(split.train, representation_config=representation_config)
     slice_weighting = _slice_aware_positive_weighting(split.train, rows=train_inference_rows)
-    train_rows = _causal_lm_rows(
-        split.train,
-        example_weights=slice_weighting.sample_weights,
-        prompt_template_version=prompt_template_version,
-    )
-    calibration_rows = _causal_lm_rows(split.calibration, prompt_template_version=prompt_template_version)
-    y_calibration = [row["label"] for row in calibration_rows]
+    y_calibration = [post.label for post in split.calibration]
 
     tokenizer = AutoTokenizer.from_pretrained(model_id, use_fast=False)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     LOGGER.info("causal lm tokenizer ready model_id=%s prompt_max_length=%s target_max_length=%s", model_id, prompt_max_length, target_max_length)
-    causal_lm_load_kwargs: dict[str, Any] = {}
-    if model_dtype is not None:
-        causal_lm_load_kwargs["dtype"] = model_dtype
-    base_model = AutoModelForCausalLM.from_pretrained(model_id, **causal_lm_load_kwargs)
-    if hasattr(base_model.config, "use_cache"):
-        base_model.config.use_cache = False
-    if hasattr(base_model, "gradient_checkpointing_enable"):
-        base_model.gradient_checkpointing_enable()
-    lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=8,
-        lora_alpha=16,
-        lora_dropout=0.05,
-        target_modules="all-linear",
-    )
-    model = get_peft_model(base_model, lora_config)
-    LOGGER.info("causal lm lora attached model_id=%s", model_id)
-
-    LOGGER.info("causal lm tokenization start model_id=%s split=train examples=%s", model_id, len(train_rows))
-    train_dataset = _causal_lm_training_dataset(
-        train_rows,
-        tokenizer=tokenizer,
-        prompt_max_length=prompt_max_length,
-        target_max_length=target_max_length,
-        sequence_max_length=sequence_max_length,
-    )
-    calibration_prompts = [row["prompt"] for row in calibration_rows]
-    LOGGER.info("causal lm tokenization complete model_id=%s", model_id)
 
     class WeightedCausalLMTrainer(Trainer):
         def compute_loss(
@@ -3307,64 +3492,168 @@ def _train_causal_lm_bundle_for_split(
         def on_train_end(self, args: Any, state: Any, control: Any, **kwargs: Any) -> None:
             LOGGER.info("%s trainer finished total_steps=%s", self.label, state.max_steps)
 
-    training_args = TrainingArguments(
-        output_dir=str(artifact_dir / "checkpoints"),
-        learning_rate=5e-5,
-        per_device_train_batch_size=1,
-        gradient_accumulation_steps=gradient_accumulation_steps,
-        num_train_epochs=num_train_epochs,
-        weight_decay=0.0,
-        save_strategy="no",
-        logging_strategy="no",
-        optim="adafactor" if use_mps else "adamw_torch",
-        report_to=[],
-        use_cpu=(device == "cpu"),
-        remove_unused_columns=False,
-    )
-    trainer = WeightedCausalLMTrainer(
-        model=model,
-        args=training_args,
-        train_dataset=train_dataset,
-        processing_class=tokenizer,
-        callbacks=[ProgressLoggingCallback(f"causal lm {display_name or model_id}")],
-    )
-    LOGGER.info("causal lm trainer fit start model_id=%s", model_id)
-    try:
-        trainer.train()
-    except (RuntimeError, MPSFallbackRequested) as exc:
-        if effective_runtime_profile == "mps" and _should_retry_transformer_on_cpu(exc):
-            LOGGER.warning(
-                "causal lm training leaving mps model_id=%s reason=%s retrying_runtime=cpu_fallback",
-                model_id,
-                str(exc),
-            )
-            _clear_torch_memory()
-            return _train_causal_lm_bundle_for_split(
-                split=split,
-                output_dir=output_dir,
-                model_id=model_id,
-                display_name=display_name,
-                prepared_data_summary=prepared_data_summary,
-                runtime_profile="cpu_fallback",
-                prompt_template_version=prompt_template_version,
-                config_version=config_version,
-                evaluate_on_test=evaluate_on_test,
-            )
-        raise
-    LOGGER.info("causal lm trainer fit complete model_id=%s", model_id)
+    best_candidate: dict[str, Any] | None = None
+    candidate_results: dict[str, dict[str, Any]] = {}
+    for candidate_profile in _causal_lm_candidate_profiles():
+        candidate_prompt_template_version = str(candidate_profile["prompt_template_version"])
+        candidate_train_rows = _causal_lm_rows(
+            split.train,
+            example_weights=slice_weighting.sample_weights,
+            prompt_template_version=candidate_prompt_template_version,
+            representation_config=representation_config,
+        )
+        candidate_calibration_rows = _causal_lm_rows(
+            split.calibration,
+            prompt_template_version=candidate_prompt_template_version,
+            representation_config=representation_config,
+        )
+        candidate_train_dataset = _causal_lm_training_dataset(
+            candidate_train_rows,
+            tokenizer=tokenizer,
+            prompt_max_length=prompt_max_length,
+            target_max_length=target_max_length,
+            sequence_max_length=sequence_max_length,
+        )
+        calibration_prompts = [row["prompt"] for row in candidate_calibration_rows]
+        LOGGER.info(
+            "causal lm candidate start model_id=%s candidate=%s prompt_template=%s lr=%s lora_rank=%s epochs=%s",
+            model_id,
+            candidate_profile["name"],
+            candidate_prompt_template_version,
+            float(candidate_profile["learning_rate"]),
+            int(candidate_profile["lora_rank"]),
+            int(candidate_profile["num_train_epochs"]),
+        )
+        causal_lm_load_kwargs: dict[str, Any] = {}
+        if model_dtype is not None:
+            causal_lm_load_kwargs["dtype"] = model_dtype
+        base_model = AutoModelForCausalLM.from_pretrained(model_id, **causal_lm_load_kwargs)
+        if hasattr(base_model.config, "use_cache"):
+            base_model.config.use_cache = False
+        if hasattr(base_model, "gradient_checkpointing_enable"):
+            base_model.gradient_checkpointing_enable()
+        lora_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM,
+            r=int(candidate_profile["lora_rank"]),
+            lora_alpha=16,
+            lora_dropout=0.05,
+            target_modules="all-linear",
+        )
+        model = get_peft_model(base_model, lora_config)
+        training_args = TrainingArguments(
+            output_dir=str(artifact_dir / f"checkpoints_{candidate_profile['name']}"),
+            learning_rate=float(candidate_profile["learning_rate"]),
+            per_device_train_batch_size=1,
+            gradient_accumulation_steps=gradient_accumulation_steps,
+            num_train_epochs=int(candidate_profile["num_train_epochs"]),
+            weight_decay=0.0,
+            save_strategy="no",
+            logging_strategy="no",
+            optim="adafactor" if use_mps else "adamw_torch",
+            report_to=[],
+            use_cpu=(device == "cpu"),
+            remove_unused_columns=False,
+        )
+        trainer = WeightedCausalLMTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=candidate_train_dataset,
+            processing_class=tokenizer,
+            callbacks=[ProgressLoggingCallback(f"causal lm {display_name or model_id} {candidate_profile['name']}")],
+        )
+        LOGGER.info("causal lm trainer fit start model_id=%s candidate=%s", model_id, candidate_profile["name"])
+        try:
+            trainer.train()
+        except (RuntimeError, MPSFallbackRequested) as exc:
+            if effective_runtime_profile == "mps" and _should_retry_transformer_on_cpu(exc):
+                LOGGER.warning(
+                    "causal lm training leaving mps model_id=%s reason=%s retrying_runtime=cpu_fallback",
+                    model_id,
+                    str(exc),
+                )
+                _clear_torch_memory()
+                return _train_causal_lm_bundle_for_split(
+                    split=split,
+                    output_dir=output_dir,
+                    model_id=model_id,
+                    display_name=display_name,
+                    prepared_data_summary=prepared_data_summary,
+                    runtime_profile="cpu_fallback",
+                    prompt_template_version=prompt_template_version,
+                    config_version=config_version,
+                    evaluate_on_test=evaluate_on_test,
+                )
+            raise
+        LOGGER.info("causal lm trainer fit complete model_id=%s candidate=%s", model_id, candidate_profile["name"])
 
-    merged_model = trainer.model.merge_and_unload()
-    model_dir = artifact_dir / "causal_lm_model"
-    merged_model.save_pretrained(str(model_dir))
-    tokenizer.save_pretrained(str(model_dir))
+        merged_model = trainer.model.merge_and_unload()
+        candidate_model_dir = artifact_dir / f"causal_lm_model_{candidate_profile['name']}"
+        if candidate_model_dir.exists():
+            shutil.rmtree(candidate_model_dir)
+        merged_model.save_pretrained(str(candidate_model_dir))
+        tokenizer.save_pretrained(str(candidate_model_dir))
 
-    LOGGER.info("causal lm calibration scoring start model_id=%s examples=%s", model_id, len(calibration_prompts))
-    raw_calibration_scores = _causal_lm_candidate_probabilities(
-        merged_model,
-        tokenizer,
-        calibration_prompts,
-        device=device,
-    )
+        raw_calibration_scores = _causal_lm_candidate_probabilities(
+            merged_model,
+            tokenizer,
+            calibration_prompts,
+            device=device,
+        )
+        candidate_metrics = _classification_metrics(
+            y_calibration,
+            [1 if score >= 0.5 else 0 for score in raw_calibration_scores],
+        )
+        candidate_metrics["pr_auc"] = _safe_average_precision(y_calibration, raw_calibration_scores)
+        constraint_metrics = _constraint_metrics_summary(y_calibration, raw_calibration_scores)
+        candidate = {
+            "profile": dict(candidate_profile),
+            "prompt_template_version": candidate_prompt_template_version,
+            "model": merged_model,
+            "model_dir": candidate_model_dir,
+            "raw_calibration_scores": raw_calibration_scores,
+            "candidate_metrics": candidate_metrics,
+            "constraint_metrics": constraint_metrics,
+        }
+        candidate_results[str(candidate_profile["name"])] = {
+            "prompt_template_version": candidate_prompt_template_version,
+            "learning_rate": float(candidate_profile["learning_rate"]),
+            "lora_rank": int(candidate_profile["lora_rank"]),
+            "num_train_epochs": int(candidate_profile["num_train_epochs"]),
+            "pr_auc": float(candidate_metrics["pr_auc"]),
+            "auto_recall_at_precision_95": float(constraint_metrics["auto_recall_at_precision_95"]["recall"]),
+            "review_recall_at_precision_75": float(constraint_metrics["review_recall_at_precision_75"]["recall"]),
+        }
+        LOGGER.info(
+            "causal lm candidate evaluated model_id=%s candidate=%s pr_auc=%.3f auto95_recall=%.3f review75_recall=%.3f",
+            model_id,
+            candidate_profile["name"],
+            float(candidate_metrics["pr_auc"]),
+            float(constraint_metrics["auto_recall_at_precision_95"]["recall"]),
+            float(constraint_metrics["review_recall_at_precision_75"]["recall"]),
+        )
+        if best_candidate is None or _precision_first_candidate_key(candidate) > _precision_first_candidate_key(best_candidate):
+            if best_candidate is not None:
+                previous_model_dir = Path(best_candidate["model_dir"])
+                if previous_model_dir.exists():
+                    shutil.rmtree(previous_model_dir)
+                previous_model = best_candidate.get("model")
+                if previous_model is not None and hasattr(previous_model, "to"):
+                    previous_model.to("cpu")
+            best_candidate = candidate
+        else:
+            if candidate_model_dir.exists():
+                shutil.rmtree(candidate_model_dir)
+            if hasattr(merged_model, "to"):
+                merged_model.to("cpu")
+        del trainer
+        del model
+        del base_model
+        _clear_torch_memory()
+
+    if best_candidate is None:
+        raise RuntimeError("causal lm tuning did not produce a candidate")
+
+    raw_calibration_scores = list(best_candidate["raw_calibration_scores"])
     calibrator, calibration = fit_sigmoid_calibrator(y_calibration, raw_calibration_scores)
     thresholds = _select_thresholds_or_default(
         y_calibration,
@@ -3381,19 +3670,33 @@ def _train_causal_lm_bundle_for_split(
         review_precision_target=DEFAULT_REVIEW_PRECISION_TARGET,
         high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
     )
+    selected_prompt_template_version = str(best_candidate["prompt_template_version"])
+    selected_profile = dict(best_candidate["profile"])
+    model_dir = artifact_dir / "causal_lm_model"
+    if model_dir.exists():
+        shutil.rmtree(model_dir)
+    shutil.move(str(best_candidate["model_dir"]), str(model_dir))
     artifact_path = artifact_dir / "causal_lm_bundle.joblib"
     training_args_summary = {
-        "learning_rate": 5e-5,
+        "learning_rate": float(selected_profile["learning_rate"]),
+        "candidate_profile": selected_profile,
         "per_device_train_batch_size": 1,
         "gradient_accumulation_steps": gradient_accumulation_steps,
-        "num_train_epochs": num_train_epochs,
+        "num_train_epochs": int(selected_profile["num_train_epochs"]),
         "max_length": sequence_max_length,
-        "prompt_template_version": prompt_template_version,
+        "prompt_template_version": selected_prompt_template_version,
         "runtime_profile": effective_runtime_profile,
         "torch_dtype": str(model_dtype).replace("torch.", "") if model_dtype is not None else "default",
         "cuda_matmul": cuda_runtime,
         "optimizer": "adafactor" if use_mps else "adamw_torch",
-        "lora": {"r": 8, "alpha": 16, "dropout": 0.05, "target_modules": "all-linear"},
+        "representation_config": representation_config,
+        "lora": {
+            "r": int(selected_profile["lora_rank"]),
+            "alpha": 16,
+            "dropout": 0.05,
+            "target_modules": "all-linear",
+        },
+        "candidate_results": candidate_results,
     }
     joblib.dump(
         {
@@ -3406,7 +3709,8 @@ def _train_causal_lm_bundle_for_split(
             "calibrator": calibrator,
             "threshold_policy": threshold_policy,
             "training_args": training_args_summary,
-            "prompt_template_version": prompt_template_version,
+            "representation_config": representation_config,
+            "prompt_template_version": selected_prompt_template_version,
             "version": __version__,
         },
         artifact_path,
@@ -3421,6 +3725,7 @@ def _train_causal_lm_bundle_for_split(
         "model_id": model_id,
         "artifact_path": str(artifact_path),
         "model_dir": str(model_dir),
+        "representation_config": representation_config,
         "high_precision_target": DEFAULT_HIGH_PRECISION_TARGET,
         "production_gate": _production_gate_summary(),
         "split": _split_summary(split),
@@ -3432,7 +3737,7 @@ def _train_causal_lm_bundle_for_split(
         ),
         "threshold_policy": threshold_policy,
         "config_version": config_version,
-        "prompt_template_version": prompt_template_version,
+        "prompt_template_version": selected_prompt_template_version,
         "training_args": training_args_summary,
         "training_balance": slice_weighting.summary,
         "benchmark_status": "not_run",
@@ -3442,13 +3747,17 @@ def _train_causal_lm_bundle_for_split(
     if prepared_data_summary is not None:
         summary["prepared_data"] = prepared_data_summary
     if evaluate_on_test:
-        test_rows = _causal_lm_rows(split.test, prompt_template_version=prompt_template_version)
+        test_rows = _causal_lm_rows(
+            split.test,
+            prompt_template_version=selected_prompt_template_version,
+            representation_config=representation_config,
+        )
         test_prompts = [row["prompt"] for row in test_rows]
-        test_inference_rows = _inference_rows(split.test)
+        test_inference_rows = _inference_rows(split.test, representation_config=representation_config)
         y_test = [row["label"] for row in test_rows]
         LOGGER.info("causal lm test scoring start model_id=%s examples=%s", model_id, len(test_prompts))
         raw_test_scores = _causal_lm_candidate_probabilities(
-            merged_model,
+            best_candidate["model"],
             tokenizer,
             test_prompts,
             device=device,
@@ -3517,6 +3826,9 @@ def _train_causal_lm_bundle_for_split(
             thresholds.high_threshold,
             _format_elapsed(time.perf_counter() - started_at),
         )
+    if hasattr(best_candidate["model"], "to"):
+        best_candidate["model"].to("cpu")
+    _clear_torch_memory()
     return summary
 
 
@@ -3525,9 +3837,14 @@ def _causal_lm_rows(
     *,
     example_weights: list[float] | None = None,
     prompt_template_version: str = DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
+    representation_config: dict[str, bool] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     resolved_weights = example_weights or [1.0] * len(posts)
+    resolved_representation_config = representation_config or {
+        "include_sparse_media_token": DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+        "include_image_low_text_tokens": DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
+    }
     for post, example_weight in zip(posts, resolved_weights, strict=True):
         inference_row = build_inference_row(
             title=post.title,
@@ -3535,6 +3852,8 @@ def _causal_lm_rows(
             post_type=post.post_type,
             content_domain=post.content_domain,
             is_crosspost=post.is_crosspost,
+            include_sparse_media_token=resolved_representation_config["include_sparse_media_token"],
+            include_image_low_text_tokens=resolved_representation_config["include_image_low_text_tokens"],
         )
         prompt = causal_lm_prompt_for_row(
             inference_row,
@@ -3697,9 +4016,14 @@ def _sequence_classification_rows(
     posts: list[LabeledPost],
     *,
     example_weights: list[float] | None = None,
+    representation_config: dict[str, bool] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     resolved_weights = example_weights or [1.0] * len(posts)
+    resolved_representation_config = representation_config or {
+        "include_sparse_media_token": DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+        "include_image_low_text_tokens": DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
+    }
     for post, example_weight in zip(posts, resolved_weights, strict=True):
         inference_row = build_inference_row(
             title=post.title,
@@ -3707,6 +4031,8 @@ def _sequence_classification_rows(
             post_type=post.post_type,
             content_domain=post.content_domain,
             is_crosspost=post.is_crosspost,
+            include_sparse_media_token=resolved_representation_config["include_sparse_media_token"],
+            include_image_low_text_tokens=resolved_representation_config["include_image_low_text_tokens"],
         )
         rows.append(
             {
@@ -3720,7 +4046,15 @@ def _sequence_classification_rows(
     return rows
 
 
-def _texts(posts: list[LabeledPost]) -> list[str]:
+def _texts(
+    posts: list[LabeledPost],
+    *,
+    representation_config: dict[str, bool] | None = None,
+) -> list[str]:
+    resolved_representation_config = representation_config or {
+        "include_sparse_media_token": DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+        "include_image_low_text_tokens": DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
+    }
     return [
         post_text(
             post.title,
@@ -3728,12 +4062,22 @@ def _texts(posts: list[LabeledPost]) -> list[str]:
             post_type=post.post_type,
             content_domain=post.content_domain,
             is_crosspost=post.is_crosspost,
+            include_sparse_media_token=resolved_representation_config["include_sparse_media_token"],
+            include_image_low_text_tokens=resolved_representation_config["include_image_low_text_tokens"],
         )
         for post in posts
     ]
 
 
-def _inference_rows(posts: list[LabeledPost]) -> list[dict[str, Any]]:
+def _inference_rows(
+    posts: list[LabeledPost],
+    *,
+    representation_config: dict[str, bool] | None = None,
+) -> list[dict[str, Any]]:
+    resolved_representation_config = representation_config or {
+        "include_sparse_media_token": DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+        "include_image_low_text_tokens": DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
+    }
     return [
         build_inference_row(
             title=post.title,
@@ -3741,6 +4085,8 @@ def _inference_rows(posts: list[LabeledPost]) -> list[dict[str, Any]]:
             post_type=post.post_type,
             content_domain=post.content_domain,
             is_crosspost=post.is_crosspost,
+            include_sparse_media_token=resolved_representation_config["include_sparse_media_token"],
+            include_image_low_text_tokens=resolved_representation_config["include_image_low_text_tokens"],
         )
         for post in posts
     ]
@@ -3781,6 +4127,7 @@ def _slice_aware_positive_weighting(
     posts: list[LabeledPost],
     *,
     rows: list[dict[str, Any]] | None = None,
+    max_slice_positive_weight: float = DEFAULT_MAX_SLICE_POSITIVE_WEIGHT,
 ) -> SliceAwareWeighting:
     resolved_rows = rows or _inference_rows(posts)
     labels = [post.label for post in posts]
@@ -3804,7 +4151,7 @@ def _slice_aware_positive_weighting(
         bucket_weights[slice_name] = {
             bucket: round(
                 min(
-                    DEFAULT_MAX_SLICE_POSITIVE_WEIGHT,
+                    max_slice_positive_weight,
                     float((max_count / count) ** 0.5),
                 ),
                 4,
@@ -3827,7 +4174,7 @@ def _slice_aware_positive_weighting(
     positive_weights = [weight for weight, label in zip(sample_weights, labels, strict=True) if label == 1]
     summary = {
         "strategy": "slice_aware_positive_weighting",
-        "max_slice_positive_weight": DEFAULT_MAX_SLICE_POSITIVE_WEIGHT,
+        "max_slice_positive_weight": float(max_slice_positive_weight),
         "bucket_weights": bucket_weights,
         "train_positive_bucket_counts": {
             slice_name: dict(counts)
@@ -3934,7 +4281,14 @@ def _benchmark_existing_suite_model(
             raise OptionalModelDependencyError(str(exc)) from exc
         raise
 
-    test_rows = _inference_rows(split.test)
+    representation_config = (
+        trained_summary.get("representation_config")
+        if isinstance(trained_summary.get("representation_config"), dict)
+        else bundle.get("representation_config")
+        if isinstance(bundle.get("representation_config"), dict)
+        else _representation_config_for_split(split)
+    )
+    test_rows = _inference_rows(split.test, representation_config=representation_config)
     y_test = [post.label for post in split.test]
     threshold_policy = trained_summary.get("threshold_policy") or bundle.get("threshold_policy") or {}
     low_threshold = float(
@@ -3960,7 +4314,7 @@ def _benchmark_existing_suite_model(
     operating_metrics = _operating_metrics_summary(
         y_test,
         calibrated_test_scores,
-        train_rows=_inference_rows(split.train),
+        train_rows=_inference_rows(split.train, representation_config=representation_config),
         train_labels=[post.label for post in split.train],
         rows=test_rows,
         low_threshold=low_threshold,
@@ -3982,6 +4336,7 @@ def _benchmark_existing_suite_model(
             "production_gate": _production_gate_summary(),
             "runtime_environment": _runtime_environment_metadata(),
             "split": _split_summary(split),
+            "representation_config": representation_config,
             "ranking_metrics": _ranking_metrics_summary(y_test, calibrated_test_scores),
             "constraint_metrics": _constraint_metrics_summary(y_test, calibrated_test_scores),
             "metrics": {
@@ -4675,6 +5030,10 @@ def _decision_policy(
         "high_threshold": thresholds.high_threshold,
         "review_precision_target": review_precision_target,
         "high_precision_target": high_precision_target,
+        "minimum_high_confidence_calibration_predictions": (
+            thresholds.minimum_high_confidence_calibration_predictions
+        ),
+        "high_threshold_fallback_used": thresholds.high_threshold_fallback_used,
         "calibration_method": calibration.method,
         "split_strategy": split.split_strategy,
         "split_seed": split.split_seed,
@@ -4689,6 +5048,7 @@ def _empty_threshold_selection(threshold: float, *, support: int) -> ThresholdSe
         precision=0.0,
         recall=0.0,
         f1=0.0,
+        predicted_positive=0,
         support=support,
         production_ready=False,
     )

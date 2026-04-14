@@ -25,6 +25,8 @@ from sklearn.pipeline import FeatureUnion, Pipeline
 
 from ask_seattle import __version__
 from ask_seattle.data import (
+    DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
+    DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
     LabeledPost,
     body_length_bucket,
     has_question_mark,
@@ -41,8 +43,9 @@ DEFAULT_THRESHOLD_GRID = tuple(round(index / 100, 2) for index in range(5, 100, 
 DEFAULT_SPLIT_STRATEGY = "random"
 DEFAULT_SPLIT_SEED = 13
 DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION = "v3_compact_contextual_fields"
-DEFAULT_TFIDF_CONFIG_VERSION = "v6_tfidf_review70_semantic_components"
+DEFAULT_TFIDF_CONFIG_VERSION = "v7_tfidf_precision_stable_sparse_observational"
 DEFAULT_REVIEW_PRECISION_TARGET = 0.75
+DEFAULT_MIN_HIGH_CONFIDENCE_CALIBRATION_PREDICTIONS = 5
 LOGGER = logging.getLogger("ask_seattle.model")
 WORD_STOPWORDS = frozenset(
     {
@@ -117,6 +120,7 @@ class ThresholdSelection:
     precision: float
     recall: float
     f1: float
+    predicted_positive: int
     support: int
     production_ready: bool
 
@@ -130,6 +134,8 @@ class DecisionThresholds:
     high_threshold_sweep: list[dict[str, float | int]]
     low_threshold_sweep: list[dict[str, float | int]]
     abstain_enabled: bool
+    minimum_high_confidence_calibration_predictions: int
+    high_threshold_fallback_used: bool
 
 
 @dataclass(frozen=True)
@@ -373,6 +379,8 @@ def train_model(
     min_df: int | None = None,
     classifier_c: float = 1.0,
     classifier_class_weight: str | dict[int, float] | None = "balanced",
+    include_sparse_media_token: bool = DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+    include_image_low_text_tokens: bool = DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
 ) -> Pipeline:
     _validate_posts(posts)
     effective_word_stopwords = (
@@ -391,7 +399,15 @@ def train_model(
     fit_kwargs: dict[str, Any] = {}
     if sample_weight is not None:
         fit_kwargs["classifier__sample_weight"] = sample_weight
-    model.fit(_rows(posts), _labels(posts), **fit_kwargs)
+    model.fit(
+        _rows(
+            posts,
+            include_sparse_media_token=include_sparse_media_token,
+            include_image_low_text_tokens=include_image_low_text_tokens,
+        ),
+        _labels(posts),
+        **fit_kwargs,
+    )
     return model
 
 
@@ -435,11 +451,11 @@ def threshold_sweep(
     thresholds: tuple[float, ...] | None = None,
 ) -> list[dict[str, float | int]]:
     resolved_thresholds = _resolve_thresholds(probabilities, thresholds)
-    return [
-        {"threshold": threshold}
-        | _binary_metrics(y_true, [1 if probability >= threshold else 0 for probability in probabilities])
-        for threshold in resolved_thresholds
-    ]
+    sweep: list[dict[str, float | int]] = []
+    for threshold in resolved_thresholds:
+        predictions = [1 if probability >= threshold else 0 for probability in probabilities]
+        sweep.append({"threshold": threshold} | _binary_metrics(y_true, predictions))
+    return sweep
 
 
 def select_threshold(
@@ -447,17 +463,23 @@ def select_threshold(
     probabilities: list[float],
     *,
     min_precision: float = 0.95,
+    minimum_predictions: int = 0,
     thresholds: tuple[float, ...] | None = None,
 ) -> ThresholdSelection:
     sweep = threshold_sweep(y_true, probabilities, thresholds)
-    ready = [row for row in sweep if float(row["precision"]) >= min_precision]
-    candidates = ready or sweep
+    precision_ready = [row for row in sweep if float(row["precision"]) >= min_precision]
+    ready = [
+        row for row in precision_ready if int(row.get("predicted_positive") or 0) >= int(minimum_predictions)
+    ]
+    fallback_used = bool(precision_ready) and not ready and minimum_predictions > 0
+    candidates = ready or precision_ready or sweep
     selected = max(
         candidates,
         key=lambda row: (
             float(row["recall"]),
             float(row["precision"]),
             float(row["f1"]),
+            int(row.get("predicted_positive") or 0),
             float(row["threshold"]),
         ),
     )
@@ -467,8 +489,9 @@ def select_threshold(
         precision=float(selected["precision"]),
         recall=float(selected["recall"]),
         f1=float(selected["f1"]),
+        predicted_positive=int(selected.get("predicted_positive") or 0),
         support=int(selected["support"]),
-        production_ready=bool(ready),
+        production_ready=bool(ready) and not fallback_used,
     )
 
 
@@ -478,12 +501,24 @@ def select_decision_thresholds(
     *,
     auto_precision_target: float,
     review_precision_target: float = DEFAULT_REVIEW_PRECISION_TARGET,
+    minimum_high_confidence_calibration_predictions: int = DEFAULT_MIN_HIGH_CONFIDENCE_CALIBRATION_PREDICTIONS,
     thresholds: tuple[float, ...] | None = None,
 ) -> DecisionThresholds:
+    precision_ready = [
+        row
+        for row in threshold_sweep(y_true, probabilities, thresholds)
+        if float(row["precision"]) >= auto_precision_target
+    ]
+    support_ready = [
+        row
+        for row in precision_ready
+        if int(row.get("predicted_positive") or 0) >= int(minimum_high_confidence_calibration_predictions)
+    ]
     high_threshold_selection = select_threshold(
         y_true,
         probabilities,
         min_precision=auto_precision_target,
+        minimum_predictions=minimum_high_confidence_calibration_predictions,
         thresholds=thresholds,
     )
     high_threshold_sweep = threshold_sweep(y_true, probabilities, thresholds)
@@ -514,6 +549,8 @@ def select_decision_thresholds(
         high_threshold_sweep=high_threshold_sweep,
         low_threshold_sweep=low_threshold_sweep,
         abstain_enabled=low_threshold < high_threshold_selection.threshold,
+        minimum_high_confidence_calibration_predictions=minimum_high_confidence_calibration_predictions,
+        high_threshold_fallback_used=bool(precision_ready) and not bool(support_ready),
     )
 
 
@@ -629,6 +666,7 @@ def save_model(
     threshold: float | None = None,
     calibrator: LogisticRegression | None = None,
     decision_policy: dict[str, Any] | None = None,
+    representation_config: dict[str, bool] | None = None,
 ) -> None:
     model_path = Path(path)
     model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -667,6 +705,7 @@ def save_model(
         "evaluation_subreddit": decision_policy.get("evaluation_subreddit") if decision_policy else None,
         "time_coverage": decision_policy.get("time_coverage") if decision_policy else None,
         "calibrator": calibrator,
+        "representation_config": _normalize_representation_config(representation_config),
         "positive_label": 1,
         "version": __version__,
     }
@@ -703,6 +742,7 @@ def score_post_raw(
     content_domain: str | None = None,
     is_crosspost: bool | None = None,
 ) -> float:
+    representation_config = _bundle_representation_config(bundle)
     return raw_score_rows(
         bundle,
         [
@@ -712,6 +752,8 @@ def score_post_raw(
                 post_type=post_type,
                 content_domain=content_domain,
                 is_crosspost=is_crosspost,
+                include_sparse_media_token=representation_config["include_sparse_media_token"],
+                include_image_low_text_tokens=representation_config["include_image_low_text_tokens"],
             )
         ],
     )[0]
@@ -726,6 +768,7 @@ def score_post(
     content_domain: str | None = None,
     is_crosspost: bool | None = None,
 ) -> float:
+    representation_config = _bundle_representation_config(bundle)
     return score_rows(
         bundle,
         [
@@ -735,6 +778,8 @@ def score_post(
                 post_type=post_type,
                 content_domain=content_domain,
                 is_crosspost=is_crosspost,
+                include_sparse_media_token=representation_config["include_sparse_media_token"],
+                include_image_low_text_tokens=representation_config["include_image_low_text_tokens"],
             )
         ],
     )[0]
@@ -773,6 +818,8 @@ def _semantic_positive_probabilities(bundle: dict[str, Any], rows: list[dict[str
     feature_layout = str(bundle.get("feature_layout") or "single_text")
     backend = str(bundle.get("backend") or "sentence_transformers")
     if feature_layout == "title_body_metadata_v1":
+        title_weight = float(bundle.get("title_weight") or 1.0)
+        body_weight = float(bundle.get("body_weight") or 1.0)
         title_texts = _semantic_runtime_component_texts(bundle, rows, component="title")
         body_texts = _semantic_runtime_component_texts(bundle, rows, component="body")
         if backend == "sentence_transformers":
@@ -801,7 +848,9 @@ def _semantic_positive_probabilities(bundle: dict[str, Any], rows: list[dict[str
         else:
             raise ValueError(f"Unsupported semantic embedding backend: {backend}")
         metadata_features = _semantic_runtime_metadata_features(bundle, rows)
-        feature_matrix = np.hstack([title_embeddings, body_embeddings, metadata_features]).astype(np.float32)
+        feature_matrix = np.hstack(
+            [title_embeddings * title_weight, body_embeddings * body_weight, metadata_features]
+        ).astype(np.float32)
         probabilities = classifier.predict_proba(feature_matrix)
     else:
         texts = _semantic_runtime_texts(bundle, rows)
@@ -935,12 +984,15 @@ def classify_post(
     high_threshold = float(bundle.get("high_threshold") or bundle.get("threshold") or 0.85)
     low_threshold = float(bundle.get("low_threshold") or high_threshold)
     low_threshold = min(low_threshold, high_threshold)
+    representation_config = _bundle_representation_config(bundle)
     row = build_inference_row(
         title=title,
         selftext=selftext,
         post_type=post_type,
         content_domain=content_domain,
         is_crosspost=is_crosspost,
+        include_sparse_media_token=representation_config["include_sparse_media_token"],
+        include_image_low_text_tokens=representation_config["include_image_low_text_tokens"],
     )
 
     raw_score = raw_score_rows(bundle, [row])[0]
@@ -978,7 +1030,12 @@ def _validate_posts(posts: list[LabeledPost]) -> None:
         raise ValueError("Training data must include both askseattle and not_askseattle examples")
 
 
-def _rows(posts: list[LabeledPost]) -> list[dict[str, str]]:
+def _rows(
+    posts: list[LabeledPost],
+    *,
+    include_sparse_media_token: bool = DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+    include_image_low_text_tokens: bool = DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
+) -> list[dict[str, str]]:
     return [
         build_inference_row(
             title=post.title,
@@ -986,6 +1043,8 @@ def _rows(posts: list[LabeledPost]) -> list[dict[str, str]]:
             post_type=post.post_type,
             content_domain=post.content_domain,
             is_crosspost=post.is_crosspost,
+            include_sparse_media_token=include_sparse_media_token,
+            include_image_low_text_tokens=include_image_low_text_tokens,
         )
         for post in posts
     ]
@@ -1002,6 +1061,8 @@ def build_inference_row(
     post_type: str | None = None,
     content_domain: str | None = None,
     is_crosspost: bool | None = None,
+    include_sparse_media_token: bool = DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
+    include_image_low_text_tokens: bool = DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
 ) -> dict[str, str]:
     body = normalize_body(selftext)
     normalized_title = str(title).strip()
@@ -1016,6 +1077,8 @@ def build_inference_row(
         post_type=post_type,
         content_domain=content_domain,
         is_crosspost=is_crosspost,
+        include_sparse_media_token=include_sparse_media_token,
+        include_image_low_text_tokens=include_image_low_text_tokens,
     )
     sparse_media = is_sparse_media_post(post_type=post_type, selftext=body)
     crosspost_value = "unknown"
@@ -1046,6 +1109,8 @@ def build_inference_row(
             post_type=post_type,
             content_domain=content_domain,
             is_crosspost=is_crosspost,
+            include_sparse_media_token=include_sparse_media_token,
+            include_image_low_text_tokens=include_image_low_text_tokens,
         ),
         "post_type": str(post_type or "").strip(),
         "content_domain": str(content_domain or "").strip(),
@@ -1301,6 +1366,7 @@ def _binary_metrics(y_true: list[int], y_pred: list[int]) -> dict[str, float | i
         "precision": float(precision),
         "recall": float(recall),
         "f1": float(f1),
+        "predicted_positive": int(sum(y_pred)),
         "support": Counter(y_true)[1],
     }
 
@@ -1517,6 +1583,7 @@ def _normalize_tfidf_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     bundle.setdefault("model_version", str(bundle.get("version") or __version__))
     bundle.setdefault("tfidf_config_version", DEFAULT_TFIDF_CONFIG_VERSION)
     _apply_threshold_policy_defaults(bundle)
+    _apply_representation_defaults(bundle)
     return bundle
 
 
@@ -1551,6 +1618,7 @@ def _load_semantic_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
     normalized.setdefault("model_name", "semantic_embedding_logreg")
     normalized.setdefault("model_version", str(bundle.get("version") or __version__))
     _apply_threshold_policy_defaults(normalized)
+    _apply_representation_defaults(normalized)
     return normalized
 
 
@@ -1604,6 +1672,7 @@ def _load_transformer_runtime_bundle(metadata: dict[str, Any], *, model_dir: Pat
     normalized.setdefault("model_version", str(normalized.get("version") or __version__))
     normalized.setdefault("max_length", _transformer_max_length(model_dir))
     _apply_threshold_policy_defaults(normalized)
+    _apply_representation_defaults(normalized)
     return normalized
 
 
@@ -1669,6 +1738,7 @@ def _load_causal_lm_runtime_bundle(metadata: dict[str, Any], *, model_dir: Path)
     normalized.setdefault("model_name", "causal_lm_classifier")
     normalized.setdefault("model_version", str(normalized.get("version") or __version__))
     _apply_threshold_policy_defaults(normalized)
+    _apply_representation_defaults(normalized)
     return normalized
 
 
@@ -1705,12 +1775,38 @@ def _apply_threshold_policy_defaults(bundle: dict[str, Any]) -> None:
         "high_threshold": high_threshold,
         "review_precision_target": policy.get("review_precision_target", DEFAULT_REVIEW_PRECISION_TARGET),
         "high_precision_target": policy.get("high_precision_target"),
+        "minimum_high_confidence_calibration_predictions": policy.get(
+            "minimum_high_confidence_calibration_predictions",
+            DEFAULT_MIN_HIGH_CONFIDENCE_CALIBRATION_PREDICTIONS,
+        ),
+        "high_threshold_fallback_used": bool(policy.get("high_threshold_fallback_used", False)),
         "calibration_method": policy.get("calibration_method") or bundle.get("calibration_method"),
         "split_strategy": policy.get("split_strategy") or bundle.get("split_strategy") or "manual",
         "split_seed": _first_defined(policy.get("split_seed"), bundle.get("split_seed")),
         "evaluation_subreddit": policy.get("evaluation_subreddit") or bundle.get("evaluation_subreddit"),
         "time_coverage": policy.get("time_coverage") or bundle.get("time_coverage"),
     }
+
+
+def _normalize_representation_config(value: dict[str, Any] | None) -> dict[str, bool]:
+    payload = value if isinstance(value, dict) else {}
+    return {
+        "include_sparse_media_token": bool(
+            payload.get("include_sparse_media_token", DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN)
+        ),
+        "include_image_low_text_tokens": bool(
+            payload.get("include_image_low_text_tokens", DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS)
+        ),
+    }
+
+
+def _apply_representation_defaults(bundle: dict[str, Any]) -> None:
+    bundle["representation_config"] = _normalize_representation_config(bundle.get("representation_config"))
+
+
+def _bundle_representation_config(bundle: dict[str, Any]) -> dict[str, bool]:
+    _apply_representation_defaults(bundle)
+    return dict(bundle["representation_config"])
 
 
 def _first_defined(*values: Any) -> Any:
@@ -1883,6 +1979,8 @@ def causal_lm_prompt_for_row(
         return _causal_lm_prompt_v2(row)
     if prompt_template_version == "v3_compact_contextual_fields":
         return _causal_lm_prompt_v3(row)
+    if prompt_template_version == "v4_image_low_text":
+        return _causal_lm_prompt_v4(row)
     raise ValueError(f"Unsupported causal-LM prompt template version: {prompt_template_version}")
 
 
@@ -1956,6 +2054,38 @@ def _causal_lm_prompt_v3(row: dict[str, Any]) -> str:
         f"Content domain: {content_domain}\n"
         f"Has question mark: {has_question}\n"
         f"Low text: {low_text}\n"
+        f"Crosspost: {crosspost}\n\n"
+        "Label:"
+    )
+
+
+def _causal_lm_prompt_v4(row: dict[str, Any]) -> str:
+    title = str(row.get("title") or "").strip() or "(none)"
+    body = str(row.get("body_raw") or "").strip() or "(none)"
+    post_type = str(row.get("post_type") or "").strip() or "unknown"
+    content_domain = str(row.get("content_domain") or "").strip() or "unknown"
+    has_body = str(row.get("has_body") or "unknown")
+    has_question = str(row.get("has_question_mark") or "unknown")
+    low_text = str(row.get("is_low_text") or "unknown")
+    sparse_media = "yes" if row.get("is_sparse_media") else "no"
+    crosspost = str(row.get("is_crosspost") or "unknown")
+
+    return (
+        "Classify this Reddit post for a binary moderation workflow.\n"
+        "Return exactly one label: askseattle or not_askseattle.\n"
+        "Use the title, body, and metadata together.\n"
+        "Choose askseattle when the post is mainly asking for local help, recommendations, identification, explanation, or advice.\n"
+        "Choose not_askseattle when the post is mainly news, discussion, opinion, promotion, or media sharing without that primary ask.\n"
+        "Title-only image posts can still be askseattle when the title is clearly asking for local help, identification, explanation, or recommendations.\n"
+        "Do not use subreddit name.\n\n"
+        f"Title: {title}\n"
+        f"Body: {body}\n"
+        f"Post type: {post_type}\n"
+        f"Content domain: {content_domain}\n"
+        f"Has body: {has_body}\n"
+        f"Has question mark: {has_question}\n"
+        f"Low text: {low_text}\n"
+        f"Sparse media: {sparse_media}\n"
         f"Crosspost: {crosspost}\n\n"
         "Label:"
     )
