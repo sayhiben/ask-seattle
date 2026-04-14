@@ -33,9 +33,6 @@ cleanup_remote_history() {
   if [[ -d "/workspace/runpod-logs" ]]; then
     find /workspace/runpod-logs -mindepth 1 -maxdepth 1 -type d ! -name "${RUN_ID}" -exec rm -rf {} +
   fi
-  if [[ -d "/workspace/runpod-inputs" ]]; then
-    find /workspace/runpod-inputs -mindepth 1 -maxdepth 1 -type d -exec rm -rf {} +
-  fi
 }
 
 trap cleanup_remote_inputs EXIT
