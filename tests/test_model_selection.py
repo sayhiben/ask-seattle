@@ -9,6 +9,7 @@ from ask_seattle.model import (
     _default_min_df,
     _bundle_runtime_device,
     _load_causal_lm_bundle_from_joblib,
+    _safe_binary_completion_probability,
     _load_transformer_bundle_from_joblib,
     _semantic_runtime_component_texts,
     _tensor_to_float32_numpy,
@@ -633,6 +634,73 @@ def test_bundle_runtime_device_keeps_transformer_backed_semantic_model_off_mps()
         )
         == "cpu"
     )
+
+
+def test_bundle_runtime_device_keeps_sentence_transformers_semantic_model_off_mps() -> None:
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeMPSBackend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeBackends:
+        mps = FakeMPSBackend()
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        backends = FakeBackends()
+
+    assert (
+        _bundle_runtime_device(
+            {
+                "model_family": "semantic_embedding",
+                "backend": "sentence_transformers",
+                "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+            FakeTorch(),
+        )
+        == "cpu"
+    )
+
+
+def test_bundle_runtime_device_keeps_transformer_sequence_classifier_off_mps() -> None:
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeMPSBackend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeBackends:
+        mps = FakeMPSBackend()
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        backends = FakeBackends()
+
+    assert (
+        _bundle_runtime_device(
+            {
+                "model_family": "transformer_sequence_classifier",
+                "model_id": "answerdotai/ModernBERT-base",
+            },
+            FakeTorch(),
+        )
+        == "cpu"
+    )
+
+
+def test_safe_binary_completion_probability_handles_nonfinite_scores() -> None:
+    assert _safe_binary_completion_probability(float("-inf"), float("-inf")) == 0.5
+    assert _safe_binary_completion_probability(0.0, float("-inf")) == 1.0
+    assert _safe_binary_completion_probability(float("-inf"), 0.0) == 0.0
 
 
 def test_move_token_batch_to_device_preserves_integer_tensor_types() -> None:

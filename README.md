@@ -301,7 +301,7 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the decoder-LLM prompt now uses a compact contextual English template with title, body, post type, content domain, question-mark state, low-text state, and crosspost state
 - on Apple Silicon, the Qwen3-1.7B benchmark path bypasses MPS and trains on CPU by default because the current MPS stack is not stable for that family
 - on Apple Silicon, the transformer-backed semantic embedding benchmarks currently bypass MPS and use CPU during training because the current Metal backend is not stable for those model families
-- on Apple Silicon, the bridge also keeps the transformer-backed semantic comparison models off MPS during `/check`, so those comparisons stay stable even if they are slower
+- on Apple Silicon, the bridge keeps all neural comparison models off MPS during `/check` and `/check-comparison`, so local comparison inference stays stable even if it is slower
 - the bridge now returns the primary `/check` result without waiting for comparison models unless explicitly asked to include them, and the userscript loads comparison cards individually through `/check-comparison`
 - CUDA neural training now enables TF32 matmul when available to reduce remote GPU runtime cost
 - the encoder transformer benchmarks now compare plain vs balanced cross-entropy, stop early on calibration PR-AUC, keep the better candidate, and run a small config grid for NeoBERT and ModernBERT-large before final selection

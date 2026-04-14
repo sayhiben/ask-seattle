@@ -224,7 +224,7 @@ When the full benchmark suite artifacts exist, the bridge includes all available
 
 If one comparison model fails during scoring, the bridge now keeps the main `result` and returns an `error` field for that comparison entry instead of failing the whole `/check` request.
 
-On Apple Silicon, the bridge also keeps the transformer-backed semantic comparison models off MPS during `/check` because those families are not stable on the current MPS stack.
+On Apple Silicon, the bridge keeps all neural comparison models off MPS during `/check` and `/check-comparison` because the current MPS stack is not stable enough for those families in local bridge inference.
 
 ## `POST /check-comparison`
 

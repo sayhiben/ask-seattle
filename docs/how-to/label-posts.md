@@ -49,6 +49,8 @@ If benchmark-suite artifacts are available, the panel also shows a scrollable `M
 
 The panel now renders those comparison cards incrementally. The main bridge verdict appears first, then each benchmark-suite model card updates as its own `/check-comparison` request finishes.
 
+On Apple Silicon, those neural comparison cards now run on CPU instead of MPS. That is slower, but it avoids current local MPS crashes in bridge inference.
+
 The current full suite is:
 
 - TF-IDF

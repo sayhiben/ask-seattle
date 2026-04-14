@@ -886,10 +886,7 @@ def _causal_lm_positive_probabilities(bundle: dict[str, Any], rows: list[dict[st
     not_scores = _causal_lm_completion_scores(model, tokenizer, prompts, completion=" not_askseattle", device=device)
     probabilities: list[float] = []
     for ask_score, not_score in zip(ask_scores, not_scores, strict=True):
-        stabilizer = max(ask_score, not_score)
-        ask_prob = float(np.exp(ask_score - stabilizer))
-        not_prob = float(np.exp(not_score - stabilizer))
-        probabilities.append(ask_prob / (ask_prob + not_prob))
+        probabilities.append(_safe_binary_completion_probability(ask_score, not_score))
     return probabilities
 
 
@@ -1990,29 +1987,52 @@ def _causal_lm_completion_scores(
     return scores
 
 
+def _safe_binary_completion_probability(positive_score: float, negative_score: float) -> float:
+    positive_finite = np.isfinite(positive_score)
+    negative_finite = np.isfinite(negative_score)
+
+    if positive_finite and not negative_finite:
+        return 1.0
+    if negative_finite and not positive_finite:
+        return 0.0
+    if not positive_finite and not negative_finite:
+        return 0.5
+
+    stabilizer = max(positive_score, negative_score)
+    positive_weight = float(np.exp(positive_score - stabilizer))
+    negative_weight = float(np.exp(negative_score - stabilizer))
+    denominator = positive_weight + negative_weight
+    if not np.isfinite(denominator) or denominator <= 0:
+        return 0.5
+    return positive_weight / denominator
+
+
 def _bundle_runtime_device(bundle: dict[str, Any], torch_module: Any) -> str:
     detected = _torch_runtime_device(torch_module)
     if detected != "mps":
         return detected
 
     family = str(bundle.get("model_family") or bundle.get("model_type") or "")
-    backend = str(bundle.get("backend") or "")
+    backend = str(bundle.get("backend") or "sentence_transformers")
 
-    if family == "causal_lm_classifier":
+    if family in {
+        "causal_lm_classifier",
+        "transformer_sequence_classifier",
+    }:
         LOGGER.debug(
             "using cpu runtime for bundle family=%s model_id=%s reason=%s",
             family,
             bundle.get("model_id") or "",
-            "causal-lm inference is not stable on this MPS stack",
+            "neural bridge inference is forced off MPS on this machine",
         )
         return "cpu"
 
-    if family == "semantic_embedding" and backend == "hf_embedding":
+    if family == "semantic_embedding" and backend in {"hf_embedding", "sentence_transformers"}:
         LOGGER.debug(
             "using cpu runtime for bundle family=%s model_id=%s reason=%s",
             family,
             bundle.get("model_id") or "",
-            "transformer-backed embedding inference is forced off MPS on this machine",
+            "semantic embedding inference is forced off MPS on this machine",
         )
         return "cpu"
 
