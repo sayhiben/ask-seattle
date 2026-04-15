@@ -1347,17 +1347,37 @@ def test_semantic_component_texts_support_jina_document_component() -> None:
     assert body_texts == ["Document: Body: Seen near Fremont."]
 
 
-def test_transformer_candidate_profiles_apply_tuning_grid_to_neobert_and_modernbert_large() -> None:
-    neobert = training._transformer_candidate_profiles("chandar-lab/NeoBERT")
-    modernbert_large = training._transformer_candidate_profiles("answerdotai/ModernBERT-large")
-    deberta = training._transformer_candidate_profiles("microsoft/deberta-v3-small")
+def test_transformer_candidate_profiles_keep_long_context_profiles_bounded_to_supported_runs() -> None:
+    neobert_default = training._transformer_candidate_profiles("chandar-lab/NeoBERT")
+    neobert_cuda = training._transformer_candidate_profiles("chandar-lab/NeoBERT", allow_long_context=True)
+    modernbert_large_cuda = training._transformer_candidate_profiles(
+        "answerdotai/ModernBERT-large",
+        allow_long_context=True,
+    )
+    deberta_default = training._transformer_candidate_profiles("microsoft/deberta-v3-small")
+    deberta_cuda = training._transformer_candidate_profiles("microsoft/deberta-v3-small", allow_long_context=True)
 
-    assert len(neobert) == 3
-    assert any(profile["name"] == "precision_tuned" for profile in neobert)
-    assert {profile["max_length"] for profile in neobert} == {384, 512}
-    assert len(modernbert_large) == 3
-    assert any(profile["weight_decay"] > 0.01 for profile in modernbert_large)
-    assert len(deberta) == 3
+    assert [profile["name"] for profile in neobert_default] == ["baseline", "precision_tuned"]
+    assert [profile["name"] for profile in neobert_cuda] == [
+        "baseline",
+        "precision_tuned",
+        "long_context",
+        "precision_long_context",
+    ]
+    assert [profile["name"] for profile in modernbert_large_cuda] == [
+        "baseline",
+        "precision_tuned",
+        "balanced_tuned",
+        "long_context",
+        "precision_long_context",
+    ]
+    assert [profile["name"] for profile in deberta_default] == ["baseline", "balanced_tuned", "precision_tuned"]
+    assert [profile["name"] for profile in deberta_cuda] == [
+        "baseline",
+        "balanced_tuned",
+        "precision_tuned",
+        "balanced_long_context",
+    ]
 
 
 def test_semantic_component_texts_fill_empty_values_with_placeholders() -> None:

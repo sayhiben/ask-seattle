@@ -1102,7 +1102,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_model_id,
                 "display_name": "Transformer DeBERTa-v3-small",
-                "config_version": "v3_pr_auc_precision_profiles",
+                "config_version": "v4_pr_auc_precision_profiles_long_context",
             },
         ),
         SuiteModelSpec(
@@ -1124,7 +1124,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_tertiary_model_id,
                 "display_name": "Transformer NeoBERT",
-                "config_version": "v5_pr_auc_precision_grid_remote_code",
+                "config_version": "v6_pr_auc_precision_grid_long_context",
             },
         ),
         SuiteModelSpec(
@@ -1135,7 +1135,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_quaternary_model_id,
                 "display_name": "Transformer ModernBERT-large",
-                "config_version": "v4_pr_auc_precision_grid",
+                "config_version": "v5_pr_auc_precision_grid_long_context",
             },
         ),
     ]
@@ -2538,13 +2538,21 @@ def _transformer_candidate_profiles(model_id: str, *, allow_long_context: bool =
         ]
         if allow_long_context:
             profiles.append({"name": "long_context", "learning_rate": 1.25e-5, "weight_decay": 0.02, "max_length": 512})
+            profiles.append(
+                {"name": "precision_long_context", "learning_rate": 1.0e-5, "weight_decay": 0.03, "max_length": 512}
+            )
         return profiles
     if "neobert" in normalized:
-        return [
+        profiles = [
             {"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 384},
             {"name": "precision_tuned", "learning_rate": 1.0e-5, "weight_decay": 0.03, "max_length": 384},
-            {"name": "long_context", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 512},
         ]
+        if allow_long_context:
+            profiles.append({"name": "long_context", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 512})
+            profiles.append(
+                {"name": "precision_long_context", "learning_rate": 1.0e-5, "weight_decay": 0.03, "max_length": 512}
+            )
+        return profiles
     if "modernbert" in normalized:
         profiles = [
             {"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 384},
@@ -2555,11 +2563,16 @@ def _transformer_candidate_profiles(model_id: str, *, allow_long_context: bool =
             profiles.append({"name": "long_context", "learning_rate": 1.25e-5, "weight_decay": 0.02, "max_length": 512})
         return profiles
     if "deberta-v3-small" in normalized:
-        return [
+        profiles = [
             {"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 256},
             {"name": "balanced_tuned", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 384},
             {"name": "precision_tuned", "learning_rate": 1.0e-5, "weight_decay": 0.03, "max_length": 256},
         ]
+        if allow_long_context:
+            profiles.append(
+                {"name": "balanced_long_context", "learning_rate": 1.5e-5, "weight_decay": 0.02, "max_length": 512}
+            )
+        return profiles
     return [{"name": "baseline", "learning_rate": 2e-5, "weight_decay": 0.01, "max_length": 256}]
 
 

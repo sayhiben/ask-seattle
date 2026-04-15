@@ -296,6 +296,7 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - training and benchmark summaries now record the input-data fingerprint plus runtime package metadata, so local-vs-remote environment drift is easier to spot
 - slice metrics now include support counts and `support_status`, so low-support cohorts like `sparse_media` can stay observational instead of steering recommendations
 - the transformer family now includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
+- the current transformer grid keeps DeBERTa-v3-small on its 256 to 384 token core profiles plus one CUDA-only 512-token balanced profile, adds a CUDA-only NeoBERT 512-token precision profile, and adds a 48 GB CUDA-only ModernBERT-large 512-token precision profile
 - the encoder transformer benchmarks now search a small per-model config grid, restore the best epoch checkpoint, and rank candidates with the same precision-first calibration key across the active transformer profiles
 - on Apple Silicon, the bridge keeps all neural comparison models off MPS during `/check` and `/check-comparison`, so local comparison inference stays stable even if it is slower
 - the bridge now returns the primary `/check` result without waiting for comparison models unless explicitly asked to include them, the userscript loads transformer cards individually through `/check-comparison`, and stale semantic/decoder entries from older suite summaries are ignored

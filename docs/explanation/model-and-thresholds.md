@@ -26,7 +26,7 @@ The comparison stack currently includes:
 - NeoBERT encoder classifier
 - ModernBERT-large encoder classifier
 
-The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by a precision-first calibration ranking key. DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection.
+The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by a precision-first calibration ranking key. DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection. The current grid adds a CUDA-only 512-token balanced DeBERTa-v3-small candidate, a CUDA-only 512-token precision NeoBERT candidate, and a 48 GB CUDA-only 512-token precision ModernBERT-large candidate.
 
 On CUDA runs, the neural training paths now also enable TF32 float32 matmul. That is a speed optimization for Ampere-and-newer NVIDIA GPUs; it lowers remote wall-clock cost without changing the product-level threshold policy.
 

@@ -182,6 +182,7 @@ Important implementation details:
 - `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
 - `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
 - the encoder transformer family uses title/body pair encoding, keeps the better candidate by a precision-first calibration ranking key, restores the best epoch checkpoint, and runs a small config grid for DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
+- that grid now includes a CUDA-only 512-token balanced DeBERTa-v3-small candidate, a CUDA-only 512-token precision NeoBERT candidate, and a 48 GB CUDA-only 512-token precision ModernBERT-large candidate
 - CUDA neural training now enables TF32 matmul when available to reduce remote runtime cost
 
 ## What Training Does
