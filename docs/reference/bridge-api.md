@@ -21,7 +21,7 @@ Returns bridge health and startup configuration.
 
 Example response:
 
-This example is illustrative. Real `comparison_models` arrays depend on which benchmark-suite artifacts currently exist and load successfully.
+This example is illustrative. Real `comparison_models` arrays depend on which supported benchmark-suite artifacts currently exist and load successfully. The bridge only exposes the active suite set: `tfidf_recommended` plus the four transformer models.
 
 ```json
 {
@@ -164,7 +164,7 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
 }
 ```
 
-When the full benchmark suite artifacts exist, the bridge includes all available comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. The current expected full set is five models total: TF-IDF plus four encoder transformers.
+When the full benchmark suite artifacts exist, the bridge includes all available supported comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. The current expected full set is five models total: TF-IDF plus four encoder transformers. When the active bridge model is TF-IDF, the comparison list normally contains the four transformer models.
 
 If one comparison model fails during scoring, the bridge now keeps the main `result` and returns an `error` field for that comparison entry instead of failing the whole `/check` request.
 

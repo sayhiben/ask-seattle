@@ -170,18 +170,23 @@ Defaults are controlled through Make variables:
 
 The default GPU preference order is:
 
-1. `NVIDIA RTX A5000`
-2. `NVIDIA GeForce RTX 4090`
-3. `NVIDIA A40`
+1. `NVIDIA RTX A6000`
+2. `NVIDIA RTX 6000 Ada Generation`
+3. `NVIDIA L40S`
+4. `NVIDIA GeForce RTX 4090`
 
 The default same-datacenter fallback order for retained volumes is:
 
-1. `NVIDIA RTX A4500`
-2. `NVIDIA RTX 4000 Ada Generation`
-3. `NVIDIA L4`
-4. `NVIDIA RTX A4000`
-5. `NVIDIA RTX 6000 Ada Generation`
-6. `NVIDIA RTX A6000`
+1. `NVIDIA A40`
+2. `NVIDIA GeForce RTX 5090`
+3. `NVIDIA L40`
+4. `NVIDIA RTX A5000`
+5. `NVIDIA RTX A4500`
+6. `NVIDIA L4`
+7. `NVIDIA RTX A4000`
+8. `NVIDIA RTX 4000 Ada Generation`
+
+This order is deliberately VRAM-first. The current RunPod market often puts `RTX A6000` in the same rough on-demand price band as a `4090`, while `RTX 6000 Ada` and `L40S` offer enough extra headroom to avoid the 24 GB pressure that shows up in longer transformer runs.
 
 The default template is:
 

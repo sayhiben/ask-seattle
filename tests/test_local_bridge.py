@@ -392,6 +392,89 @@ def test_bridge_check_comparison_returns_single_result(tmp_path: Path) -> None:
     assert response["comparison"]["result"]["model_name"] == "semantic_embedding_logreg"
 
 
+def test_load_comparison_models_filters_to_supported_active_suite(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    primary_artifact = tmp_path / "tfidf.joblib"
+    primary_artifact.write_text("primary", encoding="utf-8")
+    deberta_artifact = tmp_path / "deberta.joblib"
+    deberta_artifact.write_text("deberta", encoding="utf-8")
+    modernbert_artifact = tmp_path / "modernbert-large.joblib"
+    modernbert_artifact.write_text("modernbert", encoding="utf-8")
+    semantic_artifact = tmp_path / "semantic.joblib"
+    semantic_artifact.write_text("semantic", encoding="utf-8")
+    causal_artifact = tmp_path / "causal.joblib"
+    causal_artifact.write_text("causal", encoding="utf-8")
+
+    suite_summary_path = tmp_path / "benchmark_suite_summary.json"
+    suite_summary_path.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "name": "semantic_minilm_tuned",
+                        "display_name": "Semantic MiniLM",
+                        "model_family": "semantic_embedding",
+                        "artifact_path": str(semantic_artifact),
+                        "status": "ok",
+                    },
+                    {
+                        "name": "transformer_modernbert_large",
+                        "display_name": "Transformer ModernBERT-large",
+                        "model_family": "transformer_sequence_classifier",
+                        "artifact_path": str(modernbert_artifact),
+                        "status": "ok",
+                    },
+                    {
+                        "name": "tfidf_recommended",
+                        "display_name": "TF-IDF",
+                        "model_family": "tfidf",
+                        "artifact_path": str(primary_artifact),
+                        "status": "ok",
+                    },
+                    {
+                        "name": "causal_lm_qwen3_1_7b_lora",
+                        "display_name": "Qwen3 LoRA",
+                        "model_family": "causal_lm_classifier",
+                        "artifact_path": str(causal_artifact),
+                        "status": "ok",
+                    },
+                    {
+                        "name": "transformer_deberta_v3_small",
+                        "display_name": "Transformer DeBERTa-v3-small",
+                        "model_family": "transformer_sequence_classifier",
+                        "artifact_path": str(deberta_artifact),
+                        "status": "ok",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_load_model(path: Path) -> dict[str, Any]:
+        artifact_name = Path(path).name
+        if artifact_name == "deberta.joblib":
+            return {"model_name": "transformer_deberta_v3_small", "model_family": "transformer_sequence_classifier"}
+        if artifact_name == "modernbert-large.joblib":
+            return {"model_name": "transformer_modernbert_large", "model_family": "transformer_sequence_classifier"}
+        raise AssertionError(f"unexpected artifact load: {artifact_name}")
+
+    monkeypatch.setattr(local_bridge, "load_model", fake_load_model)
+
+    loaded = local_bridge._load_comparison_models(
+        primary_bundle={"artifact_path": str(primary_artifact), "model_family": "tfidf"},
+        primary_model_path=primary_artifact,
+        comparison_suite_path=suite_summary_path,
+    )
+
+    assert [entry["name"] for entry in loaded] == [
+        "transformer_deberta_v3_small",
+        "transformer_modernbert_large",
+    ]
+
+
 def test_auto_retrain_note_label_saved_returns_status_without_deadlock(tmp_path: Path) -> None:
     manager = AutoRetrainManager.__new__(AutoRetrainManager)
     manager.bridge_config = FakeServer()

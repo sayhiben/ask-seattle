@@ -45,9 +45,9 @@ The verdict block shows the active bridge model verdict:
 - `Looks like askseattle (...)`
 - `Does not look like askseattle`
 
-If benchmark-suite artifacts are available, the panel also shows a scrollable `Model checks` section with one card per suite model so you can read all results at a glance, even when the suite grows beyond one screen. The section title also shows the loaded comparison-model count.
+If benchmark-suite artifacts are available, the panel also shows a `Transformer checks` section with one card per loaded comparison transformer. The section title also shows the loaded comparison-model count.
 
-The panel now renders those comparison cards incrementally. The main bridge verdict appears first, then each benchmark-suite model card updates as its own `/check-comparison` request finishes.
+The panel now renders those comparison cards incrementally. The main bridge verdict appears first, then each transformer card updates as its own `/check-comparison` request finishes.
 
 On Apple Silicon, those neural comparison cards now run on CPU instead of MPS. That is slower, but it avoids current local MPS crashes in bridge inference.
 
@@ -58,6 +58,8 @@ The current full suite is:
 - Transformer ModernBERT-base
 - Transformer NeoBERT
 - Transformer ModernBERT-large
+
+Because the active bridge model is still TF-IDF, the comparison card area normally shows the four transformer models only. If an older benchmark summary still contains semantic or decoder rows, the bridge ignores them instead of surfacing stale cards.
 
 Each card shows:
 

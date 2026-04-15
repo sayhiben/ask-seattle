@@ -64,7 +64,7 @@ make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
 ```
 
-The RunPod path now defaults to the official `runpod-torch-v240` template, prefers the lower-cost A5000 before the 4090 or A40, and runs a hard GPU smoke test before syncing labels or starting training.
+The RunPod path now defaults to the official `runpod-torch-v240` template, prefers 48 GB cards (`RTX A6000`, `RTX 6000 Ada`, `L40S`) before falling back to the `4090`, and runs a hard GPU smoke test before syncing labels or starting training.
 Successful RunPod cache volumes are retained for 3 days by default so repeated runs can reuse the checkout, venv, and model caches. Pods are still deleted at the end of every run. The retained venv is now reused directly unless the dependency environment key changes or the cached venv fails a health check.
 
 To run the same make targets on your Windows GPU box over WSL, keep the target the same and add `REMOTE=wsl`:

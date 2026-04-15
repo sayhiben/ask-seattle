@@ -202,13 +202,14 @@ make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
 ```
 
-The default RunPod settings are now reliability-first and cost-biased:
+The default RunPod settings are now reliability-first and VRAM-biased:
 
 1. official template `runpod-torch-v240`
 2. GPU preference:
-   - `NVIDIA RTX A5000`
+   - `NVIDIA RTX A6000`
+   - `NVIDIA RTX 6000 Ada Generation`
+   - `NVIDIA L40S`
    - `NVIDIA GeForce RTX 4090`
-   - `NVIDIA A40`
 3. datacenter preference:
    - `EU-RO-1`
    - `US-NC-1`
@@ -216,7 +217,7 @@ The default RunPod settings are now reliability-first and cost-biased:
    - `US-IL-1`
    - `US-GA-2`
 
-The RunPod helper now also performs a hard GPU smoke test before syncing labels or starting training, so it fails fast if CUDA is not actually usable inside the pod.
+The RunPod helper now prefers 48 GB cards first because they materially reduce long-context training failures while staying in a reasonable on-demand price band, and it keeps the `4090` in the primary set for faster allocation when those higher-VRAM cards are not available. The helper also performs a hard GPU smoke test before syncing labels or starting training, so it fails fast if CUDA is not actually usable inside the pod.
 Successful RunPod cache volumes are now retained for 3 days by default so the next run can reuse the checkout, virtualenv, and model caches, but pods are still deleted at the end of every run.
 If a retained cache volume gets pinned to a region that no longer has your preferred GPU, the helper now tries a bounded same-datacenter fallback GPU list before giving up. If none of those GPUs can be allocated, it preserves the cache by default and fails clearly. Opt into relocation with `RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE=1`, or delete the cache explicitly with `make runpod-cleanup`.
 Pod creation now uses the official RunPod REST API directly, with `runpodctl` left in place for the simpler discovery, SSH, volume, and cleanup operations.
@@ -269,7 +270,7 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 ## Core Behavior
 
 - the userscript can auto-check, re-check, skip through a seeded queue, and save binary labels
-- when benchmark-suite artifacts exist, the userscript also shows one side-by-side result card per suite model for the current post in a scrollable `Model checks` section, with the loaded comparison-model count in the section title
+- when benchmark-suite artifacts exist, the userscript also shows one side-by-side result card per comparison transformer in a `Transformer checks` section, with the loaded comparison-model count in the section title
 - the userscript now gets the main bridge verdict first, then fills in each comparison card as that model finishes instead of waiting for the whole suite before updating the panel
 - the bridge only accepts browser-originated text and local file paths
 - `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs a deterministic random train, calibration, and test split by default
@@ -297,7 +298,7 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the transformer family now includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
 - the encoder transformer benchmarks now search a small per-model config grid, restore the best epoch checkpoint, and rank candidates with the same precision-first calibration key across the active transformer profiles
 - on Apple Silicon, the bridge keeps all neural comparison models off MPS during `/check` and `/check-comparison`, so local comparison inference stays stable even if it is slower
-- the bridge now returns the primary `/check` result without waiting for comparison models unless explicitly asked to include them, and the userscript loads comparison cards individually through `/check-comparison`
+- the bridge now returns the primary `/check` result without waiting for comparison models unless explicitly asked to include them, the userscript loads transformer cards individually through `/check-comparison`, and stale semantic/decoder entries from older suite summaries are ignored
 - CUDA neural training now enables TF32 matmul when available to reduce remote GPU runtime cost
 - all benchmark summaries now include the same operating metrics for:
   - the strict `high` bucket

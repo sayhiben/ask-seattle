@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.10
-// @description  Adds auto-checking, skip, re-check, binary labeling, and side-by-side model checks for the local Ask Seattle classifier bridge.
+// @version      0.1.11
+// @description  Adds auto-checking, skip, re-check, binary labeling, and transformer comparison cards for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
 // @match        https://old.reddit.com/r/*
@@ -28,6 +28,13 @@
   const AUTO_CHECK_DELAY_MS = 400;
   const CHECK_TIMEOUT_MS = 10000;
   const COMPARISON_TIMEOUT_MS = 120000;
+  const MODEL_DISPLAY_NAMES = {
+    tfidf_recommended: 'TF-IDF',
+    transformer_deberta_v3_small: 'DeBERTa-v3-small',
+    transformer_modernbert_base: 'ModernBERT-base',
+    transformer_neobert: 'NeoBERT',
+    transformer_modernbert_large: 'ModernBERT-large',
+  };
   let lastAutoCheckedKey = '';
   let currentCheckToken = 0;
 
@@ -305,9 +312,44 @@
 
   function displayNameForModel(entry) {
     if (entry.display_name) return entry.display_name;
+    const name = String(entry.name || entry.model_name || '');
+    if (MODEL_DISPLAY_NAMES[name]) return MODEL_DISPLAY_NAMES[name];
     const raw = String(entry.name || entry.model_family || entry.model_name || '').toLowerCase();
     if (raw.includes('tfidf')) return 'TF-IDF';
+    if (raw.includes('neobert')) return 'NeoBERT';
+    if (raw.includes('modernbert-large')) return 'ModernBERT-large';
+    if (raw.includes('modernbert')) return 'ModernBERT-base';
+    if (raw.includes('deberta')) return 'DeBERTa-v3-small';
     return entry.name || entry.model_name || 'Model';
+  }
+
+  function transformerOnlyComparisons(entries) {
+    return Array.isArray(entries) && entries.length > 0 && entries.every((entry) => String(entry.model_family || '').includes('transformer'));
+  }
+
+  function comparisonSectionTitle(entries) {
+    const total = Array.isArray(entries) ? entries.length : 0;
+    const label = transformerOnlyComparisons(entries) ? 'Transformer checks' : 'Comparison checks';
+    if (!total) return label;
+    return total > 4 ? `${label} (${total}, scroll)` : `${label} (${total})`;
+  }
+
+  function updateEvaluationLayout(entries) {
+    const container = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations`);
+    if (!container) return;
+    const total = Array.isArray(entries) ? entries.length : 0;
+    if (total <= 1) {
+      container.style.gridTemplateColumns = '1fr';
+      container.style.maxHeight = 'none';
+      return;
+    }
+    if (total <= 4) {
+      container.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
+      container.style.maxHeight = 'none';
+      return;
+    }
+    container.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
+    container.style.maxHeight = '50vh';
   }
 
   function resultTone(result) {
@@ -320,6 +362,7 @@
     const container = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations`);
     if (!container) return;
     updateEvaluationTitle([]);
+    updateEvaluationLayout([]);
 
     const row = document.createElement('div');
     row.textContent = message;
@@ -341,28 +384,26 @@
   function updateEvaluationTitle(entries) {
     const title = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations-title`);
     if (!title) return;
-    const total = Array.isArray(entries) ? entries.length : 0;
-    if (!total) {
-      title.textContent = 'Model checks';
-      return;
-    }
-    title.textContent = total > 6 ? `Model checks (${total}, scroll for more)` : `Model checks (${total})`;
+    title.textContent = comparisonSectionTitle(entries);
   }
 
-  function comparisonStatusText(baseStatusText, completed, total) {
+  function comparisonStatusText(baseStatusText, completed, models) {
+    const total = Array.isArray(models) ? models.length : 0;
     if (!total || completed >= total) return baseStatusText;
-    return `${baseStatusText} | model checks ${completed}/${total}`;
+    const label = transformerOnlyComparisons(models) ? 'transformer checks' : 'comparison checks';
+    return `${baseStatusText} | ${label} ${completed}/${total}`;
   }
 
   function renderEvaluationResults(entries) {
     const container = document.querySelector(`#${PANEL_ID} .ask-seattle-evaluations`);
     if (!container) return;
     updateEvaluationTitle(entries);
+    updateEvaluationLayout(entries);
     container.replaceChildren();
 
     if (!entries || entries.length === 0) {
       const row = document.createElement('div');
-      row.textContent = 'No comparison models loaded.';
+      row.textContent = 'No supported comparison models loaded.';
       row.style.border = '1px solid #d0d0d0';
       row.style.borderRadius = '6px';
       row.style.padding = '6px 8px';
@@ -514,7 +555,7 @@
     const entries = loadingComparisonEntries(models);
     let completed = 0;
     renderEvaluationResults(entries);
-    setStatus(comparisonStatusText(baseStatusText, completed, models.length));
+    setStatus(comparisonStatusText(baseStatusText, completed, models));
 
     await Promise.all(
       models.map(async (model, index) => {
@@ -539,7 +580,7 @@
         if (checkToken !== currentCheckToken) return;
         completed += 1;
         renderEvaluationResults(entries);
-        setStatus(comparisonStatusText(baseStatusText, completed, models.length));
+        setStatus(comparisonStatusText(baseStatusText, completed, models));
       })
     );
   }
@@ -589,7 +630,7 @@
 
     setStatus(auto ? 'Auto-checking...' : 'Checking...');
     setDecisionState('Checking current post...', 'pending');
-    setEvaluationResultsPending('Checking benchmark-suite models...');
+    setEvaluationResultsPending('Checking transformer cards...');
     try {
       const response = await bridgePost('/check', { ...post, include_comparisons: false });
       if (checkToken !== currentCheckToken) return;
@@ -792,15 +833,15 @@
 
     const evaluationsTitle = document.createElement('div');
     evaluationsTitle.className = 'ask-seattle-evaluations-title';
-    evaluationsTitle.textContent = 'Model checks';
+    evaluationsTitle.textContent = 'Transformer checks';
     evaluationsTitle.style.fontWeight = '600';
 
     const evaluations = document.createElement('div');
     evaluations.className = 'ask-seattle-evaluations';
     evaluations.style.display = 'grid';
-    evaluations.style.gridTemplateColumns = 'repeat(3, minmax(0, 1fr))';
+    evaluations.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
     evaluations.style.gap = '6px';
-    evaluations.style.maxHeight = '50vh';
+    evaluations.style.maxHeight = 'none';
     evaluations.style.overflowY = 'auto';
     evaluations.style.paddingRight = '2px';
     evaluations.style.alignContent = 'start';

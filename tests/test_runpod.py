@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from ask_seattle.runpod import (
+    DEFAULT_RUNPOD_FALLBACK_GPU_TYPES,
+    DEFAULT_RUNPOD_GPU_TYPES,
     RunPodConfig,
     RunPodOrchestrationError,
     available_gpus_for_datacenter,
@@ -41,6 +43,25 @@ def test_artifact_dirs_for_target() -> None:
     )
     assert artifact_dirs_for_target("benchmark") == ("models/benchmark-suite",)
     assert artifact_dirs_for_target("benchmark-variants") == ("models/benchmark-variants",)
+
+
+def test_default_runpod_gpu_preferences_are_vram_first() -> None:
+    assert DEFAULT_RUNPOD_GPU_TYPES == (
+        "NVIDIA RTX A6000",
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA L40S",
+        "NVIDIA GeForce RTX 4090",
+    )
+    assert DEFAULT_RUNPOD_FALLBACK_GPU_TYPES == (
+        "NVIDIA A40",
+        "NVIDIA GeForce RTX 5090",
+        "NVIDIA L40",
+        "NVIDIA RTX A5000",
+        "NVIDIA RTX A4500",
+        "NVIDIA L4",
+        "NVIDIA RTX A4000",
+        "NVIDIA RTX 4000 Ada Generation",
+    )
 
 
 def test_select_datacenter_prefers_candidate_order_and_gpu_priority() -> None:

@@ -23,6 +23,17 @@ from ask_seattle.training import train_model_bundle_from_labels
 
 LOGGER = logging.getLogger("ask_seattle.local_bridge")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SUPPORTED_BRIDGE_COMPARISON_MODELS = (
+    "tfidf_recommended",
+    "transformer_deberta_v3_small",
+    "transformer_modernbert_base",
+    "transformer_neobert",
+    "transformer_modernbert_large",
+)
+SUPPORTED_BRIDGE_COMPARISON_MODEL_FAMILIES = {
+    "tfidf",
+    "transformer_sequence_classifier",
+}
 
 
 class BridgeConfig:
@@ -771,6 +782,19 @@ def _bundle_family(bundle: dict[str, Any]) -> str:
     return str(bundle.get("model_family") or bundle.get("model_type") or "tfidf")
 
 
+def _supported_comparison_model(entry: dict[str, Any]) -> bool:
+    name = str(entry.get("name") or "").strip()
+    family = str(entry.get("model_family") or "").strip()
+    return name in SUPPORTED_BRIDGE_COMPARISON_MODELS and family in SUPPORTED_BRIDGE_COMPARISON_MODEL_FAMILIES
+
+
+def _comparison_model_sort_key(name: str) -> tuple[int, str]:
+    try:
+        return (SUPPORTED_BRIDGE_COMPARISON_MODELS.index(name), name)
+    except ValueError:
+        return (len(SUPPORTED_BRIDGE_COMPARISON_MODELS), name)
+
+
 def _load_comparison_models(
     *,
     primary_bundle: dict[str, Any],
@@ -801,6 +825,14 @@ def _load_comparison_models(
     loaded: list[dict[str, Any]] = []
     for entry in suite_summary.get("models") or []:
         if entry.get("status") != "ok":
+            continue
+        if not _supported_comparison_model(entry):
+            LOGGER.info(
+                "skipping unsupported comparison model name=%s family=%s comparison_suite_path=%s",
+                entry.get("name") or "",
+                entry.get("model_family") or "",
+                comparison_suite_path,
+            )
             continue
         family = str(entry.get("model_family") or "").strip()
         artifact_path = entry.get("artifact_path")
@@ -840,6 +872,7 @@ def _load_comparison_models(
                 "bundle": bundle,
             }
         )
+    loaded.sort(key=lambda comparison: _comparison_model_sort_key(str(comparison.get("name") or "")))
     if loaded:
         LOGGER.info(
             "loaded comparison models comparison_suite_path=%s comparisons=%s",
