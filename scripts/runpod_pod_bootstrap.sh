@@ -29,7 +29,10 @@ cleanup_remote_inputs() {
 }
 
 cleanup_remote_history() {
-  rm -rf "${REMOTE_REPO_DIR}/models" "${REMOTE_REPO_DIR}/data/processed" || true
+  if [[ "${TARGET}" != "benchmark" ]]; then
+    rm -rf "${REMOTE_REPO_DIR}/models" || true
+  fi
+  rm -rf "${REMOTE_REPO_DIR}/data/processed" || true
   if [[ -d "/workspace/runpod-logs" ]]; then
     find /workspace/runpod-logs -mindepth 1 -maxdepth 1 -type d ! -name "${RUN_ID}" -exec rm -rf {} +
   fi
@@ -78,7 +81,11 @@ cd "${REMOTE_REPO_DIR}"
 git fetch --all --prune
 git checkout --detach "${COMMIT_SHA}"
 git reset --hard "${COMMIT_SHA}"
-git clean -fdx
+if [[ "${TARGET}" == "benchmark" ]]; then
+  git clean -fdx -e models/
+else
+  git clean -fdx
+fi
 cleanup_remote_history
 
 cached_env_is_healthy() {
