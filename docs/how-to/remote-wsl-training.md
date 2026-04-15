@@ -142,8 +142,8 @@ Pass through additional make overrides:
 scripts/run_remote_training.sh \
   --host gpu-win \
   --target benchmark-suite \
-  --make-arg SEMANTIC_MODEL_ID=sentence-transformers/all-mpnet-base-v2 \
-  --make-arg TRANSFORMER_MODEL_ID=distilroberta-base
+  --make-arg TRANSFORMER_MODEL_ID=distilroberta-base \
+  --make-arg TRANSFORMER_QUATERNARY_MODEL_ID=answerdotai/ModernBERT-large
 ```
 
 ## Which Targets Benefit From The GPU
@@ -156,7 +156,7 @@ The current repository targets are:
 - `make benchmark-seed-sweep`
 - `make benchmark-suite`
 
-`make retrain` now retrains the operational TF-IDF model plus all nine suite models without held-out benchmarking.
+`make retrain` now retrains the operational TF-IDF model plus the five-model suite without held-out benchmarking.
 
 `make benchmark` and `make benchmark-suite` are the same benchmark-only step.
 
@@ -164,9 +164,7 @@ The current repository targets are:
 
 The GPU most strongly benefits:
 
-- three semantic embedding paths
 - four encoder transformer paths
-- one decoder-LLM LoRA path
 
 `make benchmark-variants` remains the lightweight CPU-oriented TF-IDF comparison path.
 

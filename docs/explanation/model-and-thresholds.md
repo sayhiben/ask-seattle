@@ -16,25 +16,17 @@ That choice is deliberate:
 
 This project does not currently need a larger or more complex stack to prove the workflow.
 
-That said, the repository now also includes a nine-model benchmark suite so you can compare whether denser semantic, encoder-transformer, and decoder-LLM families improve the fuzzy edge of the decision boundary without changing the operational TF-IDF retrain path.
+That said, the repository now also includes a five-model benchmark suite so you can compare whether encoder-transformer families improve the fuzzy edge of the decision boundary without changing the operational TF-IDF retrain path.
 
 The comparison stack currently includes:
 
 - TF-IDF baseline
-- tuned MiniLM semantic model
-- Qwen3 embedding semantic model
-- Jina v5 text-small-classification semantic model
 - DeBERTa-v3-small encoder classifier
 - ModernBERT-base encoder classifier
 - NeoBERT encoder classifier
 - ModernBERT-large encoder classifier
-- Qwen3-1.7B LoRA decoder classifier
 
 The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by a precision-first calibration ranking key. DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection.
-
-The semantic Jina v5 classification path now uses a Jina-specific `Document:` component formatting mode rather than sharing the same generic prompt wrapper as the other embedding models.
-
-The decoder-LLM benchmark uses the same title/body/metadata content, but framed as a fixed binary prompt. It now searches a small four-profile grid across prompt template, learning rate, LoRA rank, and epoch count. The prompt family includes a compact contextual template plus an image-aware variant that explicitly tells the model title-only image posts can still be `askseattle` when the title is asking for local help, identification, explanation, or recommendations.
 
 On CUDA runs, the neural training paths now also enable TF32 float32 matmul. That is a speed optimization for Ampere-and-newer NVIDIA GPUs; it lowers remote wall-clock cost without changing the product-level threshold policy.
 
@@ -163,7 +155,7 @@ Training now chooses it by maximizing recall subject to a minimum review-queue p
 
 The TF-IDF review-threshold policy now uses a looser review precision target of `0.70`. That keeps the review queue recall-oriented without letting the threshold collapse into a pure catch-everything setting.
 
-The broader nine-model suite still reports fixed-constraint comparison metrics at stricter common bars:
+The broader five-model suite still reports fixed-constraint comparison metrics at stricter common bars:
 
 - `auto_recall_at_precision_95`
 - `review_recall_at_precision_75`
@@ -243,7 +235,7 @@ The current reviewed dataset is usually a short rolling window. In that regime, 
 So the default policy is:
 
 - use one deterministic random split
-- reuse that exact split across TF-IDF, semantic, and transformer benchmarks
+- reuse that exact split across TF-IDF and transformer benchmarks
 - keep `/r/seattle` as the evaluation domain when that is the deployment target
 
 The seed makes the benchmark reproducible. The shared split makes cross-model comparisons fair.
@@ -252,7 +244,7 @@ The time-based split still exists, but it is now an explicit option for the poin
 
 ## What The Benchmark Suite Is Actually Comparing
 
-The benchmark suite keeps the evaluation contract aligned across all nine models:
+The benchmark suite keeps the evaluation contract aligned across all five models:
 
 - one persisted `suite_input.json` manifest
 - one split assignment reused by every family
@@ -265,9 +257,7 @@ That matters because it lets you compare model families on the same deployment-r
 The implementation details differ by family:
 
 - TF-IDF uses sparse lexical features and a calibrated logistic-regression head
-- semantic models use dense embeddings plus a calibrated logistic-regression head
 - encoder transformers use sequence classification heads
-- the decoder-LLM uses LoRA fine-tuning plus two-label continuation scoring
 
 But all of them still end in the same bridge-facing concepts:
 
@@ -279,7 +269,7 @@ But all of them still end in the same bridge-facing concepts:
 
 Operationally, retraining and benchmarking are now separate steps:
 
-- `make retrain` retrains the operational TF-IDF model plus all nine suite models and writes training-only summaries
+- `make retrain` retrains the operational TF-IDF model plus all five suite models and writes training-only summaries
 - `make benchmark` reads those trained suite artifacts later and computes held-out metrics only for the compatible models already on disk
 
 That split is deliberate. It keeps training failures, resumability, and held-out evaluation easier to reason about than one giant command that mixes all three concerns.

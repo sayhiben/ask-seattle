@@ -155,10 +155,10 @@ By default this command still evaluates the held-out test slice and writes bench
 
 ## `ask-seattle retrain-all`
 
-Retrain the operational TF-IDF model plus the full nine-model comparison suite without running held-out benchmarks.
+Retrain the operational TF-IDF model plus the five-model comparison suite without running held-out benchmarks.
 
 ```bash
-ask-seattle retrain-all --data PATH --operational-output-dir PATH --benchmark-output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--semantic-tertiary-model-id jinaai/jina-embeddings-v5-text-small-classification] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--causal-lm-model-id Qwen/Qwen3-1.7B]
+ask-seattle retrain-all --data PATH --operational-output-dir PATH --benchmark-output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large]
 ```
 
 Arguments:
@@ -171,7 +171,7 @@ Arguments:
   - directory where the operational TF-IDF artifacts are written
 - `--benchmark-output-dir`
   - required
-  - directory where the nine suite model artifacts are written
+  - directory where the five suite model artifacts are written
 - `--eval-subreddit`
   - optional
   - when set, training still uses mixed reviewed data but restricts later calibration/test evaluation to the named subreddit
@@ -182,15 +182,6 @@ Arguments:
   - optional
   - defaults to `13`
   - only affects `--split-strategy random`
-- `--semantic-model-id`
-  - optional
-  - defaults to `sentence-transformers/all-MiniLM-L6-v2`
-- `--semantic-secondary-model-id`
-  - optional
-  - defaults to `Qwen/Qwen3-Embedding-0.6B`
-- `--semantic-tertiary-model-id`
-  - optional
-  - defaults to `jinaai/jina-embeddings-v5-text-small-classification`
 - `--transformer-model-id`
   - optional
   - defaults to `microsoft/deberta-v3-small`
@@ -203,9 +194,6 @@ Arguments:
 - `--transformer-quaternary-model-id`
   - optional
   - defaults to `answerdotai/ModernBERT-large`
-- `--causal-lm-model-id`
-  - optional
-  - defaults to `Qwen/Qwen3-1.7B`
 
 Writes:
 
@@ -255,10 +243,10 @@ Current behavior:
 
 ## `ask-seattle benchmark-suite`
 
-Benchmark the full nine-model suite on one shared held-out split, using already-trained suite artifacts.
+Benchmark the active five-model suite on one shared held-out split, using already-trained suite artifacts.
 
 ```bash
-ask-seattle benchmark-suite --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--semantic-tertiary-model-id jinaai/jina-embeddings-v5-text-small-classification] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--causal-lm-model-id Qwen/Qwen3-1.7B] [--notes "free-form note"]
+ask-seattle benchmark-suite --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--notes "free-form note"]
 ```
 
 Arguments:
@@ -279,15 +267,6 @@ Arguments:
   - optional
   - defaults to `13`
   - only affects `--split-strategy random`
-- `--semantic-model-id`
-  - optional
-  - defaults to `sentence-transformers/all-MiniLM-L6-v2`
-- `--semantic-secondary-model-id`
-  - optional
-  - defaults to `Qwen/Qwen3-Embedding-0.6B`
-- `--semantic-tertiary-model-id`
-  - optional
-  - defaults to `jinaai/jina-embeddings-v5-text-small-classification`
 - `--transformer-model-id`
   - optional
   - defaults to `microsoft/deberta-v3-small`
@@ -300,9 +279,6 @@ Arguments:
 - `--transformer-quaternary-model-id`
   - optional
   - defaults to `answerdotai/ModernBERT-large`
-- `--causal-lm-model-id`
-  - optional
-  - defaults to `Qwen/Qwen3-1.7B`
 - `--notes`
   - optional
   - free-form text stored with the benchmark history record for this run
@@ -311,12 +287,8 @@ Current suite details:
 
 - the command loads the shared `suite_input.json` manifest and benchmarks any compatible trained model artifacts already present for that manifest
 - if a family is missing or incompatible, the command logs a warning and skips it instead of retraining it
-- the semantic family includes a tuned MiniLM path, a Qwen3 embedding path, and a Jina v5 text-small-classification path
 - the transformer family includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
-- the semantic family searches bounded title/body weighting mixes before fitting the calibrated logistic head
-- the transformer family restores the best epoch checkpoint and ranks candidates with the same precision-first calibration key used by the semantic family
-- the decoder family includes a Qwen3-1.7B LoRA classifier scored via two candidate label continuations and selected from a small prompt / rank / learning-rate / epoch grid
-- on Apple Silicon, the decoder family currently defaults to `cpu_fallback` instead of MPS because the Qwen3 fine-tuning path is not stable on the current MPS stack
+- the transformer family restores the best epoch checkpoint and ranks candidates with a precision-first calibration key
 - the shared model text includes normalized content metadata when available
 
 Writes:
@@ -337,7 +309,7 @@ python -m pip install -e ".[dev,models]"
 Retrain and benchmark selected suite models across multiple deterministic split seeds.
 
 ```bash
-ask-seattle benchmark-seed-sweep --data PATH --output-dir PATH [--split-strategy random|time] [--eval-subreddit seattle] [--benchmark-seeds 13,21,34] [--benchmark-seed-models semantic_qwen3_embedding_0_6b,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora] [--semantic-model-id sentence-transformers/all-MiniLM-L6-v2] [--semantic-secondary-model-id Qwen/Qwen3-Embedding-0.6B] [--semantic-tertiary-model-id jinaai/jina-embeddings-v5-text-small-classification] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--causal-lm-model-id Qwen/Qwen3-1.7B]
+ask-seattle benchmark-seed-sweep --data PATH --output-dir PATH [--split-strategy random|time] [--eval-subreddit seattle] [--benchmark-seeds 13,21,34] [--benchmark-seed-models transformer_deberta_v3_small,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large]
 ```
 
 Arguments:
@@ -360,7 +332,7 @@ Arguments:
   - comma-separated deterministic split seeds
 - `--benchmark-seed-models`
   - optional
-  - defaults to `semantic_qwen3_embedding_0_6b,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora`
+  - defaults to `transformer_deberta_v3_small,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large`
   - comma-separated suite model names to retrain and benchmark across those seeds
 
 Writes:
@@ -467,11 +439,12 @@ Variables:
 - `EVAL_SUBREDDIT`
 - `SPLIT_STRATEGY`
 - `SPLIT_SEED`
-- `SEMANTIC_MODEL_ID`
-- `SEMANTIC_SECONDARY_MODEL_ID`
 - `TRANSFORMER_MODEL_ID`
 - `TRANSFORMER_SECONDARY_MODEL_ID`
-- `CAUSAL_LM_MODEL_ID`
+- `TRANSFORMER_TERTIARY_MODEL_ID`
+- `TRANSFORMER_QUATERNARY_MODEL_ID`
+- `BENCHMARK_SEEDS`
+- `BENCHMARK_SEED_MODELS`
 - `BENCHMARK_NOTES`
 - `LOG_LEVEL`
 - `RETRAIN_EVERY`

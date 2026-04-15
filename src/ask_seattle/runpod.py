@@ -124,10 +124,10 @@ class RunPodConfig:
     causal_lm_model_id: str
     benchmark_seeds: tuple[int, ...] = (13, 21, 34)
     benchmark_seed_models: tuple[str, ...] = (
+        "transformer_deberta_v3_small",
         "transformer_modernbert_base",
         "transformer_neobert",
         "transformer_modernbert_large",
-        "causal_lm_qwen3_1_7b_lora",
     )
     semantic_tertiary_model_id: str = "jinaai/jina-embeddings-v5-text-small-classification"
     transformer_tertiary_model_id: str = "chandar-lab/NeoBERT"
@@ -372,7 +372,7 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
     parser.add_argument("--benchmark-seeds", default="13,21,34")
     parser.add_argument(
         "--benchmark-seed-models",
-        default="transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora",
+        default="transformer_deberta_v3_small,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large",
     )
     parser.add_argument("--semantic-model-id", default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--semantic-secondary-model-id", default="Qwen/Qwen3-Embedding-0.6B")

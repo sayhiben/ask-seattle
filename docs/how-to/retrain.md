@@ -22,7 +22,7 @@ PYTHONPATH=src python3 -m ask_seattle.cli retrain-all \
 This retrains:
 
 - the operational TF-IDF model under `models/real-labels-precision-refresh/`
-- all nine suite models under `models/benchmark-suite/`
+- the five-model comparison suite under `models/benchmark-suite/`
 
 It does not run held-out benchmarks.
 
@@ -117,15 +117,14 @@ This is the stability pass for the top neural candidates. It retrains and benchm
 
 By default it evaluates:
 
-- `semantic_qwen3_embedding_0_6b`
+- `transformer_deberta_v3_small`
 - `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
-- `causal_lm_qwen3_1_7b_lora`
 
 Use it before promoting a model family change based on one benchmark run.
 
-## Compare The Full Nine-Model Suite
+## Compare The Full Five-Model Suite
 
 Install the optional model dependencies first:
 
@@ -156,17 +155,11 @@ The suite uses one shared split across all model families. Retraining writes:
 
 - `suite_input.json`
 - `tfidf_recommended/training_summary.json`
-- `semantic_minilm_tuned/training_summary.json`
-- `semantic_qwen3_embedding_0_6b/training_summary.json`
-- `semantic_jina_embeddings_v5_text_small_classification/training_summary.json`
 - `transformer_deberta_v3_small/training_summary.json`
 - `transformer_modernbert_base/training_summary.json`
 - `transformer_neobert/training_summary.json`
 - `transformer_modernbert_large/training_summary.json`
-- `causal_lm_qwen3_1_7b_lora/training_summary.json`
 - `suite_training_summary.json`
-
-On Apple Silicon, the transformer-backed semantic embedding paths (`semantic_qwen3_embedding_0_6b` and `semantic_jina_embeddings_v5_text_small_classification`) now bypass MPS and use CPU during training. That is slower, but it avoids current Metal backend failures for those model families on the supported Mac baseline.
 
 Benchmarking writes:
 
@@ -174,17 +167,13 @@ Benchmarking writes:
 - `benchmark_history.json`
 - `history/<run_id>/benchmark_suite_summary.json`
 
-The default nine-model suite is:
+The default five-model suite is:
 
 - TF-IDF baseline
-- tuned MiniLM semantic model
-- Qwen3 embedding semantic model
-- Jina v5 text-small-classification semantic model
 - DeBERTa-v3-small sequence classifier
 - ModernBERT-base sequence classifier
 - NeoBERT sequence classifier
 - ModernBERT-large sequence classifier
-- Qwen3-1.7B LoRA causal-language-model classifier
 
 Important implementation details:
 
@@ -192,12 +181,7 @@ Important implementation details:
 - rerunning `make retrain` resumes from any compatible completed per-model artifact already on disk for that manifest
 - `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
 - `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
-- the semantic family now encodes title and body separately, searches a bounded title/body weighting mix, concatenates those embeddings with a metadata one-hot block, and then fits the calibrated logistic-regression head
-- the Jina v5 semantic path now uses a Jina-specific `Document:` component formatting mode instead of the generic semantic prompt wrapper
-- the encoder transformer family uses title/body pair encoding, keeps the better candidate by a precision-first calibration ranking key, restores the best epoch checkpoint, and now runs a small config grid for DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
-- the decoder-LLM family scores the two candidate label continuations directly instead of free-form generation
-- the decoder-LLM family now searches a small prompt / learning-rate / LoRA-rank / epoch grid and includes an image-aware `v4_image_low_text` prompt template
-- on Apple Silicon, the decoder-LLM family currently bypasses MPS and uses the CPU fallback profile by default because the Qwen3 fine-tuning path is not stable on the current MPS stack
+- the encoder transformer family uses title/body pair encoding, keeps the better candidate by a precision-first calibration ranking key, restores the best epoch checkpoint, and runs a small config grid for DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
 - CUDA neural training now enables TF32 matmul when available to reduce remote runtime cost
 
 ## What Training Does

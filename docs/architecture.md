@@ -93,7 +93,7 @@ File:
 Responsibilities:
 
 - define the TF-IDF + logistic regression pipeline
-- define the shared runtime interfaces used by semantic, encoder-transformer, and decoder-LLM bundles
+- define the shared runtime interfaces used by TF-IDF and comparison-model bundles
 - build deterministic train/calibration/test splits
 - calibrate probabilities
 - select low and high thresholds
@@ -109,12 +109,12 @@ Responsibilities:
 
 - prepare reviewed labels for training
 - fit the operational TF-IDF model and calibrator
-- retrain the full nine-model suite without held-out benchmarking
+- retrain the full five-model suite without held-out benchmarking
 - evaluate held-out slices later from the trained suite artifacts
 - write `tfidf_logreg.joblib`
 - write `training_summary.json`
 - build one persisted benchmark-suite split manifest
-- benchmark the nine comparison models against that shared manifest
+- benchmark the five comparison models against that shared manifest
 
 ### CLI
 
@@ -136,7 +136,7 @@ The bridge accepts title and body text that is already visible in the browser. T
 
 The operational retrain path is TF-IDF + logistic regression because it is fast, easy to inspect, cheap to retrain, and strong enough for repeated wording patterns.
 
-That does not mean the repository only supports one model family. The benchmark suite now compares nine local model paths on the same split so the project can make evidence-based promotion decisions without changing the default bridge model prematurely.
+That does not mean the repository only supports one model family. The benchmark suite now compares five local model paths on the same split so the project can make evidence-based promotion decisions without changing the default bridge model prematurely.
 
 ### One shared benchmark manifest
 

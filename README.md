@@ -6,7 +6,7 @@ The current stack is intentionally small:
 
 - browser-captured text only
 - one TF-IDF + logistic regression operational model
-- one local nine-model benchmark suite for comparison work
+- one local five-model benchmark suite for comparison work
 - local JSONL training data
 - optional remote RunPod Pod execution for the existing train and benchmark targets
 - optional remote Windows WSL execution for the existing train and benchmark targets
@@ -58,7 +58,7 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-If you want to run the full nine-model benchmark suite, install the optional model dependencies too:
+If you want to run the full transformer-backed benchmark suite, install the optional model dependencies too:
 
 ```bash
 python -m pip install -e ".[dev,models]"
@@ -81,7 +81,7 @@ make retrain
 That retrains:
 
 - the operational TF-IDF model under `models/real-labels-precision-refresh/`
-- all nine suite models under `models/benchmark-suite/`
+- the five-model comparison suite under `models/benchmark-suite/`
 
 It does not run held-out benchmarks.
 
@@ -157,11 +157,10 @@ This retrains and benchmarks the current top neural comparison models across mul
 
 By default it evaluates:
 
-- `semantic_qwen3_embedding_0_6b`
+- `transformer_deberta_v3_small`
 - `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
-- `causal_lm_qwen3_1_7b_lora`
 
 and writes:
 
@@ -185,17 +184,13 @@ Each benchmark run now also archives:
 - an append-only `benchmark_history.json` index
 - one immutable history snapshot under `models/benchmark-suite/history/<run_id>/`
 
-The suite currently compares nine models on one shared split:
+The suite currently compares five models on one shared split:
 
 - `tfidf_recommended`
-- `semantic_minilm_tuned`
-- `semantic_qwen3_embedding_0_6b`
-- `semantic_jina_embeddings_v5_text_small_classification`
 - `transformer_deberta_v3_small`
 - `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
-- `causal_lm_qwen3_1_7b_lora`
 
 If the benchmark suite artifacts exist, `make bridge` also loads those comparison models for side-by-side `/check` comparisons in the userscript UI.
 
@@ -274,13 +269,13 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 ## Core Behavior
 
 - the userscript can auto-check, re-check, skip through a seeded queue, and save binary labels
-- when benchmark-suite artifacts exist, the userscript also shows nine side-by-side model result cards for the current post in a scrollable `Model checks` section, with the loaded comparison-model count in the section title
-- the userscript now gets the main bridge verdict first, then fills in each comparison card as that model finishes instead of waiting for all nine models before updating the panel
+- when benchmark-suite artifacts exist, the userscript also shows one side-by-side result card per suite model for the current post in a scrollable `Model checks` section, with the loaded comparison-model count in the section title
+- the userscript now gets the main bridge verdict first, then fills in each comparison card as that model finishes instead of waiting for the whole suite before updating the panel
 - the bridge only accepts browser-originated text and local file paths
 - `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs a deterministic random train, calibration, and test split by default
-- `ask-seattle retrain-all` retrains the operational TF-IDF model plus all nine suite models without running held-out benchmarks
+- `ask-seattle retrain-all` retrains the operational TF-IDF model plus the five-model suite without running held-out benchmarks
 - `ask-seattle benchmark-suite` reads those trained suite artifacts later and computes held-out metrics only for models that are already trained for the current manifest
-- the same split object is reused across all nine benchmark evaluators so comparisons are apples-to-apples
+- the same split object is reused across all five benchmark evaluators so comparisons are apples-to-apples
 - if you later want future-facing evaluation on a longer collection window, you can opt into `SPLIT_STRATEGY=time`
 - the shared model text now includes normalized content metadata when available, such as post type, content domain, crosspost status, whether the post has body text, and explicit `IMAGE_NO_BODY` / `LOW_TEXT_IMAGE` markers for title-only image cases
 - the shared model text also includes light structural cues such as title/body length buckets and question-mark presence; the `SPARSE_MEDIA` marker stays in slice metrics but is withheld from model inputs until that cohort has enough positive support
@@ -291,7 +286,7 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the high-threshold selector now also requires a minimum calibration support count for the strict bucket; if calibration cannot satisfy both precision and support, the summary records a flagged fallback to the best precision-only threshold
 - the TF-IDF review threshold now uses a looser review-queue target than the strict auto bucket, so review recall does not collapse on the latest label snapshots
 - the training harness now reports cohort coverage and applies conservative slice-aware positive weighting, but only `image` and `low_text` remain active tuning levers
-- `ask-seattle retrain-all` writes the shared `suite_input.json` manifest plus nine training-only suite summaries, and `ask-seattle benchmark-suite` adds held-out metrics later
+- `ask-seattle retrain-all` writes the shared `suite_input.json` manifest plus five training-only suite summaries, and `ask-seattle benchmark-suite` adds held-out metrics later
 - rerunning `retrain-all` now resumes from compatible completed model artifacts for the same manifest, so a later failure does not force the whole suite to start over
 - benchmark summaries are written separately from training-only suite summaries, so retrain and benchmark are now two explicit steps
 - each benchmark run now records notes, a human-readable benchmark representation, and an immutable history snapshot so you can compare results over time
@@ -299,14 +294,8 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the benchmark summaries now include threshold-independent comparison metrics such as `pr_auc`, `auto_recall_at_precision_95`, and `review_recall_at_precision_75`
 - training and benchmark summaries now record the input-data fingerprint plus runtime package metadata, so local-vs-remote environment drift is easier to spot
 - slice metrics now include support counts and `support_status`, so low-support cohorts like `sparse_media` can stay observational instead of steering recommendations
-- the semantic family now includes a tuned MiniLM path, a Qwen3 embedding path, and a Jina v5 text-small-classification path, all using split title/body embeddings plus a metadata one-hot block before the calibrated logistic-regression head, with title/body weighting chosen on calibration
-- the Jina v5 classification path now uses a Jina-specific `Document:` component formatting pass instead of sharing the generic semantic prompt modes
 - the transformer family now includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
-- the encoder transformer benchmarks now search a small per-model config grid, restore the best epoch checkpoint, and rank candidates with the same precision-first calibration key used by the semantic family
-- the decoder-LLM family uses Qwen3-1.7B with local LoRA fine-tuning, two-label continuation scoring, and a four-profile prompt/rank/learning-rate/epoch search
-- the decoder-LLM prompt grid now includes an image-aware `v4_image_low_text` template that explicitly covers title-only image asks
-- on Apple Silicon, the Qwen3-1.7B benchmark path bypasses MPS and trains on CPU by default because the current MPS stack is not stable for that family
-- on Apple Silicon, the transformer-backed semantic embedding benchmarks currently bypass MPS and use CPU during training because the current Metal backend is not stable for those model families
+- the encoder transformer benchmarks now search a small per-model config grid, restore the best epoch checkpoint, and rank candidates with the same precision-first calibration key across the active transformer profiles
 - on Apple Silicon, the bridge keeps all neural comparison models off MPS during `/check` and `/check-comparison`, so local comparison inference stays stable even if it is slower
 - the bridge now returns the primary `/check` result without waiting for comparison models unless explicitly asked to include them, and the userscript loads comparison cards individually through `/check-comparison`
 - CUDA neural training now enables TF32 matmul when available to reduce remote GPU runtime cost

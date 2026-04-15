@@ -13,7 +13,7 @@ python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
 ```
 
-If you need the full nine-model benchmark suite:
+If you need the full five-model benchmark suite:
 
 ```bash
 python -m pip install -e ".[dev,models]"
@@ -21,10 +21,7 @@ python -m pip install -e ".[dev,models]"
 
 That extra now covers:
 
-- sentence-transformers models
-- transformers-based embedding backends
 - encoder transformer fine-tuning
-- decoder-LLM LoRA fine-tuning support
 
 ## Common Commands
 

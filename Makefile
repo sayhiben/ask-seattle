@@ -14,18 +14,14 @@ EVAL_SUBREDDIT_ARG := $(if $(EVAL_SUBREDDIT), --eval-subreddit $(EVAL_SUBREDDIT)
 SPLIT_STRATEGY ?= random
 SPLIT_SEED ?= 13
 SPLIT_ARGS := --split-strategy $(SPLIT_STRATEGY) --split-seed $(SPLIT_SEED)
-SEMANTIC_MODEL_ID ?= sentence-transformers/all-MiniLM-L6-v2
-SEMANTIC_SECONDARY_MODEL_ID ?= Qwen/Qwen3-Embedding-0.6B
-SEMANTIC_TERTIARY_MODEL_ID ?= jinaai/jina-embeddings-v5-text-small-classification
 TRANSFORMER_MODEL_ID ?= microsoft/deberta-v3-small
 TRANSFORMER_SECONDARY_MODEL_ID ?= answerdotai/ModernBERT-base
 TRANSFORMER_TERTIARY_MODEL_ID ?= chandar-lab/NeoBERT
 TRANSFORMER_QUATERNARY_MODEL_ID ?= answerdotai/ModernBERT-large
-CAUSAL_LM_MODEL_ID ?= Qwen/Qwen3-1.7B
 BENCHMARK_NOTES ?=
 BENCHMARK_NOTES_ARG := $(if $(BENCHMARK_NOTES), --notes '$(BENCHMARK_NOTES)')
 BENCHMARK_SEEDS ?= 13,21,34
-BENCHMARK_SEED_MODELS ?= semantic_qwen3_embedding_0_6b,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large,causal_lm_qwen3_1_7b_lora
+BENCHMARK_SEED_MODELS ?= transformer_deberta_v3_small,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large
 LOG_LEVEL ?= INFO
 RETRAIN_EVERY ?= 0
 REMOTE ?= local
@@ -73,14 +69,10 @@ RUNPOD_COMMON_ARGS := \
 	--benchmark-meta-dir $(RUNPOD_META_DIR) \
 	--split-strategy $(SPLIT_STRATEGY) \
 	--split-seed $(SPLIT_SEED) \
-	--semantic-model-id $(SEMANTIC_MODEL_ID) \
-	--semantic-secondary-model-id $(SEMANTIC_SECONDARY_MODEL_ID) \
-	--semantic-tertiary-model-id $(SEMANTIC_TERTIARY_MODEL_ID) \
 	--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 	--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
 	--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
 	--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
-	--causal-lm-model-id $(CAUSAL_LM_MODEL_ID) \
 	--benchmark-seeds '$(BENCHMARK_SEEDS)' \
 	--benchmark-seed-models '$(BENCHMARK_SEED_MODELS)' \
 	--remote-run-timeout-seconds $(REMOTE_RUN_TIMEOUT) \
@@ -108,14 +100,10 @@ WSL_COMMON_ARGS := \
 	$(WSL_PULL_ARG) \
 	$(WSL_TORCH_INDEX_ARG) \
 	--run-timeout-seconds '$(REMOTE_RUN_TIMEOUT)' \
-	--make-arg SEMANTIC_MODEL_ID='$(SEMANTIC_MODEL_ID)' \
-	--make-arg SEMANTIC_SECONDARY_MODEL_ID='$(SEMANTIC_SECONDARY_MODEL_ID)' \
-	--make-arg SEMANTIC_TERTIARY_MODEL_ID='$(SEMANTIC_TERTIARY_MODEL_ID)' \
 	--make-arg TRANSFORMER_MODEL_ID='$(TRANSFORMER_MODEL_ID)' \
 	--make-arg TRANSFORMER_SECONDARY_MODEL_ID='$(TRANSFORMER_SECONDARY_MODEL_ID)' \
 	--make-arg TRANSFORMER_TERTIARY_MODEL_ID='$(TRANSFORMER_TERTIARY_MODEL_ID)' \
 	--make-arg TRANSFORMER_QUATERNARY_MODEL_ID='$(TRANSFORMER_QUATERNARY_MODEL_ID)' \
-	--make-arg CAUSAL_LM_MODEL_ID='$(CAUSAL_LM_MODEL_ID)' \
 	--make-arg BENCHMARK_SEEDS='$(BENCHMARK_SEEDS)' \
 	--make-arg BENCHMARK_SEED_MODELS='$(BENCHMARK_SEED_MODELS)'
 WSL_NOTES_ARG := $(if $(BENCHMARK_NOTES), --make-arg BENCHMARK_NOTES='$(BENCHMARK_NOTES)')
@@ -190,28 +178,20 @@ retrain:
 		--operational-output-dir $(MODEL_DIR) \
 		--benchmark-output-dir $(BENCHMARK_SUITE_DIR) \
 		$(SPLIT_ARGS) \
-		--semantic-model-id $(SEMANTIC_MODEL_ID) \
-		--semantic-secondary-model-id $(SEMANTIC_SECONDARY_MODEL_ID) \
-		--semantic-tertiary-model-id $(SEMANTIC_TERTIARY_MODEL_ID) \
 		--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 		--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
 		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
-		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
-		--causal-lm-model-id $(CAUSAL_LM_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
+		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
 
 benchmark:
 	$(ASK_SEATTLE) benchmark-suite \
 		--data $(LABELS) \
 		--output-dir $(BENCHMARK_SUITE_DIR) \
 		$(SPLIT_ARGS) \
-		--semantic-model-id $(SEMANTIC_MODEL_ID) \
-		--semantic-secondary-model-id $(SEMANTIC_SECONDARY_MODEL_ID) \
-		--semantic-tertiary-model-id $(SEMANTIC_TERTIARY_MODEL_ID) \
 		--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 		--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
 		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
-		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
-		--causal-lm-model-id $(CAUSAL_LM_MODEL_ID)$(EVAL_SUBREDDIT_ARG)$(BENCHMARK_NOTES_ARG)
+		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID)$(EVAL_SUBREDDIT_ARG)$(BENCHMARK_NOTES_ARG)
 
 benchmark-variants:
 	$(ASK_SEATTLE) benchmark-variants \
@@ -225,14 +205,10 @@ benchmark-seed-sweep:
 		--benchmark-seeds '$(BENCHMARK_SEEDS)' \
 		--benchmark-seed-models '$(BENCHMARK_SEED_MODELS)' \
 		--split-strategy $(SPLIT_STRATEGY) \
-		--semantic-model-id $(SEMANTIC_MODEL_ID) \
-		--semantic-secondary-model-id $(SEMANTIC_SECONDARY_MODEL_ID) \
-		--semantic-tertiary-model-id $(SEMANTIC_TERTIARY_MODEL_ID) \
 		--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 		--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
 		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
-		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
-		--causal-lm-model-id $(CAUSAL_LM_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
+		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
 endif
 
 benchmark-suite:
@@ -266,14 +242,10 @@ benchmark-suite:
 		EVAL_SUBREDDIT='$(EVAL_SUBREDDIT)' \
 		SPLIT_STRATEGY='$(SPLIT_STRATEGY)' \
 		SPLIT_SEED='$(SPLIT_SEED)' \
-		SEMANTIC_MODEL_ID='$(SEMANTIC_MODEL_ID)' \
-		SEMANTIC_SECONDARY_MODEL_ID='$(SEMANTIC_SECONDARY_MODEL_ID)' \
-		SEMANTIC_TERTIARY_MODEL_ID='$(SEMANTIC_TERTIARY_MODEL_ID)' \
 		TRANSFORMER_MODEL_ID='$(TRANSFORMER_MODEL_ID)' \
 		TRANSFORMER_SECONDARY_MODEL_ID='$(TRANSFORMER_SECONDARY_MODEL_ID)' \
 		TRANSFORMER_TERTIARY_MODEL_ID='$(TRANSFORMER_TERTIARY_MODEL_ID)' \
 		TRANSFORMER_QUATERNARY_MODEL_ID='$(TRANSFORMER_QUATERNARY_MODEL_ID)' \
-		CAUSAL_LM_MODEL_ID='$(CAUSAL_LM_MODEL_ID)' \
 		BENCHMARK_NOTES='$(BENCHMARK_NOTES)'
 
 bridge:

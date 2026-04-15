@@ -54,14 +54,10 @@ On Apple Silicon, those neural comparison cards now run on CPU instead of MPS. T
 The current full suite is:
 
 - TF-IDF
-- Semantic MiniLM
-- Semantic Qwen3-Embedding
-- Semantic Jina v5 Text Small Classification
 - Transformer DeBERTa-v3-small
 - Transformer ModernBERT-base
 - Transformer NeoBERT
 - Transformer ModernBERT-large
-- Causal LM Qwen3-1.7B
 
 Each card shows:
 

@@ -82,11 +82,10 @@ DEFAULT_MAX_SLICE_POSITIVE_WEIGHT = 2.0
 DEFAULT_TFIDF_REVIEW_PRECISION_TARGET = 0.70
 DEFAULT_BENCHMARK_SEED_SWEEP = (13, 21, 34)
 DEFAULT_BENCHMARK_SEED_MODELS = (
-    "semantic_qwen3_embedding_0_6b",
+    "transformer_deberta_v3_small",
     "transformer_modernbert_base",
     "transformer_neobert",
     "transformer_modernbert_large",
-    "causal_lm_qwen3_1_7b_lora",
 )
 SPARSE_MEDIA_ACTIVE_TRAIN_POSITIVES = 10
 SPARSE_MEDIA_ACTIVE_TEST_POSITIVES = 5
@@ -1096,78 +1095,6 @@ def _suite_model_specs(
             },
         ),
         SuiteModelSpec(
-            name="semantic_minilm_tuned",
-            display_name="Semantic MiniLM",
-            family="semantic_embedding",
-            runner=_train_semantic_embedding_bundle_for_split,
-            kwargs={
-                "config": SemanticModelConfig(
-                    name="semantic_minilm_tuned",
-                    display_name="Semantic MiniLM",
-                    model_id=semantic_model_id,
-                    backend="sentence_transformers",
-                    config_version="v3_title_body_metadata_weighted",
-                    prompt_modes=("plain", "task_prefix", "short_task_prefix"),
-                    normalize_embeddings=(False, True),
-                    logistic_c_values=(4.0, 16.0, 64.0),
-                    title_weight_values=(1.0, 1.5, 2.0),
-                    body_weight_values=(1.0, 0.75),
-                    encode_batch_size=16,
-                    prompt_prefix="Classify Reddit post intent:",
-                    short_prompt_prefix="Classify askseattle intent.",
-                    pooling="sentence_transformers",
-                ),
-            },
-        ),
-        SuiteModelSpec(
-            name="semantic_qwen3_embedding_0_6b",
-            display_name="Semantic Qwen3-Embedding",
-            family="semantic_embedding",
-            runner=_train_semantic_embedding_bundle_for_split,
-            kwargs={
-                "config": SemanticModelConfig(
-                    name="semantic_qwen3_embedding_0_6b",
-                    display_name="Semantic Qwen3-Embedding",
-                    model_id=semantic_secondary_model_id,
-                    backend="hf_embedding",
-                    config_version="v3_title_body_metadata_weighted",
-                    prompt_modes=("plain", "short_task_prefix"),
-                    normalize_embeddings=(False, True),
-                    logistic_c_values=(4.0, 8.0, 16.0),
-                    title_weight_values=(1.0, 1.5, 2.0),
-                    body_weight_values=(1.0, 0.75),
-                    encode_batch_size=8,
-                    prompt_prefix="Instruct: classify the Reddit post as askseattle or not_askseattle.\nQuery:",
-                    short_prompt_prefix="Classify askseattle intent.",
-                    pooling="last_token",
-                ),
-            },
-        ),
-        SuiteModelSpec(
-            name="semantic_jina_embeddings_v5_text_small_classification",
-            display_name="Semantic Jina v5 Text Small Classification",
-            family="semantic_embedding",
-            runner=_train_semantic_embedding_bundle_for_split,
-            kwargs={
-                "config": SemanticModelConfig(
-                    name="semantic_jina_embeddings_v5_text_small_classification",
-                    display_name="Semantic Jina v5 Text Small Classification",
-                    model_id=semantic_tertiary_model_id,
-                    backend="hf_embedding",
-                    config_version="v5_title_body_metadata_weighted_jina_document_component",
-                    prompt_modes=("plain", "short_task_prefix", "jina_document_component"),
-                    normalize_embeddings=(False, True),
-                    logistic_c_values=(4.0, 16.0, 64.0),
-                    title_weight_values=(1.0, 1.5, 2.0),
-                    body_weight_values=(1.0, 0.75),
-                    encode_batch_size=8,
-                    prompt_prefix="Document:",
-                    short_prompt_prefix="Classify askseattle intent.",
-                    pooling="last_token",
-                ),
-            },
-        ),
-        SuiteModelSpec(
             name="transformer_deberta_v3_small",
             display_name="Transformer DeBERTa-v3-small",
             family="transformer_sequence_classifier",
@@ -1209,21 +1136,6 @@ def _suite_model_specs(
                 "model_id": transformer_quaternary_model_id,
                 "display_name": "Transformer ModernBERT-large",
                 "config_version": "v4_pr_auc_precision_grid",
-            },
-        ),
-        SuiteModelSpec(
-            name="causal_lm_qwen3_1_7b_lora",
-            display_name="Decoder Qwen3-1.7B LoRA",
-            family="causal_lm_classifier",
-            runner=_train_causal_lm_bundle_for_split,
-            kwargs={
-                "model_id": causal_lm_model_id,
-                "display_name": "Decoder Qwen3-1.7B LoRA",
-                "prompt_template_version": (
-                    DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION,
-                    "v4_image_low_text",
-                ),
-                "config_version": "v3_prompt_grid_precision_selection",
             },
         ),
     ]

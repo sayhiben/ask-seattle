@@ -597,7 +597,7 @@ def test_retrain_model_suite_writes_training_only_summary(tmp_path: Path, monkey
     assert [model["benchmark_status"] for model in summary["models"]] == ["not_run", "not_run"]
 
 
-def test_suite_model_specs_include_new_semantic_and_transformer_candidates() -> None:
+def test_suite_model_specs_include_tfidf_and_transformer_candidates_only() -> None:
     specs = training._suite_model_specs(
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
@@ -611,9 +611,12 @@ def test_suite_model_specs_include_new_semantic_and_transformer_candidates() -> 
 
     names = [spec.name for spec in specs]
 
-    assert "semantic_jina_embeddings_v5_text_small_classification" in names
+    assert names[0] == "tfidf_recommended"
+    assert "semantic_minilm_tuned" not in names
+    assert "semantic_jina_embeddings_v5_text_small_classification" not in names
     assert "transformer_neobert" in names
     assert "transformer_modernbert_large" in names
+    assert "causal_lm_qwen3_1_7b_lora" not in names
 
 
 def test_benchmark_model_suite_writes_aggregate_summary(tmp_path: Path, monkeypatch) -> None:

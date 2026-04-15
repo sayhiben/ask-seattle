@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     retrain_all = subparsers.add_parser(
         "retrain-all",
-        help="Retrain the operational TF-IDF model and the full comparison suite without benchmarking",
+        help="Retrain the operational TF-IDF model and the five-model comparison suite without benchmarking",
     )
     retrain_all.add_argument("--data", required=True, type=Path, help="Path to reviewed .jsonl label data")
     retrain_all.add_argument(
@@ -64,21 +64,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_split_args(retrain_all)
     retrain_all.add_argument(
-        "--semantic-model-id",
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        help="Primary sentence embedding model for the semantic comparison path",
-    )
-    retrain_all.add_argument(
-        "--semantic-secondary-model-id",
-        default="Qwen/Qwen3-Embedding-0.6B",
-        help="Secondary embedding model for the semantic comparison path",
-    )
-    retrain_all.add_argument(
-        "--semantic-tertiary-model-id",
-        default="jinaai/jina-embeddings-v5-text-small-classification",
-        help="Tertiary embedding model for the semantic comparison path",
-    )
-    retrain_all.add_argument(
         "--transformer-model-id",
         default="microsoft/deberta-v3-small",
         help="Primary transformer checkpoint for the sequence classification comparison path",
@@ -98,11 +83,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="answerdotai/ModernBERT-large",
         help="Quaternary transformer checkpoint for the sequence classification comparison path",
     )
-    retrain_all.add_argument(
-        "--causal-lm-model-id",
-        default="Qwen/Qwen3-1.7B",
-        help="Decoder LLM checkpoint for the causal language model comparison path",
-    )
     retrain_all.set_defaults(func=retrain_all_command)
 
     benchmark_variants = subparsers.add_parser(
@@ -120,7 +100,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     benchmark_suite = subparsers.add_parser(
         "benchmark-suite",
-        help="Compare TF-IDF, semantic embedding, and transformer models on the same held-out split",
+        help="Compare TF-IDF and encoder-transformer models on the same held-out split",
     )
     benchmark_suite.add_argument("--data", required=True, type=Path, help="Path to reviewed .jsonl label data")
     benchmark_suite.add_argument("--output-dir", required=True, type=Path, help="Where benchmark artifacts go")
@@ -129,21 +109,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="If set, train on mixed reviewed data but restrict calibration/test evaluation to this subreddit",
     )
     add_split_args(benchmark_suite)
-    benchmark_suite.add_argument(
-        "--semantic-model-id",
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        help="Primary sentence embedding model for the semantic benchmark path",
-    )
-    benchmark_suite.add_argument(
-        "--semantic-secondary-model-id",
-        default="Qwen/Qwen3-Embedding-0.6B",
-        help="Secondary embedding model for the semantic benchmark path",
-    )
-    benchmark_suite.add_argument(
-        "--semantic-tertiary-model-id",
-        default="jinaai/jina-embeddings-v5-text-small-classification",
-        help="Tertiary embedding model for the semantic benchmark path",
-    )
     benchmark_suite.add_argument(
         "--transformer-model-id",
         default="microsoft/deberta-v3-small",
@@ -163,11 +128,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--transformer-quaternary-model-id",
         default="answerdotai/ModernBERT-large",
         help="Quaternary transformer checkpoint for the sequence classification benchmark path",
-    )
-    benchmark_suite.add_argument(
-        "--causal-lm-model-id",
-        default="Qwen/Qwen3-1.7B",
-        help="Decoder LLM checkpoint for the causal language model benchmark path",
     )
     benchmark_suite.add_argument(
         "--notes",
@@ -204,21 +164,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="How to split reviewed labels into train, calibration, and test sets",
     )
     benchmark_seed_sweep.add_argument(
-        "--semantic-model-id",
-        default="sentence-transformers/all-MiniLM-L6-v2",
-        help="Primary sentence embedding model for the semantic benchmark path",
-    )
-    benchmark_seed_sweep.add_argument(
-        "--semantic-secondary-model-id",
-        default="Qwen/Qwen3-Embedding-0.6B",
-        help="Secondary embedding model for the semantic benchmark path",
-    )
-    benchmark_seed_sweep.add_argument(
-        "--semantic-tertiary-model-id",
-        default="jinaai/jina-embeddings-v5-text-small-classification",
-        help="Tertiary embedding model for the semantic benchmark path",
-    )
-    benchmark_seed_sweep.add_argument(
         "--transformer-model-id",
         default="microsoft/deberta-v3-small",
         help="Primary transformer checkpoint for the sequence classification benchmark path",
@@ -237,11 +182,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--transformer-quaternary-model-id",
         default="answerdotai/ModernBERT-large",
         help="Quaternary transformer checkpoint for the sequence classification benchmark path",
-    )
-    benchmark_seed_sweep.add_argument(
-        "--causal-lm-model-id",
-        default="Qwen/Qwen3-1.7B",
-        help="Decoder LLM checkpoint for the causal language model benchmark path",
     )
     benchmark_seed_sweep.set_defaults(func=benchmark_seed_sweep_command)
 
@@ -358,14 +298,10 @@ def retrain_all_command(args: argparse.Namespace) -> int:
         split_strategy=args.split_strategy,
         split_seed=args.split_seed,
         evaluation_subreddit=args.eval_subreddit,
-        semantic_model_id=args.semantic_model_id,
-        semantic_secondary_model_id=args.semantic_secondary_model_id,
-        semantic_tertiary_model_id=args.semantic_tertiary_model_id,
         transformer_model_id=args.transformer_model_id,
         transformer_secondary_model_id=args.transformer_secondary_model_id,
         transformer_tertiary_model_id=args.transformer_tertiary_model_id,
         transformer_quaternary_model_id=args.transformer_quaternary_model_id,
-        causal_lm_model_id=args.causal_lm_model_id,
     )
     print(json.dumps(summary, indent=2))
     return 0
@@ -390,14 +326,10 @@ def benchmark_suite_command(args: argparse.Namespace) -> int:
         split_strategy=args.split_strategy,
         split_seed=args.split_seed,
         evaluation_subreddit=args.eval_subreddit,
-        semantic_model_id=args.semantic_model_id,
-        semantic_secondary_model_id=args.semantic_secondary_model_id,
-        semantic_tertiary_model_id=args.semantic_tertiary_model_id,
         transformer_model_id=args.transformer_model_id,
         transformer_secondary_model_id=args.transformer_secondary_model_id,
         transformer_tertiary_model_id=args.transformer_tertiary_model_id,
         transformer_quaternary_model_id=args.transformer_quaternary_model_id,
-        causal_lm_model_id=args.causal_lm_model_id,
         notes=args.notes,
     )
     print(json.dumps(summary, indent=2))
@@ -412,14 +344,10 @@ def benchmark_seed_sweep_command(args: argparse.Namespace) -> int:
         split_seeds=tuple(args.benchmark_seeds),
         model_names=tuple(args.benchmark_seed_models),
         evaluation_subreddit=args.eval_subreddit,
-        semantic_model_id=args.semantic_model_id,
-        semantic_secondary_model_id=args.semantic_secondary_model_id,
-        semantic_tertiary_model_id=args.semantic_tertiary_model_id,
         transformer_model_id=args.transformer_model_id,
         transformer_secondary_model_id=args.transformer_secondary_model_id,
         transformer_tertiary_model_id=args.transformer_tertiary_model_id,
         transformer_quaternary_model_id=args.transformer_quaternary_model_id,
-        causal_lm_model_id=args.causal_lm_model_id,
     )
     print(json.dumps(summary, indent=2))
     return 0

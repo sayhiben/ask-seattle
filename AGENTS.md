@@ -18,6 +18,13 @@ Rules:
 - for RunPod specifically:
   - always delete Pods at end of turn
   - preserve a TTL-bounded retained network volume when the user has explicitly chosen that workflow for active remote-training iteration
+  - if a retained network volume is nearing or at capacity and the user is still actively iterating, it is acceptable to increase the volume size instead of abandoning the workflow
+  - before preserving or resizing a retained volume, cull stale files that are no longer needed:
+    - old run logs
+    - uploaded label payloads from completed runs
+    - aborted checkpoints
+    - superseded model artifacts that are no longer being used
+  - do not delete the current run's inputs, the current benchmark artifacts, or the actively referenced retained cache just to free space
   - delete the retained volume only when:
     - the user explicitly asks for cleanup, or
     - the user clearly indicates they are done with remote training for now

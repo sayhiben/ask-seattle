@@ -62,7 +62,7 @@ Those fields are normalized into metadata tokens such as `POST_TYPE:image` and `
 
 Neural model families still consume those tokens through their shared text or prompt inputs. The operational TF-IDF model now keeps them in a separate exact-token metadata channel so word and character n-grams stay focused on natural title/body text.
 
-The semantic benchmark families now also consume metadata through a separate one-hot block alongside split title and body embeddings, instead of flattening everything into one embedded string.
+The transformer benchmark families consume those tokens through their paired title/body inputs so the comparison suite still sees the same content metadata contract as the operational model.
 
 The shared text also includes lightweight structural tokens derived from the visible text:
 
@@ -134,14 +134,10 @@ The benchmark suite writes:
 
 - `suite_training_summary.json`
 - `tfidf_recommended/training_summary.json`
-- `semantic_minilm_tuned/training_summary.json`
-- `semantic_qwen3_embedding_0_6b/training_summary.json`
-- `semantic_jina_embeddings_v5_text_small_classification/training_summary.json`
 - `transformer_deberta_v3_small/training_summary.json`
 - `transformer_modernbert_base/training_summary.json`
 - `transformer_neobert/training_summary.json`
 - `transformer_modernbert_large/training_summary.json`
-- `causal_lm_qwen3_1_7b_lora/training_summary.json`
 - `suite_input.json`
 - `benchmark_suite_summary.json`
 - `benchmark_history.json`
@@ -165,7 +161,7 @@ The manifest includes:
 - optional `evaluation_subreddit`
 - prepared-data summary counts
 
-Every benchmark-suite model family consumes that same manifest so the nine-model comparison remains apples-to-apples.
+Every benchmark-suite model family consumes that same manifest so the five-model comparison remains apples-to-apples.
 
 `make retrain` writes or refreshes this manifest before training the suite models. `make benchmark` loads the same manifest later and only benchmarks compatible trained artifacts for that manifest.
 
@@ -248,7 +244,7 @@ Important sections:
 - `production_ready`
 - `production_ready_blocked_reason`
 
-Neural benchmark summaries replace `feature_audit` with model-specific metadata such as `embedding_summary`, `training_args`, or `prompt_template`, but keep the same `split`, `calibration`, `threshold_selection`, `metrics`, and `operating_metrics` structure so results can be compared consistently.
+Neural benchmark summaries replace `feature_audit` with model-specific metadata such as `training_args`, but keep the same `split`, `calibration`, `threshold_selection`, `metrics`, and `operating_metrics` structure so results can be compared consistently.
 
 Neural summaries now also record the active `representation_config`, so later benchmark or inference runs can reconstruct the same metadata-token policy that the model was trained with.
 
@@ -294,31 +290,6 @@ Transformer benchmark summaries also include the current input and loss setup un
 - `candidate_profile`
 - `candidate_results`
 - `cuda_matmul`
-
-Semantic benchmark summaries also include a model-family-specific `embedding_summary`, including fields such as:
-
-- `backend`
-- `model_id`
-- `feature_layout`
-- `prompt_mode`
-- `prompt_prefix`
-- `short_prompt_prefix`
-- `normalize_embeddings`
-- `pooling`
-- `logreg_c`
-
-For Jina v5 classification specifically, the prompt mode can now be `jina_document_component`, which formats split title/body inputs as `Document: Title: ...` and `Document: Body: ...`.
-
-The Qwen3 embedding and Jina v5 classification embedding paths use a Transformers-based backend rather than SentenceTransformers, but they still end in the same calibrated logistic-regression head shape as the MiniLM path.
-
-Decoder-LLM benchmark summaries also include the current prompt and continuation-scoring setup, including fields such as:
-
-- `prompt_template`
-- `target_labels`
-- `lora`
-- `runtime_device`
-
-The decoder-LLM family trains the model to continue with exactly `askseattle` or `not_askseattle`, then scores those two candidate continuations directly at evaluation and inference time instead of relying on free-form generation.
 
 ## Storage Rules
 
