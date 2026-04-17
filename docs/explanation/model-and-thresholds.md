@@ -26,7 +26,7 @@ The comparison stack currently includes:
 - NeoBERT encoder classifier
 - ModernBERT-large encoder classifier
 
-The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by a precision-first calibration ranking key. DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection. The current grid adds a CUDA-only 512-token balanced DeBERTa-v3-small candidate, a CUDA-only 512-token precision NeoBERT candidate, and a 48 GB CUDA-only 512-token precision ModernBERT-large candidate.
+The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by calibrated strict-threshold readiness before using recall and PR-AUC as tie breakers. DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection. The current grid adds a CUDA-only 512-token balanced DeBERTa-v3-small candidate, a CUDA-only 512-token precision NeoBERT candidate, and a 48 GB CUDA-only 512-token precision ModernBERT-large candidate.
 
 On CUDA runs, the neural training paths now also enable TF32 float32 matmul. That is a speed optimization for Ampere-and-newer NVIDIA GPUs; it lowers remote wall-clock cost without changing the product-level threshold policy.
 
@@ -143,9 +143,9 @@ The system uses two thresholds.
 
 This is the conservative threshold for the `high` confidence band.
 
-Training chooses it by maximizing recall subject to meeting the precision target on the calibration slice and reaching a minimum number of predicted positives in that strict bucket.
+Training now chooses it by maximizing recall subject to meeting the precision target on the calibration slice, reaching a minimum number of predicted positives in that strict bucket, and clearing a bootstrap precision check on the calibration slice.
 
-The current minimum calibration support for the strict bucket is `5`. If no calibration threshold satisfies both precision and support, the training summary records a flagged fallback to the best precision-only threshold instead of pretending the stricter evidence existed.
+The current minimum calibration support for the strict bucket is `5`, and the bootstrap check uses the `p20` precision across `200` deterministic resamples. If no calibration threshold satisfies the stricter gate, the training summary records the fallback reason instead of pretending the stricter evidence existed.
 
 ### Low threshold
 
@@ -218,6 +218,15 @@ Each slice summary now also records:
 
 - train positive counts
 - test positive counts
+
+For seed sweeps, the aggregate summary now also records readiness/stability fields such as:
+
+- `production_ready_runs`
+- `ready_rate`
+- `min_auto_precision`
+- `min_auto_recall`
+- `mean_pr_auc`
+- `std_pr_auc`
 - `support_status = active | observational`
 
 Those metrics are more useful for system design than a single raw accuracy number because they tell you:

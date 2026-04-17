@@ -284,20 +284,20 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the default TF-IDF model also normalizes raw URLs in lexical channels to a neutral `URL` token, so transport syntax like `https` or `://` does not dominate the word and character features while domain/post-type signal stays available in metadata
 - the default TF-IDF word stopword list now also excludes `just`, `one`, and `some`, which benchmarked better than leaving them active on the current `/r/seattle` split
 - the default TF-IDF model also scales `min_df` upward as the corpus grows so low-support phrases do not dominate once the label set is larger
-- the high-threshold selector now also requires a minimum calibration support count for the strict bucket; if calibration cannot satisfy both precision and support, the summary records a flagged fallback to the best precision-only threshold
+- the high-threshold selector now also requires a minimum calibration support count for the strict bucket and a bootstrap precision check on the calibration slice; if calibration cannot satisfy the stricter gate, the summary records an explicit fallback reason
 - the TF-IDF review threshold now uses a looser review-queue target than the strict auto bucket, so review recall does not collapse on the latest label snapshots
 - the training harness now reports cohort coverage and applies conservative slice-aware positive weighting, but only `image` and `low_text` remain active tuning levers
 - `ask-seattle retrain-all` writes the shared `suite_input.json` manifest plus five training-only suite summaries, and `ask-seattle benchmark-suite` adds held-out metrics later
 - rerunning `retrain-all` now resumes from compatible completed model artifacts for the same manifest, so a later failure does not force the whole suite to start over
 - benchmark summaries are written separately from training-only suite summaries, so retrain and benchmark are now two explicit steps
 - each benchmark run now records notes, a human-readable benchmark representation, and an immutable history snapshot so you can compare results over time
-- the benchmark suite also supports a selected-model multi-seed sweep, so you can compare mean/std for the top neural candidates without widening the default retrain/benchmark contract
+- the benchmark suite also supports a selected-model multi-seed sweep, so you can compare readiness/stability for the top neural candidates without widening the default retrain/benchmark contract
 - the benchmark summaries now include threshold-independent comparison metrics such as `pr_auc`, `auto_recall_at_precision_95`, and `review_recall_at_precision_75`
 - training and benchmark summaries now record the input-data fingerprint plus runtime package metadata, so local-vs-remote environment drift is easier to spot
 - slice metrics now include support counts and `support_status`, so low-support cohorts like `sparse_media` can stay observational instead of steering recommendations
 - the transformer family now includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
 - the current transformer grid keeps DeBERTa-v3-small on its 256 to 384 token core profiles plus one CUDA-only 512-token balanced profile, adds a CUDA-only NeoBERT 512-token precision profile, and adds a 48 GB CUDA-only ModernBERT-large 512-token precision profile
-- the encoder transformer benchmarks now search a small per-model config grid, restore the best epoch checkpoint, and rank candidates with the same precision-first calibration key across the active transformer profiles
+- the encoder transformer benchmarks now search a small per-model config grid, restore the best epoch checkpoint, and rank candidates by calibrated strict-threshold readiness before using recall and PR-AUC as tie breakers
 - on Apple Silicon, the bridge keeps all neural comparison models off MPS during `/check` and `/check-comparison`, so local comparison inference stays stable even if it is slower
 - the bridge now returns the primary `/check` result without waiting for comparison models unless explicitly asked to include them, the userscript loads transformer cards individually through `/check-comparison`, and stale semantic/decoder entries from older suite summaries are ignored
 - CUDA neural training now enables TF32 matmul when available to reduce remote GPU runtime cost

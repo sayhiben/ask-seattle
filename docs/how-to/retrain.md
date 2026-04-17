@@ -124,6 +124,22 @@ By default it evaluates:
 
 Use it before promoting a model family change based on one benchmark run.
 
+The aggregate summary now also reports:
+
+- `production_ready_runs`
+- `ready_rate`
+- `min_auto_precision`
+- `min_auto_recall`
+- `mean_pr_auc`
+- `std_pr_auc`
+
+Treat the first model in `model_aggregates` as the current winner. That list is now ordered by:
+
+1. `ready_rate`
+2. `min_auto_precision`
+3. mean auto recall
+4. `mean_pr_auc`
+
 ## Compare The Full Five-Model Suite
 
 Install the optional model dependencies first:
@@ -181,7 +197,7 @@ Important implementation details:
 - rerunning `make retrain` resumes from any compatible completed per-model artifact already on disk for that manifest
 - `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
 - `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
-- the encoder transformer family uses title/body pair encoding, keeps the better candidate by a precision-first calibration ranking key, restores the best epoch checkpoint, and runs a small config grid for DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
+- the encoder transformer family uses title/body pair encoding, fits a sigmoid calibrator for every candidate, keeps the better candidate by calibrated strict-threshold readiness first, restores the best epoch checkpoint, and runs a small config grid for DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
 - that grid now includes a CUDA-only 512-token balanced DeBERTa-v3-small candidate, a CUDA-only 512-token precision NeoBERT candidate, and a 48 GB CUDA-only 512-token precision ModernBERT-large candidate
 - CUDA neural training now enables TF32 matmul when available to reduce remote runtime cost
 
@@ -228,7 +244,7 @@ The current default model applies these conservative refinements relative to the
 - lexical title/body text normalizes visible URLs to `URL`, so raw transport syntax like `https`, `www`, and `://` does not carry direct weight
 - the TF-IDF word stopword list also excludes `just`, `one`, and `some`, because that benchmarked better than leaving them active on the current `/r/seattle` split
 - default `min_df` now scales with corpus size so larger label sets suppress more brittle low-support phrases
-- high-threshold selection now requires both the precision target and at least `5` calibration predictions in the strict bucket; if calibration cannot satisfy both, the summary records a fallback to the best precision-only threshold
+- high-threshold selection now requires the precision target, at least `5` calibration predictions in the strict bucket, and a bootstrap precision `p20` check on the calibration slice; if calibration cannot satisfy the stricter gate, the summary records the fallback reason explicitly
 - TF-IDF review-threshold selection now maximizes review recall subject to `review precision >= 0.70`, while the strict auto bucket still targets `high precision >= 0.95`
 - slice-aware positive weighting during training now uses only `image` and `low_text` as active tuning levers
 
@@ -324,7 +340,7 @@ Important benchmarked fields:
 - `calibration`
 - `production_gate`
 - `threshold_selection`
-  - includes the review precision target used for the low threshold, the high precision target used for the strict bucket, the minimum calibration support required for the strict bucket, and whether strict-threshold selection had to fall back
+  - includes the review precision target used for the low threshold, the high precision target used for the strict bucket, the minimum calibration support required for the strict bucket, bootstrap strict-threshold diagnostics, and any strict-threshold fallback reason
 - `metrics`
 - `operating_metrics`
 - `training_balance`

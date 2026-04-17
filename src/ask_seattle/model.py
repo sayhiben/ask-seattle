@@ -43,9 +43,12 @@ DEFAULT_THRESHOLD_GRID = tuple(round(index / 100, 2) for index in range(5, 100, 
 DEFAULT_SPLIT_STRATEGY = "random"
 DEFAULT_SPLIT_SEED = 13
 DEFAULT_CAUSAL_LM_PROMPT_TEMPLATE_VERSION = "v3_compact_contextual_fields"
-DEFAULT_TFIDF_CONFIG_VERSION = "v7_tfidf_precision_stable_sparse_observational"
+DEFAULT_TFIDF_CONFIG_VERSION = "v8_tfidf_bootstrap_precision_stable_sparse_observational"
 DEFAULT_REVIEW_PRECISION_TARGET = 0.75
 DEFAULT_MIN_HIGH_CONFIDENCE_CALIBRATION_PREDICTIONS = 5
+DEFAULT_THRESHOLD_BOOTSTRAP_SAMPLE_COUNT = 200
+DEFAULT_THRESHOLD_BOOTSTRAP_PRECISION_PERCENTILE = 0.20
+DEFAULT_THRESHOLD_BOOTSTRAP_SEED = 13
 LOGGER = logging.getLogger("ask_seattle.model")
 WORD_STOPWORDS = frozenset(
     {
@@ -123,6 +126,15 @@ class ThresholdSelection:
     predicted_positive: int
     support: int
     production_ready: bool
+    bootstrap_precision_p20: float | None = None
+    bootstrap_precision_mean: float | None = None
+    bootstrap_precision_min: float | None = None
+    bootstrap_predicted_positive_p20: int | None = None
+    bootstrap_predicted_positive_mean: float | None = None
+    bootstrap_predicted_positive_min: int | None = None
+    bootstrap_sample_count: int = 0
+    bootstrap_ready: bool = False
+    fallback_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -458,6 +470,64 @@ def threshold_sweep(
     return sweep
 
 
+def _bootstrap_sample_indices(size: int, sample_count: int, *, seed: int) -> np.ndarray:
+    if size <= 0 or sample_count <= 0:
+        return np.empty((0, 0), dtype=np.int64)
+    rng = np.random.default_rng(seed)
+    return rng.integers(0, size, size=(sample_count, size), dtype=np.int64)
+
+
+def _bootstrap_percentile_floor(values: np.ndarray, percentile: float) -> float:
+    if values.size == 0:
+        return 0.0
+    ordered = np.sort(np.asarray(values))
+    index = int(np.floor((len(ordered) - 1) * float(percentile)))
+    index = min(max(index, 0), len(ordered) - 1)
+    return float(ordered[index])
+
+
+def _bootstrap_threshold_diagnostics(
+    y_true: list[int],
+    probabilities: list[float],
+    *,
+    threshold: float,
+    sample_indices: np.ndarray,
+    precision_percentile: float,
+) -> dict[str, float | int]:
+    if sample_indices.size == 0:
+        return {
+            "bootstrap_precision_p20": None,
+            "bootstrap_precision_mean": None,
+            "bootstrap_precision_min": None,
+            "bootstrap_predicted_positive_p20": None,
+            "bootstrap_predicted_positive_mean": None,
+            "bootstrap_predicted_positive_min": None,
+            "bootstrap_sample_count": 0,
+        }
+
+    y_array = np.asarray(y_true, dtype=np.int8)
+    probability_array = np.asarray(probabilities, dtype=np.float32)
+    sampled_labels = y_array[sample_indices]
+    sampled_predictions = probability_array[sample_indices] >= float(threshold)
+    predicted_positive = sampled_predictions.sum(axis=1).astype(np.int64)
+    true_positive = np.logical_and(sampled_predictions, sampled_labels == 1).sum(axis=1).astype(np.int64)
+    precision = np.divide(
+        true_positive,
+        predicted_positive,
+        out=np.zeros_like(true_positive, dtype=np.float64),
+        where=predicted_positive > 0,
+    )
+    return {
+        "bootstrap_precision_p20": _bootstrap_percentile_floor(precision, precision_percentile),
+        "bootstrap_precision_mean": float(precision.mean()),
+        "bootstrap_precision_min": float(precision.min()),
+        "bootstrap_predicted_positive_p20": int(_bootstrap_percentile_floor(predicted_positive, precision_percentile)),
+        "bootstrap_predicted_positive_mean": float(np.asarray(predicted_positive, dtype=np.float64).mean()),
+        "bootstrap_predicted_positive_min": int(np.asarray(predicted_positive).min()),
+        "bootstrap_sample_count": int(sample_indices.shape[0]),
+    }
+
+
 def select_threshold(
     y_true: list[int],
     probabilities: list[float],
@@ -465,20 +535,77 @@ def select_threshold(
     min_precision: float = 0.95,
     minimum_predictions: int = 0,
     thresholds: tuple[float, ...] | None = None,
+    bootstrap_sample_count: int = DEFAULT_THRESHOLD_BOOTSTRAP_SAMPLE_COUNT,
+    bootstrap_precision_percentile: float = DEFAULT_THRESHOLD_BOOTSTRAP_PRECISION_PERCENTILE,
+    bootstrap_seed: int = DEFAULT_THRESHOLD_BOOTSTRAP_SEED,
 ) -> ThresholdSelection:
     sweep = threshold_sweep(y_true, probabilities, thresholds)
+    use_bootstrap_gate = minimum_predictions > 0 and bootstrap_sample_count > 0
+    sample_indices = (
+        _bootstrap_sample_indices(
+            len(y_true),
+            bootstrap_sample_count,
+            seed=bootstrap_seed,
+        )
+        if use_bootstrap_gate
+        else np.empty((0, 0), dtype=np.int64)
+    )
+    for row in sweep:
+        row.update(
+            {
+                "bootstrap_precision_p20": None,
+                "bootstrap_precision_mean": None,
+                "bootstrap_precision_min": None,
+                "bootstrap_predicted_positive_p20": None,
+                "bootstrap_predicted_positive_mean": None,
+                "bootstrap_predicted_positive_min": None,
+                "bootstrap_sample_count": 0,
+                "bootstrap_ready": False,
+            }
+        )
+        if not use_bootstrap_gate or float(row["precision"]) < min_precision:
+            continue
+        row.update(
+            _bootstrap_threshold_diagnostics(
+                y_true,
+                probabilities,
+                threshold=float(row["threshold"]),
+                sample_indices=sample_indices,
+                precision_percentile=bootstrap_precision_percentile,
+            )
+        )
+        row["bootstrap_ready"] = (
+            int(row.get("predicted_positive") or 0) >= int(minimum_predictions)
+            and float(row.get("bootstrap_precision_p20") or 0.0) >= float(min_precision)
+        )
     precision_ready = [row for row in sweep if float(row["precision"]) >= min_precision]
-    ready = [
-        row for row in precision_ready if int(row.get("predicted_positive") or 0) >= int(minimum_predictions)
-    ]
-    fallback_used = bool(precision_ready) and not ready and minimum_predictions > 0
-    candidates = ready or precision_ready or sweep
+    ready = [row for row in precision_ready if int(row.get("predicted_positive") or 0) >= int(minimum_predictions)]
+    bootstrap_ready = [row for row in ready if bool(row.get("bootstrap_ready"))]
+    if not use_bootstrap_gate:
+        candidates = precision_ready or sweep
+        fallback_used = False
+        fallback_reason = None if precision_ready else "high_precision_target_not_met"
+    elif bootstrap_ready:
+        candidates = bootstrap_ready
+        fallback_used = False
+        fallback_reason = None
+    elif ready:
+        candidates = ready
+        fallback_used = True
+        fallback_reason = "bootstrap_precision_target_not_met"
+    elif precision_ready:
+        candidates = precision_ready
+        fallback_used = True
+        fallback_reason = "minimum_high_confidence_calibration_predictions_not_met"
+    else:
+        candidates = sweep
+        fallback_used = False
+        fallback_reason = "high_precision_target_not_met"
     selected = max(
         candidates,
         key=lambda row: (
             float(row["recall"]),
-            float(row["precision"]),
-            float(row["f1"]),
+            float(row.get("bootstrap_precision_p20") or -1.0),
             int(row.get("predicted_positive") or 0),
             float(row["threshold"]),
         ),
@@ -491,7 +618,40 @@ def select_threshold(
         f1=float(selected["f1"]),
         predicted_positive=int(selected.get("predicted_positive") or 0),
         support=int(selected["support"]),
-        production_ready=bool(ready) and not fallback_used,
+        production_ready=(bool(precision_ready) and not use_bootstrap_gate) or (bool(bootstrap_ready) and not fallback_used),
+        bootstrap_precision_p20=(
+            float(selected["bootstrap_precision_p20"])
+            if selected.get("bootstrap_precision_p20") is not None
+            else None
+        ),
+        bootstrap_precision_mean=(
+            float(selected["bootstrap_precision_mean"])
+            if selected.get("bootstrap_precision_mean") is not None
+            else None
+        ),
+        bootstrap_precision_min=(
+            float(selected["bootstrap_precision_min"])
+            if selected.get("bootstrap_precision_min") is not None
+            else None
+        ),
+        bootstrap_predicted_positive_p20=(
+            int(selected["bootstrap_predicted_positive_p20"])
+            if selected.get("bootstrap_predicted_positive_p20") is not None
+            else None
+        ),
+        bootstrap_predicted_positive_mean=(
+            float(selected["bootstrap_predicted_positive_mean"])
+            if selected.get("bootstrap_predicted_positive_mean") is not None
+            else None
+        ),
+        bootstrap_predicted_positive_min=(
+            int(selected["bootstrap_predicted_positive_min"])
+            if selected.get("bootstrap_predicted_positive_min") is not None
+            else None
+        ),
+        bootstrap_sample_count=int(selected.get("bootstrap_sample_count") or 0),
+        bootstrap_ready=bool(selected.get("bootstrap_ready")),
+        fallback_reason=fallback_reason,
     )
 
 
@@ -503,23 +663,19 @@ def select_decision_thresholds(
     review_precision_target: float = DEFAULT_REVIEW_PRECISION_TARGET,
     minimum_high_confidence_calibration_predictions: int = DEFAULT_MIN_HIGH_CONFIDENCE_CALIBRATION_PREDICTIONS,
     thresholds: tuple[float, ...] | None = None,
+    bootstrap_sample_count: int = DEFAULT_THRESHOLD_BOOTSTRAP_SAMPLE_COUNT,
+    bootstrap_precision_percentile: float = DEFAULT_THRESHOLD_BOOTSTRAP_PRECISION_PERCENTILE,
+    bootstrap_seed: int = DEFAULT_THRESHOLD_BOOTSTRAP_SEED,
 ) -> DecisionThresholds:
-    precision_ready = [
-        row
-        for row in threshold_sweep(y_true, probabilities, thresholds)
-        if float(row["precision"]) >= auto_precision_target
-    ]
-    support_ready = [
-        row
-        for row in precision_ready
-        if int(row.get("predicted_positive") or 0) >= int(minimum_high_confidence_calibration_predictions)
-    ]
     high_threshold_selection = select_threshold(
         y_true,
         probabilities,
         min_precision=auto_precision_target,
         minimum_predictions=minimum_high_confidence_calibration_predictions,
         thresholds=thresholds,
+        bootstrap_sample_count=bootstrap_sample_count,
+        bootstrap_precision_percentile=bootstrap_precision_percentile,
+        bootstrap_seed=bootstrap_seed,
     )
     high_threshold_sweep = threshold_sweep(y_true, probabilities, thresholds)
     low_threshold_sweep = high_threshold_sweep
@@ -550,7 +706,11 @@ def select_decision_thresholds(
         low_threshold_sweep=low_threshold_sweep,
         abstain_enabled=low_threshold < high_threshold_selection.threshold,
         minimum_high_confidence_calibration_predictions=minimum_high_confidence_calibration_predictions,
-        high_threshold_fallback_used=bool(precision_ready) and not bool(support_ready),
+        high_threshold_fallback_used=high_threshold_selection.fallback_reason
+        in {
+            "bootstrap_precision_target_not_met",
+            "minimum_high_confidence_calibration_predictions_not_met",
+        },
     )
 
 

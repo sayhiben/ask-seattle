@@ -41,6 +41,7 @@ from ask_seattle.model import (
     DEFAULT_METADATA_WEIGHT,
     DEFAULT_SPLIT_SEED,
     DEFAULT_SPLIT_STRATEGY,
+    DEFAULT_THRESHOLD_BOOTSTRAP_PRECISION_PERCENTILE,
     DEFAULT_TFIDF_CONFIG_VERSION,
     DEFAULT_TFIDF_URL_NORMALIZATION,
     DEFAULT_TFIDF_STRIP_URLS,
@@ -1010,11 +1011,15 @@ def benchmark_seed_sweep_from_labels(
         "evaluation_subreddit": evaluation_subreddit,
         "split_seeds": list(selected_seeds),
         "seed_runs": runs,
+        "best_model_selection_order": ["ready_rate", "min_auto_precision", "mean_auto_recall", "mean_pr_auc"],
         "model_aggregates": _benchmark_seed_sweep_aggregates(
             runs,
             model_names=selected_model_names,
         ),
     }
+    aggregate["best_model_name"] = (
+        str(aggregate["model_aggregates"][0]["name"]) if aggregate["model_aggregates"] else None
+    )
     (sweep_dir / "seed_sweep_summary.json").write_text(
         json.dumps(aggregate, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -1102,7 +1107,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_model_id,
                 "display_name": "Transformer DeBERTa-v3-small",
-                "config_version": "v4_pr_auc_precision_profiles_long_context",
+                "config_version": "v5_bootstrap_precision_profiles",
             },
         ),
         SuiteModelSpec(
@@ -1113,7 +1118,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_secondary_model_id,
                 "display_name": "Transformer ModernBERT-base",
-                "config_version": "v4_pr_auc_precision_grid",
+                "config_version": "v5_bootstrap_precision_grid",
             },
         ),
         SuiteModelSpec(
@@ -1124,7 +1129,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_tertiary_model_id,
                 "display_name": "Transformer NeoBERT",
-                "config_version": "v6_pr_auc_precision_grid_long_context",
+                "config_version": "v7_bootstrap_precision_grid",
             },
         ),
         SuiteModelSpec(
@@ -1135,7 +1140,7 @@ def _suite_model_specs(
             kwargs={
                 "model_id": transformer_quaternary_model_id,
                 "display_name": "Transformer ModernBERT-large",
-                "config_version": "v5_pr_auc_precision_grid_long_context",
+                "config_version": "v6_bootstrap_precision_grid",
             },
         ),
     ]
@@ -1395,22 +1400,25 @@ def _benchmark_seed_sweep_aggregates(
         if not model_runs:
             continue
         sample = model_runs[0]["model"]
+        ready_runs = sum(1 for item in model_runs if bool(item["model"].get("production_ready")))
+        metric_summary = {
+            metric_name: _seed_sweep_metric_summary([_nested_metric_value(item["model"], path) for item in model_runs])
+            for metric_name, path in metric_extractors.items()
+        }
         aggregates.append(
             {
                 "name": model_name,
                 "display_name": sample.get("display_name"),
                 "model_family": sample.get("model_family"),
                 "model_id": sample.get("model_id"),
-                "production_ready_rate": _safe_rate(
-                    sum(1 for item in model_runs if bool(item["model"].get("production_ready"))),
-                    len(model_runs),
-                ),
-                "metric_summary": {
-                    metric_name: _seed_sweep_metric_summary(
-                        [_nested_metric_value(item["model"], path) for item in model_runs]
-                    )
-                    for metric_name, path in metric_extractors.items()
-                },
+                "production_ready_runs": ready_runs,
+                "ready_rate": _safe_rate(ready_runs, len(model_runs)),
+                "production_ready_rate": _safe_rate(ready_runs, len(model_runs)),
+                "min_auto_precision": metric_summary["auto_precision"]["min"],
+                "min_auto_recall": metric_summary["auto_recall"]["min"],
+                "mean_pr_auc": metric_summary["pr_auc"]["mean"],
+                "std_pr_auc": metric_summary["pr_auc"]["std"],
+                "metric_summary": metric_summary,
                 "per_seed": [
                     {
                         "seed": item["seed"],
@@ -1429,7 +1437,16 @@ def _benchmark_seed_sweep_aggregates(
                 ],
             }
         )
-    return aggregates
+    return sorted(aggregates, key=_seed_sweep_model_key, reverse=True)
+
+
+def _seed_sweep_model_key(aggregate: dict[str, Any]) -> tuple[float, float, float, float]:
+    return (
+        float(aggregate.get("ready_rate") or 0.0),
+        float(aggregate.get("min_auto_precision") or 0.0),
+        float(aggregate.get("metric_summary", {}).get("auto_recall", {}).get("mean") or 0.0),
+        float(aggregate.get("mean_pr_auc") or 0.0),
+    )
 
 
 def _nested_metric_value(payload: dict[str, Any], path: tuple[str, ...]) -> float | None:
@@ -1702,9 +1719,15 @@ def _threshold_summary(
         "review_precision_target": review_precision_target,
         "high_precision_target": high_precision_target,
         "low_threshold_strategy": "max_recall_subject_to_review_precision_target",
-        "high_threshold_strategy": "max_recall_subject_to_high_precision_target_and_minimum_calibration_predictions",
+        "high_threshold_strategy": (
+            "max_recall_subject_to_high_precision_target_minimum_calibration_predictions_"
+            "and_bootstrap_precision_p20"
+        ),
         "minimum_high_confidence_calibration_predictions": thresholds.minimum_high_confidence_calibration_predictions,
         "high_threshold_fallback_used": thresholds.high_threshold_fallback_used,
+        "high_threshold_fallback_reason": thresholds.high_threshold_selection.fallback_reason,
+        "high_threshold_bootstrap_precision_percentile": DEFAULT_THRESHOLD_BOOTSTRAP_PRECISION_PERCENTILE,
+        "high_threshold_bootstrap_sample_count": thresholds.high_threshold_selection.bootstrap_sample_count,
         "abstain_enabled": thresholds.abstain_enabled,
         "high_threshold_selection": asdict(thresholds.high_threshold_selection),
         "low_threshold_metrics": thresholds.low_threshold_metrics,
@@ -2721,9 +2744,20 @@ def _semantic_candidate_key(candidate: dict[str, Any]) -> tuple[float, float, fl
     return _precision_first_candidate_key(candidate) + (-float(candidate["logistic_c"]),)
 
 
-def _transformer_candidate_key(candidate: dict[str, Any]) -> tuple[float, float, float, float, float, float, int]:
+def _transformer_candidate_key(candidate: dict[str, Any]) -> tuple[float, float, float, float, float, int]:
+    calibrated_thresholds = candidate.get("calibrated_thresholds")
+    high_threshold_selection = (
+        calibrated_thresholds.high_threshold_selection if isinstance(calibrated_thresholds, DecisionThresholds) else None
+    )
+    calibrated_constraint_metrics = candidate.get("calibrated_constraint_metrics", {})
+    review_queue = calibrated_constraint_metrics.get("review_recall_at_precision_75", {})
+    metrics = candidate.get("candidate_metrics", {})
     return (
-        *_precision_first_candidate_key(candidate),
+        1 if high_threshold_selection and high_threshold_selection.production_ready else 0,
+        float(high_threshold_selection.recall if high_threshold_selection else 0.0),
+        float(high_threshold_selection.predicted_positive if high_threshold_selection else 0.0),
+        float(review_queue.get("recall", 0.0)),
+        float(metrics.get("pr_auc", 0.0)),
         1 if str(candidate.get("loss_mode")) == "plain_cross_entropy" else 0,
     )
 
@@ -3029,6 +3063,22 @@ def _train_transformer_bundle_for_split(
                     "pr_auc": candidate_pr_auc,
                 }
                 candidate["constraint_metrics"] = _constraint_metrics_summary(y_calibration, raw_calibration_scores)
+                calibrator, calibration = fit_sigmoid_calibrator(y_calibration, raw_calibration_scores)
+                calibrated_calibration_scores = apply_probability_calibrator(calibrator, raw_calibration_scores)
+                calibrated_thresholds = _select_thresholds_or_default(
+                    y_calibration,
+                    calibrated_calibration_scores,
+                    high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
+                    review_precision_target=DEFAULT_REVIEW_PRECISION_TARGET,
+                    calibration=calibration,
+                )
+                candidate["calibrator"] = calibrator
+                candidate["calibration"] = calibration
+                candidate["calibrated_thresholds"] = calibrated_thresholds
+                candidate["calibrated_constraint_metrics"] = _constraint_metrics_summary(
+                    y_calibration,
+                    calibrated_calibration_scores,
+                )
                 candidate_results[f"{profile['name']}:{loss_mode}"] = {
                     "profile_name": str(profile["name"]),
                     "learning_rate": float(profile["learning_rate"]),
@@ -3042,15 +3092,35 @@ def _train_transformer_bundle_for_split(
                     "review_recall_at_precision_75": float(
                         candidate["constraint_metrics"]["review_recall_at_precision_75"]["recall"]
                     ),
+                    "calibration_high_threshold_ready": bool(
+                        calibrated_thresholds.high_threshold_selection.production_ready
+                    ),
+                    "calibration_high_threshold_recall": float(
+                        calibrated_thresholds.high_threshold_selection.recall
+                    ),
+                    "calibration_high_threshold_predicted_positive": int(
+                        calibrated_thresholds.high_threshold_selection.predicted_positive
+                    ),
+                    "calibration_high_threshold_threshold": float(calibrated_thresholds.high_threshold),
+                    "calibration_high_threshold_bootstrap_precision_p20": (
+                        float(calibrated_thresholds.high_threshold_selection.bootstrap_precision_p20)
+                        if calibrated_thresholds.high_threshold_selection.bootstrap_precision_p20 is not None
+                        else None
+                    ),
+                    "calibration_review_recall_at_precision_75": float(
+                        candidate["calibrated_constraint_metrics"]["review_recall_at_precision_75"]["recall"]
+                    ),
                 }
                 LOGGER.info(
-                    "transformer candidate evaluated model_id=%s profile=%s loss_mode=%s pr_auc=%.3f auto95_recall=%.3f review75_recall=%.3f",
+                    "transformer candidate evaluated model_id=%s profile=%s loss_mode=%s pr_auc=%.3f auto95_recall=%.3f review75_recall=%.3f calibration_ready=%s calibration_high_recall=%.3f",
                     model_id,
                     profile["name"],
                     loss_mode,
                     candidate_pr_auc,
                     float(candidate["constraint_metrics"]["auto_recall_at_precision_95"]["recall"]),
                     float(candidate["constraint_metrics"]["review_recall_at_precision_75"]["recall"]),
+                    calibrated_thresholds.high_threshold_selection.production_ready,
+                    float(calibrated_thresholds.high_threshold_selection.recall),
                 )
                 if best_candidate is None or _transformer_candidate_key(candidate) > _transformer_candidate_key(best_candidate):
                     if best_candidate is not None:
@@ -3076,20 +3146,17 @@ def _train_transformer_bundle_for_split(
         torch.mps.empty_cache()
 
     LOGGER.info(
-        "transformer candidate selected model_id=%s profile=%s loss_mode=%s pr_auc=%.3f",
+        "transformer candidate selected model_id=%s profile=%s loss_mode=%s pr_auc=%.3f calibration_ready=%s calibration_high_recall=%.3f",
         model_id,
         selected_profile["name"],
         selected_loss_mode,
         float(best_candidate["pr_auc"]),
+        best_candidate["calibrated_thresholds"].high_threshold_selection.production_ready,
+        float(best_candidate["calibrated_thresholds"].high_threshold_selection.recall),
     )
-    calibrator, calibration = fit_sigmoid_calibrator(y_calibration, raw_calibration_scores)
-    thresholds = _select_thresholds_or_default(
-        y_calibration,
-        apply_probability_calibrator(calibrator, raw_calibration_scores),
-        high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
-        review_precision_target=DEFAULT_REVIEW_PRECISION_TARGET,
-        calibration=calibration,
-    )
+    calibrator = best_candidate["calibrator"]
+    calibration = best_candidate["calibration"]
+    thresholds = best_candidate["calibrated_thresholds"]
 
     model_dir = artifact_dir / "transformer_model"
     trainer.save_model(str(model_dir))
@@ -4978,6 +5045,11 @@ def _decision_policy(
             thresholds.minimum_high_confidence_calibration_predictions
         ),
         "high_threshold_fallback_used": thresholds.high_threshold_fallback_used,
+        "high_threshold_fallback_reason": thresholds.high_threshold_selection.fallback_reason,
+        "high_threshold_bootstrap_precision_percentile": DEFAULT_THRESHOLD_BOOTSTRAP_PRECISION_PERCENTILE,
+        "high_threshold_bootstrap_sample_count": thresholds.high_threshold_selection.bootstrap_sample_count,
+        "high_threshold_bootstrap_precision_p20": thresholds.high_threshold_selection.bootstrap_precision_p20,
+        "high_threshold_bootstrap_ready": thresholds.high_threshold_selection.bootstrap_ready,
         "calibration_method": calibration.method,
         "split_strategy": split.split_strategy,
         "split_seed": split.split_seed,

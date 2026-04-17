@@ -494,6 +494,61 @@ def test_train_model_bundle_from_labels_can_skip_benchmark(tmp_path: Path) -> No
     assert "operating_metrics" not in summary
 
 
+def test_transformer_candidate_key_prefers_calibration_ready_candidate() -> None:
+    ready_candidate = {
+        "candidate_metrics": {"pr_auc": 0.91},
+        "calibrated_constraint_metrics": {"review_recall_at_precision_75": {"recall": 0.72}},
+        "calibrated_thresholds": DecisionThresholds(
+            low_threshold=0.3,
+            high_threshold=0.8,
+            high_threshold_selection=ThresholdSelection(
+                threshold=0.8,
+                precision=0.97,
+                recall=0.45,
+                f1=0.61,
+                predicted_positive=11,
+                support=20,
+                production_ready=True,
+            ),
+            low_threshold_metrics={"precision": 0.8, "recall": 0.8, "f1": 0.8, "predicted_positive": 20, "support": 20},
+            high_threshold_sweep=[],
+            low_threshold_sweep=[],
+            abstain_enabled=True,
+            minimum_high_confidence_calibration_predictions=5,
+            high_threshold_fallback_used=False,
+        ),
+        "loss_mode": "balanced_cross_entropy",
+    }
+    higher_pr_auc_but_blocked = {
+        "candidate_metrics": {"pr_auc": 0.99},
+        "calibrated_constraint_metrics": {"review_recall_at_precision_75": {"recall": 0.95}},
+        "calibrated_thresholds": DecisionThresholds(
+            low_threshold=0.2,
+            high_threshold=0.7,
+            high_threshold_selection=ThresholdSelection(
+                threshold=0.7,
+                precision=0.93,
+                recall=0.80,
+                f1=0.86,
+                predicted_positive=20,
+                support=20,
+                production_ready=False,
+            ),
+            low_threshold_metrics={"precision": 0.8, "recall": 0.9, "f1": 0.85, "predicted_positive": 25, "support": 20},
+            high_threshold_sweep=[],
+            low_threshold_sweep=[],
+            abstain_enabled=True,
+            minimum_high_confidence_calibration_predictions=5,
+            high_threshold_fallback_used=True,
+        ),
+        "loss_mode": "plain_cross_entropy",
+    }
+
+    assert training._transformer_candidate_key(ready_candidate) > training._transformer_candidate_key(
+        higher_pr_auc_but_blocked
+    )
+
+
 def test_retrain_model_suite_writes_training_only_summary(tmp_path: Path, monkeypatch) -> None:
     labels_path = tmp_path / "labels.jsonl"
     records = [
@@ -915,10 +970,110 @@ def test_benchmark_seed_sweep_writes_aggregate_summary(tmp_path: Path, monkeypat
     assert summary["selected_models"] == ["transformer_modernbert_base", "transformer_neobert"]
     assert len(summary["seed_runs"]) == 2
     assert len(summary["model_aggregates"]) == 2
+    assert summary["best_model_selection_order"] == ["ready_rate", "min_auto_precision", "mean_auto_recall", "mean_pr_auc"]
     assert Path(tmp_path / "suite" / "seed_sweeps" / "seed_sweep_summary.json").exists()
     aggregate = next(item for item in summary["model_aggregates"] if item["name"] == "transformer_modernbert_base")
     assert aggregate["metric_summary"]["pr_auc"]["count"] == 2
     assert aggregate["metric_summary"]["review_recall"]["mean"] > 0.7
+    assert aggregate["production_ready_runs"] == 2
+    assert aggregate["ready_rate"] == 1.0
+    assert aggregate["min_auto_precision"] == 1.0
+    assert aggregate["mean_pr_auc"] > 0.8
+    assert aggregate["std_pr_auc"] > 0.0
+
+
+def test_benchmark_seed_sweep_aggregates_prioritize_ready_rate_then_stability() -> None:
+    runs = [
+        {
+            "seed": 13,
+            "models": [
+                {
+                    "name": "transformer_modernbert_base",
+                    "display_name": "Transformer ModernBERT-base",
+                    "model_family": "transformer_sequence_classifier",
+                    "model_id": "answerdotai/ModernBERT-base",
+                    "production_ready": True,
+                    "ranking_metrics": {"pr_auc": 0.90},
+                    "operating_metrics": {
+                        "auto_band": {"precision": 0.97, "recall": 0.40},
+                        "review_queue": {"precision": 0.82, "recall": 0.80},
+                    },
+                    "constraint_metrics": {
+                        "auto_recall_at_precision_95": {"recall": 0.45},
+                        "review_recall_at_precision_75": {"recall": 0.80},
+                    },
+                },
+                {
+                    "name": "transformer_modernbert_large",
+                    "display_name": "Transformer ModernBERT-large",
+                    "model_family": "transformer_sequence_classifier",
+                    "model_id": "answerdotai/ModernBERT-large",
+                    "production_ready": True,
+                    "ranking_metrics": {"pr_auc": 0.95},
+                    "operating_metrics": {
+                        "auto_band": {"precision": 0.96, "recall": 0.60},
+                        "review_queue": {"precision": 0.81, "recall": 0.88},
+                    },
+                    "constraint_metrics": {
+                        "auto_recall_at_precision_95": {"recall": 0.63},
+                        "review_recall_at_precision_75": {"recall": 0.88},
+                    },
+                },
+            ],
+        },
+        {
+            "seed": 21,
+            "models": [
+                {
+                    "name": "transformer_modernbert_base",
+                    "display_name": "Transformer ModernBERT-base",
+                    "model_family": "transformer_sequence_classifier",
+                    "model_id": "answerdotai/ModernBERT-base",
+                    "production_ready": True,
+                    "ranking_metrics": {"pr_auc": 0.89},
+                    "operating_metrics": {
+                        "auto_band": {"precision": 0.96, "recall": 0.38},
+                        "review_queue": {"precision": 0.83, "recall": 0.79},
+                    },
+                    "constraint_metrics": {
+                        "auto_recall_at_precision_95": {"recall": 0.43},
+                        "review_recall_at_precision_75": {"recall": 0.79},
+                    },
+                },
+                {
+                    "name": "transformer_modernbert_large",
+                    "display_name": "Transformer ModernBERT-large",
+                    "model_family": "transformer_sequence_classifier",
+                    "model_id": "answerdotai/ModernBERT-large",
+                    "production_ready": False,
+                    "ranking_metrics": {"pr_auc": 0.97},
+                    "operating_metrics": {
+                        "auto_band": {"precision": 0.89, "recall": 0.70},
+                        "review_queue": {"precision": 0.80, "recall": 0.90},
+                    },
+                    "constraint_metrics": {
+                        "auto_recall_at_precision_95": {"recall": 0.59},
+                        "review_recall_at_precision_75": {"recall": 0.90},
+                    },
+                },
+            ],
+        },
+    ]
+
+    aggregates = training._benchmark_seed_sweep_aggregates(
+        runs,
+        model_names=("transformer_modernbert_base", "transformer_modernbert_large"),
+    )
+
+    assert [aggregate["name"] for aggregate in aggregates] == [
+        "transformer_modernbert_base",
+        "transformer_modernbert_large",
+    ]
+    assert aggregates[0]["production_ready_runs"] == 2
+    assert aggregates[0]["ready_rate"] == 1.0
+    assert aggregates[0]["min_auto_precision"] == 0.96
+    assert aggregates[0]["mean_pr_auc"] == pytest.approx(0.895)
+    assert aggregates[0]["std_pr_auc"] == pytest.approx(0.005)
 
 
 def test_retrain_all_trains_operational_and_suite_without_benchmark(tmp_path: Path, monkeypatch) -> None:

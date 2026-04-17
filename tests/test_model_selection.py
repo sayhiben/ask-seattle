@@ -41,6 +41,50 @@ def test_threshold_selection_prefers_recall_above_precision_gate() -> None:
     assert selection.recall == 1.0
 
 
+def test_threshold_selection_prefers_stricter_threshold_with_stronger_bootstrap_precision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnostics = {
+        0.75: {
+            "bootstrap_precision_p20": 0.96,
+            "bootstrap_precision_mean": 0.98,
+            "bootstrap_precision_min": 0.90,
+            "bootstrap_predicted_positive_p20": 2,
+            "bootstrap_predicted_positive_mean": 2.0,
+            "bootstrap_predicted_positive_min": 2,
+            "bootstrap_sample_count": 200,
+        },
+        0.85: {
+            "bootstrap_precision_p20": 1.0,
+            "bootstrap_precision_mean": 1.0,
+            "bootstrap_precision_min": 1.0,
+            "bootstrap_predicted_positive_p20": 2,
+            "bootstrap_predicted_positive_mean": 2.0,
+            "bootstrap_predicted_positive_min": 2,
+            "bootstrap_sample_count": 200,
+        },
+    }
+
+    monkeypatch.setattr(
+        model_module,
+        "_bootstrap_threshold_diagnostics",
+        lambda *args, threshold, **kwargs: diagnostics[threshold],
+    )
+
+    selection = select_threshold(
+        [1, 1, 0, 0],
+        [0.9, 0.86, 0.2, 0.1],
+        min_precision=0.95,
+        minimum_predictions=1,
+        thresholds=(0.75, 0.85),
+    )
+
+    assert selection.production_ready is True
+    assert selection.threshold == 0.85
+    assert selection.bootstrap_ready is True
+    assert selection.bootstrap_precision_p20 == 1.0
+
+
 def test_split_labeled_posts_is_random_by_default_and_deterministic() -> None:
     posts = [
         LabeledPost(
@@ -166,6 +210,38 @@ def test_select_decision_thresholds_falls_back_when_precision_ready_threshold_la
     assert thresholds.high_threshold_selection.production_ready is False
     assert thresholds.high_threshold_selection.predicted_positive == 1
     assert thresholds.minimum_high_confidence_calibration_predictions == 2
+    assert thresholds.high_threshold_fallback_used is True
+
+
+def test_select_decision_thresholds_falls_back_when_bootstrap_precision_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        model_module,
+        "_bootstrap_threshold_diagnostics",
+        lambda *args, **kwargs: {
+            "bootstrap_precision_p20": 0.90,
+            "bootstrap_precision_mean": 0.92,
+            "bootstrap_precision_min": 0.80,
+            "bootstrap_predicted_positive_p20": 2,
+            "bootstrap_predicted_positive_mean": 2.0,
+            "bootstrap_predicted_positive_min": 2,
+            "bootstrap_sample_count": 200,
+        },
+    )
+
+    thresholds = select_decision_thresholds(
+        [1, 1, 0],
+        [0.91, 0.83, 0.1],
+        auto_precision_target=0.95,
+        minimum_high_confidence_calibration_predictions=2,
+        thresholds=(0.8,),
+    )
+
+    assert thresholds.high_threshold == 0.8
+    assert thresholds.high_threshold_selection.production_ready is False
+    assert thresholds.high_threshold_selection.bootstrap_ready is False
+    assert thresholds.high_threshold_selection.fallback_reason == "bootstrap_precision_target_not_met"
     assert thresholds.high_threshold_fallback_used is True
 
 
