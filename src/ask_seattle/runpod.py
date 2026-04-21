@@ -127,14 +127,12 @@ class RunPodConfig:
     causal_lm_model_id: str
     benchmark_seeds: tuple[int, ...] = (13, 21, 34)
     benchmark_seed_models: tuple[str, ...] = (
-        "transformer_deberta_v3_small",
         "transformer_modernbert_base",
         "transformer_neobert",
         "transformer_modernbert_large",
     )
     semantic_tertiary_model_id: str = "jinaai/jina-embeddings-v5-text-small-classification"
-    transformer_tertiary_model_id: str = "chandar-lab/NeoBERT"
-    transformer_quaternary_model_id: str = "answerdotai/ModernBERT-large"
+    transformer_tertiary_model_id: str = "answerdotai/ModernBERT-large"
     no_pull_artifacts: bool = False
     remote_run_timeout_seconds: int = 21600
     pod_ready_timeout_seconds: int = 1800
@@ -375,15 +373,14 @@ def _add_common_arguments(parser: argparse.ArgumentParser, *, include_target: bo
     parser.add_argument("--benchmark-seeds", default="13,21,34")
     parser.add_argument(
         "--benchmark-seed-models",
-        default="transformer_deberta_v3_small,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large",
+        default="transformer_modernbert_base,transformer_neobert,transformer_modernbert_large",
     )
     parser.add_argument("--semantic-model-id", default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--semantic-secondary-model-id", default="Qwen/Qwen3-Embedding-0.6B")
     parser.add_argument("--semantic-tertiary-model-id", default="jinaai/jina-embeddings-v5-text-small-classification")
-    parser.add_argument("--transformer-model-id", default="microsoft/deberta-v3-small")
-    parser.add_argument("--transformer-secondary-model-id", default="answerdotai/ModernBERT-base")
-    parser.add_argument("--transformer-tertiary-model-id", default="chandar-lab/NeoBERT")
-    parser.add_argument("--transformer-quaternary-model-id", default="answerdotai/ModernBERT-large")
+    parser.add_argument("--transformer-model-id", default="answerdotai/ModernBERT-base")
+    parser.add_argument("--transformer-secondary-model-id", default="chandar-lab/NeoBERT")
+    parser.add_argument("--transformer-tertiary-model-id", default="answerdotai/ModernBERT-large")
     parser.add_argument("--causal-lm-model-id", default="Qwen/Qwen3-1.7B")
     parser.add_argument("--no-pull-artifacts", action="store_true")
     parser.add_argument("--remote-run-timeout-seconds", type=int, default=21600)
@@ -434,9 +431,8 @@ def config_from_args(args: argparse.Namespace) -> RunPodConfig:
         semantic_tertiary_model_id=str(args.semantic_tertiary_model_id),
         transformer_model_id=str(args.transformer_model_id),
         transformer_secondary_model_id=str(args.transformer_secondary_model_id),
-        causal_lm_model_id=str(args.causal_lm_model_id),
         transformer_tertiary_model_id=str(args.transformer_tertiary_model_id),
-        transformer_quaternary_model_id=str(args.transformer_quaternary_model_id),
+        causal_lm_model_id=str(args.causal_lm_model_id),
         no_pull_artifacts=bool(args.no_pull_artifacts),
         remote_run_timeout_seconds=int(args.remote_run_timeout_seconds),
         pod_ready_timeout_seconds=int(args.pod_ready_timeout_seconds),
@@ -1088,7 +1084,6 @@ def build_remote_make_args(config: RunPodConfig, *, target: str, remote_labels_p
         f"TRANSFORMER_MODEL_ID={config.transformer_model_id}",
         f"TRANSFORMER_SECONDARY_MODEL_ID={config.transformer_secondary_model_id}",
         f"TRANSFORMER_TERTIARY_MODEL_ID={config.transformer_tertiary_model_id}",
-        f"TRANSFORMER_QUATERNARY_MODEL_ID={config.transformer_quaternary_model_id}",
         f"CAUSAL_LM_MODEL_ID={config.causal_lm_model_id}",
     )
     extra: list[str] = list(args)

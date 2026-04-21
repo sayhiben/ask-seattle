@@ -14,14 +14,13 @@ EVAL_SUBREDDIT_ARG := $(if $(EVAL_SUBREDDIT), --eval-subreddit $(EVAL_SUBREDDIT)
 SPLIT_STRATEGY ?= random
 SPLIT_SEED ?= 13
 SPLIT_ARGS := --split-strategy $(SPLIT_STRATEGY) --split-seed $(SPLIT_SEED)
-TRANSFORMER_MODEL_ID ?= microsoft/deberta-v3-small
-TRANSFORMER_SECONDARY_MODEL_ID ?= answerdotai/ModernBERT-base
-TRANSFORMER_TERTIARY_MODEL_ID ?= chandar-lab/NeoBERT
-TRANSFORMER_QUATERNARY_MODEL_ID ?= answerdotai/ModernBERT-large
+TRANSFORMER_MODEL_ID ?= answerdotai/ModernBERT-base
+TRANSFORMER_SECONDARY_MODEL_ID ?= chandar-lab/NeoBERT
+TRANSFORMER_TERTIARY_MODEL_ID ?= answerdotai/ModernBERT-large
 BENCHMARK_NOTES ?=
 BENCHMARK_NOTES_ARG := $(if $(BENCHMARK_NOTES), --notes '$(BENCHMARK_NOTES)')
 BENCHMARK_SEEDS ?= 13,21,34
-BENCHMARK_SEED_MODELS ?= transformer_deberta_v3_small,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large
+BENCHMARK_SEED_MODELS ?= transformer_modernbert_base,transformer_neobert,transformer_modernbert_large
 LOG_LEVEL ?= INFO
 RETRAIN_EVERY ?= 0
 DECIDER_POLICY ?= hybrid_consensus
@@ -73,7 +72,6 @@ RUNPOD_COMMON_ARGS := \
 	--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 	--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
 	--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
-	--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID) \
 	--benchmark-seeds '$(BENCHMARK_SEEDS)' \
 	--benchmark-seed-models '$(BENCHMARK_SEED_MODELS)' \
 	--remote-run-timeout-seconds $(REMOTE_RUN_TIMEOUT) \
@@ -104,7 +102,6 @@ WSL_COMMON_ARGS := \
 	--make-arg TRANSFORMER_MODEL_ID='$(TRANSFORMER_MODEL_ID)' \
 	--make-arg TRANSFORMER_SECONDARY_MODEL_ID='$(TRANSFORMER_SECONDARY_MODEL_ID)' \
 	--make-arg TRANSFORMER_TERTIARY_MODEL_ID='$(TRANSFORMER_TERTIARY_MODEL_ID)' \
-	--make-arg TRANSFORMER_QUATERNARY_MODEL_ID='$(TRANSFORMER_QUATERNARY_MODEL_ID)' \
 	--make-arg BENCHMARK_SEEDS='$(BENCHMARK_SEEDS)' \
 	--make-arg BENCHMARK_SEED_MODELS='$(BENCHMARK_SEED_MODELS)'
 WSL_NOTES_ARG := $(if $(BENCHMARK_NOTES), --make-arg BENCHMARK_NOTES='$(BENCHMARK_NOTES)')
@@ -182,8 +179,7 @@ retrain:
 		$(SPLIT_ARGS) \
 		--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 		--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
-		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
-		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
+		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
 
 benchmark:
 	$(ASK_SEATTLE) benchmark-suite \
@@ -192,8 +188,7 @@ benchmark:
 		$(SPLIT_ARGS) \
 		--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 		--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
-		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
-		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID)$(EVAL_SUBREDDIT_ARG)$(BENCHMARK_NOTES_ARG)
+		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID)$(EVAL_SUBREDDIT_ARG)$(BENCHMARK_NOTES_ARG)
 
 benchmark-variants:
 	$(ASK_SEATTLE) benchmark-variants \
@@ -209,8 +204,7 @@ benchmark-seed-sweep:
 		--split-strategy $(SPLIT_STRATEGY) \
 		--transformer-model-id $(TRANSFORMER_MODEL_ID) \
 		--transformer-secondary-model-id $(TRANSFORMER_SECONDARY_MODEL_ID) \
-		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID) \
-		--transformer-quaternary-model-id $(TRANSFORMER_QUATERNARY_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
+		--transformer-tertiary-model-id $(TRANSFORMER_TERTIARY_MODEL_ID)$(EVAL_SUBREDDIT_ARG)
 endif
 
 benchmark-suite:
@@ -247,7 +241,6 @@ benchmark-suite:
 		TRANSFORMER_MODEL_ID='$(TRANSFORMER_MODEL_ID)' \
 		TRANSFORMER_SECONDARY_MODEL_ID='$(TRANSFORMER_SECONDARY_MODEL_ID)' \
 		TRANSFORMER_TERTIARY_MODEL_ID='$(TRANSFORMER_TERTIARY_MODEL_ID)' \
-		TRANSFORMER_QUATERNARY_MODEL_ID='$(TRANSFORMER_QUATERNARY_MODEL_ID)' \
 		BENCHMARK_NOTES='$(BENCHMARK_NOTES)'
 
 bridge:

@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     retrain_all = subparsers.add_parser(
         "retrain-all",
-        help="Retrain the operational TF-IDF model and the five-model comparison suite without benchmarking",
+        help="Retrain the operational TF-IDF model and the four-model comparison suite without benchmarking",
     )
     retrain_all.add_argument("--data", required=True, type=Path, help="Path to reviewed .jsonl label data")
     retrain_all.add_argument(
@@ -65,23 +65,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_split_args(retrain_all)
     retrain_all.add_argument(
         "--transformer-model-id",
-        default="microsoft/deberta-v3-small",
+        default="answerdotai/ModernBERT-base",
         help="Primary transformer checkpoint for the sequence classification comparison path",
     )
     retrain_all.add_argument(
         "--transformer-secondary-model-id",
-        default="answerdotai/ModernBERT-base",
+        default="chandar-lab/NeoBERT",
         help="Secondary transformer checkpoint for the sequence classification comparison path",
     )
     retrain_all.add_argument(
         "--transformer-tertiary-model-id",
-        default="chandar-lab/NeoBERT",
-        help="Tertiary transformer checkpoint for the sequence classification comparison path",
-    )
-    retrain_all.add_argument(
-        "--transformer-quaternary-model-id",
         default="answerdotai/ModernBERT-large",
-        help="Quaternary transformer checkpoint for the sequence classification comparison path",
+        help="Tertiary transformer checkpoint for the sequence classification comparison path",
     )
     retrain_all.set_defaults(func=retrain_all_command)
 
@@ -111,23 +106,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_split_args(benchmark_suite)
     benchmark_suite.add_argument(
         "--transformer-model-id",
-        default="microsoft/deberta-v3-small",
+        default="answerdotai/ModernBERT-base",
         help="Primary transformer checkpoint for the sequence classification benchmark path",
     )
     benchmark_suite.add_argument(
         "--transformer-secondary-model-id",
-        default="answerdotai/ModernBERT-base",
+        default="chandar-lab/NeoBERT",
         help="Secondary transformer checkpoint for the sequence classification benchmark path",
     )
     benchmark_suite.add_argument(
         "--transformer-tertiary-model-id",
-        default="chandar-lab/NeoBERT",
-        help="Tertiary transformer checkpoint for the sequence classification benchmark path",
-    )
-    benchmark_suite.add_argument(
-        "--transformer-quaternary-model-id",
         default="answerdotai/ModernBERT-large",
-        help="Quaternary transformer checkpoint for the sequence classification benchmark path",
+        help="Tertiary transformer checkpoint for the sequence classification benchmark path",
     )
     benchmark_suite.add_argument(
         "--notes",
@@ -165,23 +155,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmark_seed_sweep.add_argument(
         "--transformer-model-id",
-        default="microsoft/deberta-v3-small",
+        default="answerdotai/ModernBERT-base",
         help="Primary transformer checkpoint for the sequence classification benchmark path",
     )
     benchmark_seed_sweep.add_argument(
         "--transformer-secondary-model-id",
-        default="answerdotai/ModernBERT-base",
+        default="chandar-lab/NeoBERT",
         help="Secondary transformer checkpoint for the sequence classification benchmark path",
     )
     benchmark_seed_sweep.add_argument(
         "--transformer-tertiary-model-id",
-        default="chandar-lab/NeoBERT",
-        help="Tertiary transformer checkpoint for the sequence classification benchmark path",
-    )
-    benchmark_seed_sweep.add_argument(
-        "--transformer-quaternary-model-id",
         default="answerdotai/ModernBERT-large",
-        help="Quaternary transformer checkpoint for the sequence classification benchmark path",
+        help="Tertiary transformer checkpoint for the sequence classification benchmark path",
     )
     benchmark_seed_sweep.set_defaults(func=benchmark_seed_sweep_command)
 
@@ -310,7 +295,6 @@ def retrain_all_command(args: argparse.Namespace) -> int:
         transformer_model_id=args.transformer_model_id,
         transformer_secondary_model_id=args.transformer_secondary_model_id,
         transformer_tertiary_model_id=args.transformer_tertiary_model_id,
-        transformer_quaternary_model_id=args.transformer_quaternary_model_id,
     )
     print(json.dumps(summary, indent=2))
     return 0
@@ -338,7 +322,6 @@ def benchmark_suite_command(args: argparse.Namespace) -> int:
         transformer_model_id=args.transformer_model_id,
         transformer_secondary_model_id=args.transformer_secondary_model_id,
         transformer_tertiary_model_id=args.transformer_tertiary_model_id,
-        transformer_quaternary_model_id=args.transformer_quaternary_model_id,
         notes=args.notes,
     )
     print(json.dumps(summary, indent=2))
@@ -356,7 +339,6 @@ def benchmark_seed_sweep_command(args: argparse.Namespace) -> int:
         transformer_model_id=args.transformer_model_id,
         transformer_secondary_model_id=args.transformer_secondary_model_id,
         transformer_tertiary_model_id=args.transformer_tertiary_model_id,
-        transformer_quaternary_model_id=args.transformer_quaternary_model_id,
     )
     print(json.dumps(summary, indent=2))
     return 0

@@ -110,7 +110,7 @@ Responsibilities:
 
 - prepare reviewed labels for training
 - fit the operational TF-IDF model and calibrator
-- retrain the full five-model suite without held-out benchmarking
+- retrain the full four-model suite without held-out benchmarking
 - evaluate held-out slices later from the trained suite artifacts
 - write `tfidf_logreg.joblib`
 - write `training_summary.json`

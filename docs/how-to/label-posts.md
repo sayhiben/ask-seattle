@@ -70,12 +70,11 @@ On Apple Silicon, those neural comparison cards now run on CPU instead of MPS. T
 The current full suite is:
 
 - TF-IDF
-- Transformer DeBERTa-v3-small
 - Transformer ModernBERT-base
 - Transformer NeoBERT
 - Transformer ModernBERT-large
 
-Because the active bridge model is still TF-IDF, the comparison card area normally shows the four transformer models only. If an older benchmark summary still contains semantic or decoder rows, the bridge ignores them instead of surfacing stale cards.
+Because the active bridge model is still TF-IDF, the comparison card area normally shows the three transformer models only. If an older benchmark summary still contains semantic or decoder rows, the bridge ignores them instead of surfacing stale cards.
 
 Each card shows:
 

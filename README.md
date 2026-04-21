@@ -7,7 +7,7 @@ The current stack is intentionally small:
 - browser-captured text only
 - one TF-IDF + logistic regression operational model
 - one optional bridge-side hybrid decider for hard slices when comparison models are loaded
-- one local five-model benchmark suite for comparison work
+- one local four-model benchmark suite for comparison work
 - local JSONL training data
 - optional remote RunPod Pod execution for the existing train and benchmark targets
 - optional remote Windows WSL execution for the existing train and benchmark targets
@@ -82,7 +82,7 @@ make retrain
 That retrains:
 
 - the operational TF-IDF model under `models/real-labels-precision-refresh/`
-- the five-model comparison suite under `models/benchmark-suite/`
+- the four-model comparison suite under `models/benchmark-suite/`
 
 It does not run held-out benchmarks.
 
@@ -158,7 +158,6 @@ This retrains and benchmarks the current top neural comparison models across mul
 
 By default it evaluates:
 
-- `transformer_deberta_v3_small`
 - `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
@@ -185,13 +184,14 @@ Each benchmark run now also archives:
 - an append-only `benchmark_history.json` index
 - one immutable history snapshot under `models/benchmark-suite/history/<run_id>/`
 
-The suite currently compares five models on one shared split:
+The suite currently compares four models on one shared split:
 
 - `tfidf_recommended`
-- `transformer_deberta_v3_small`
 - `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
+
+When TF-IDF plus at least two comparison models benchmark successfully for the current manifest, the suite summary also adds one derived `hybrid_consensus_policy` row. That row reports the effective deployed hybrid policy using the same held-out split, not a separately trained artifact.
 
 If the benchmark suite artifacts exist, `make bridge` also loads those comparison models for side-by-side `/check` comparisons in the userscript UI.
 
@@ -274,11 +274,12 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - when benchmark-suite artifacts exist, the userscript also shows one side-by-side result card per comparison transformer in a `Transformer checks` section, with the loaded comparison-model count in the section title
 - the userscript now gets the main bridge verdict first, then fills in each comparison card as that model finishes instead of waiting for the whole suite before updating the panel
 - the default bridge policy is `hybrid_consensus`, which keeps the primary TF-IDF `result` but can also return a routed `decider_result` for borderline or hard-slice posts when at least two comparison models are loaded
+- when benchmark-suite history exists, the hybrid policy uses benchmark-informed per-model weights and surfaces the active policy metadata under `decision_context.hybrid_policy`; if no comparable history is available, it falls back to the latest suite summary and then to uniform weights
 - the userscript now shows a review-priority banner when the bridge routes a post through the hybrid decider, detects model disagreement, or flags a hard slice without enough comparison support
 - the bridge only accepts browser-originated text and local file paths
 - `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs a deterministic random train, calibration, and test split by default
-- `ask-seattle retrain-all` retrains the operational TF-IDF model plus the five-model suite without running held-out benchmarks
-- `ask-seattle benchmark-suite` reads those trained suite artifacts later and computes held-out metrics only for models that are already trained for the current manifest
+- `ask-seattle retrain-all` retrains the operational TF-IDF model plus the four-model suite without running held-out benchmarks
+- `ask-seattle benchmark-suite` reads those trained suite artifacts later and computes held-out metrics only for models that are already trained for the current manifest, plus a derived hybrid-policy row when the routed policy can be evaluated on that same split
 - the same split object is reused across all five benchmark evaluators so comparisons are apples-to-apples
 - if you later want future-facing evaluation on a longer collection window, you can opt into `SPLIT_STRATEGY=time`
 - the shared model text now includes normalized content metadata when available, such as post type, content domain, crosspost status, whether the post has body text, and explicit `IMAGE_NO_BODY` / `LOW_TEXT_IMAGE` markers for title-only image cases
@@ -298,8 +299,8 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the benchmark summaries now include threshold-independent comparison metrics such as `pr_auc`, `auto_recall_at_precision_95`, and `review_recall_at_precision_75`
 - training and benchmark summaries now record the input-data fingerprint plus runtime package metadata, so local-vs-remote environment drift is easier to spot
 - slice metrics now include support counts and `support_status`, so low-support cohorts like `sparse_media` can stay observational instead of steering recommendations
-- the transformer family now includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
-- the current transformer grid keeps DeBERTa-v3-small on its 256 to 384 token core profiles plus one CUDA-only 512-token balanced profile, adds a CUDA-only NeoBERT 512-token precision profile, and adds a 48 GB CUDA-only ModernBERT-large 512-token precision profile
+- the transformer family now includes ModernBERT-base, NeoBERT, and ModernBERT-large
+- the current transformer grid keeps ModernBERT-base on its 384-token core profiles, adds a CUDA-only NeoBERT 512-token precision profile, and adds a 48 GB CUDA-only ModernBERT-large precision and long-context profiles
 - the encoder transformer benchmarks now search a small per-model config grid, restore the best epoch checkpoint, and rank candidates by calibrated strict-threshold readiness before using recall and PR-AUC as tie breakers
 - on Apple Silicon, the bridge keeps all neural comparison models off MPS during `/check` and `/check-comparison`, so local comparison inference stays stable even if it is slower
 - the bridge now returns the primary `/check` result without waiting for comparison models unless explicitly asked to include them, the userscript loads transformer cards individually through `/check-comparison`, and stale semantic/decoder entries from older suite summaries are ignored

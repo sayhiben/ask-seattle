@@ -134,7 +134,6 @@ The benchmark suite writes:
 
 - `suite_training_summary.json`
 - `tfidf_recommended/training_summary.json`
-- `transformer_deberta_v3_small/training_summary.json`
 - `transformer_modernbert_base/training_summary.json`
 - `transformer_neobert/training_summary.json`
 - `transformer_modernbert_large/training_summary.json`
@@ -147,6 +146,17 @@ The benchmark suite writes:
 The optional RunPod remote wrapper also writes local pulled metadata and logs under:
 
 - `models/runpod-meta/<run_id>/`
+
+`benchmark_suite_summary.json` can now contain two kinds of rows under `models`:
+
+- artifact-backed model rows such as `tfidf_recommended` or the transformer bundles
+- a derived policy row named `hybrid_consensus_policy`
+
+That hybrid policy row is benchmark-only:
+
+- `artifact_path` is `null`
+- `result_source` is `benchmarked_policy`
+- `policy_metadata` records the active hybrid weighting source, routed-rate diagnostics, and review-reason counts
 
 ## `suite_input.json`
 
@@ -161,7 +171,7 @@ The manifest includes:
 - optional `evaluation_subreddit`
 - prepared-data summary counts
 
-Every benchmark-suite model family consumes that same manifest so the five-model comparison remains apples-to-apples.
+Every benchmark-suite model family consumes that same manifest so the shared four-model comparison remains apples-to-apples.
 
 `make retrain` writes or refreshes this manifest before training the suite models. `make benchmark` loads the same manifest later and only benchmarks compatible trained artifacts for that manifest.
 

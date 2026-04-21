@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.15
+// @version      0.1.16
 // @description  Adds auto-checking, skip, re-check, binary labeling, and transformer comparison cards for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.15';
+  const SCRIPT_VERSION = '0.1.16';
   const BRIDGE_URL_CANDIDATES = ['http://localhost:8765', 'http://127.0.0.1:8765'];
   const PANEL_ID = 'ask-seattle-local-helper';
   const QUEUE_KEY = 'askSeattlePostQueue';
@@ -32,7 +32,6 @@
   const COMPARISON_TIMEOUT_MS = 120000;
   const MODEL_DISPLAY_NAMES = {
     tfidf_recommended: 'TF-IDF',
-    transformer_deberta_v3_small: 'DeBERTa-v3-small',
     transformer_modernbert_base: 'ModernBERT-base',
     transformer_neobert: 'NeoBERT',
     transformer_modernbert_large: 'ModernBERT-large',
@@ -361,7 +360,6 @@
     if (raw.includes('neobert')) return 'NeoBERT';
     if (raw.includes('modernbert-large')) return 'ModernBERT-large';
     if (raw.includes('modernbert')) return 'ModernBERT-base';
-    if (raw.includes('deberta')) return 'DeBERTa-v3-small';
     return entry.name || entry.model_name || 'Model';
   }
 

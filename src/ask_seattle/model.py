@@ -1141,14 +1141,20 @@ def confidence_band_for_row(
     )
 
 
-def classify_post(
+def effective_high_threshold_for_row(
+    row: dict[str, Any] | None,
+    *,
+    high_threshold: float,
+) -> float:
+    return _effective_high_threshold_for_row(row, high_threshold=high_threshold)
+
+
+def check_result_from_score(
     bundle: dict[str, Any],
     *,
-    title: str,
-    selftext: str = "",
-    post_type: str | None = None,
-    content_domain: str | None = None,
-    is_crosspost: bool | None = None,
+    row: dict[str, Any],
+    score: float,
+    score_raw: float | None = None,
     post_id: str | None = None,
     permalink: str | None = None,
     time_source: str | None = None,
@@ -1156,22 +1162,10 @@ def classify_post(
     high_threshold = float(bundle.get("high_threshold") or bundle.get("threshold") or 0.85)
     low_threshold = float(bundle.get("low_threshold") or high_threshold)
     low_threshold = min(low_threshold, high_threshold)
-    representation_config = _bundle_representation_config(bundle)
-    row = build_inference_row(
-        title=title,
-        selftext=selftext,
-        post_type=post_type,
-        content_domain=content_domain,
-        is_crosspost=is_crosspost,
-        include_sparse_media_token=representation_config["include_sparse_media_token"],
-        include_image_low_text_tokens=representation_config["include_image_low_text_tokens"],
-    )
-
-    raw_score = raw_score_rows(bundle, [row])[0]
-    calibrated_score = score_rows(bundle, [row])[0]
-    effective_high_threshold = _effective_high_threshold_for_row(row, high_threshold=high_threshold)
+    calibrated_score = float(score)
+    raw_score = float(score_raw if score_raw is not None else score)
+    effective_high_threshold = effective_high_threshold_for_row(row, high_threshold=high_threshold)
     label = "askseattle" if calibrated_score >= low_threshold else "not_askseattle"
-
     return CheckResult(
         post_id=post_id,
         permalink=permalink,
@@ -1192,6 +1186,42 @@ def classify_post(
         ),
         time_source=time_source,
         created_at=datetime.now(tz=UTC).isoformat(),
+    )
+
+
+def classify_post(
+    bundle: dict[str, Any],
+    *,
+    title: str,
+    selftext: str = "",
+    post_type: str | None = None,
+    content_domain: str | None = None,
+    is_crosspost: bool | None = None,
+    post_id: str | None = None,
+    permalink: str | None = None,
+    time_source: str | None = None,
+) -> CheckResult:
+    representation_config = _bundle_representation_config(bundle)
+    row = build_inference_row(
+        title=title,
+        selftext=selftext,
+        post_type=post_type,
+        content_domain=content_domain,
+        is_crosspost=is_crosspost,
+        include_sparse_media_token=representation_config["include_sparse_media_token"],
+        include_image_low_text_tokens=representation_config["include_image_low_text_tokens"],
+    )
+
+    raw_score = raw_score_rows(bundle, [row])[0]
+    calibrated_score = score_rows(bundle, [row])[0]
+    return check_result_from_score(
+        bundle,
+        row=row,
+        score=calibrated_score,
+        score_raw=raw_score,
+        post_id=post_id,
+        permalink=permalink,
+        time_source=time_source,
     )
 
 

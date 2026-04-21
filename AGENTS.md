@@ -289,6 +289,28 @@ A model can rank posts better overall and still fail the actual production gate.
 
 It is easy to drift into “helpful” additions that quietly change the product: new data sources, automation side effects, or benchmark-only ideas leaking into the operational path. Keep the browser-to-local-label-to-local-bridge loop explicit, and update docs whenever behavior changes.
 
+## Five more things I wish I knew before I started
+
+### 6. Userscript localhost failures are often installed-script failures
+
+If the browser console still shows requests to `127.0.0.1` after the repo script was changed to prefer `localhost`, assume the userscript manager is still running stale installed code. `@connect` checks are literal-host checks, so `localhost` and `127.0.0.1` are not interchangeable in practice.
+
+### 7. `make retrain` and `make benchmark` are two separate truth sources
+
+The retrain path writes training summaries and fresh artifacts, but it does not prove held-out readiness by itself. Promotion decisions should come from `models/benchmark-suite/benchmark_suite_summary.json`, not from the training-only summaries under each model directory.
+
+### 8. RunPod Pods are ephemeral, but the retained cache volume is the real persistent cost
+
+After a remote run, verify both states explicitly: no running Pods and whether the retained network volume still exists. The Pod should be gone at end of turn, but the cache volume is expected to remain during active iteration and must be called out clearly when it is being preserved on purpose.
+
+### 9. The run metadata is part of the audit trail
+
+When you do remote retrain or benchmark work, the easiest way to reconstruct what actually happened later is `models/runpod-meta/`. Those files record the commit SHA, Pod ID, volume ID, datacenter, synced label path, and finish times, which is much more reliable than trying to infer state from terminal memory.
+
+### 10. Redundancy decisions should be based on unique operating value, not model-family labels
+
+Two transformer models can look similar on paper but still serve different roles in the decider, and two different families can still be redundant in practice. When deciding whether to keep or cut a benchmark-suite model, ask what unique precision/recall or slice behavior it contributes beyond the others, not just whether it ranked third or fourth on one table.
+
 ## Things not to commit
 
 Do not commit:

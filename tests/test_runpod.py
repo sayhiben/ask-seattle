@@ -182,8 +182,8 @@ def test_candidate_gpu_ids_for_existing_volume_appends_fallbacks_after_primary()
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -252,8 +252,8 @@ def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> Non
         benchmark_notes="after labels",
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -268,8 +268,8 @@ def test_build_remote_make_args_includes_label_path_and_benchmark_notes() -> Non
     assert "EVAL_SUBREDDIT=seattle" in args
     assert "BENCHMARK_NOTES=after labels" in args
     assert "SEMANTIC_TERTIARY_MODEL_ID=jinaai/jina-embeddings-v5-text-small-classification" in args
-    assert "TRANSFORMER_TERTIARY_MODEL_ID=chandar-lab/NeoBERT" in args
-    assert "TRANSFORMER_QUATERNARY_MODEL_ID=answerdotai/ModernBERT-large" in args
+    assert "TRANSFORMER_SECONDARY_MODEL_ID=chandar-lab/NeoBERT" in args
+    assert "TRANSFORMER_TERTIARY_MODEL_ID=answerdotai/ModernBERT-large" in args
 
 
 def test_build_remote_bootstrap_command_quotes_make_args() -> None:
@@ -323,8 +323,8 @@ def test_build_remote_env_cache_key_changes_when_dependency_shape_changes(tmp_pa
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -361,8 +361,8 @@ def test_build_create_pod_command_prefers_template_id() -> None:
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -405,8 +405,8 @@ def test_build_create_pod_command_falls_back_to_image_when_template_missing() ->
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -449,8 +449,8 @@ def test_build_create_pod_payload_prefers_template_id() -> None:
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -548,8 +548,8 @@ def test_cleanup_expired_cached_volume_deletes_volume_and_lease(
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
     )
     lease_path = config.benchmark_meta_dir / "volumes" / "ask-seattle-train-sayhiben.json"
@@ -609,8 +609,8 @@ def test_pull_artifacts_uses_uncompressed_rsync_for_large_directories(
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -671,8 +671,8 @@ def test_pull_artifacts_retries_retryable_rsync_failures(
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -730,8 +730,8 @@ def test_cleanup_remote_workspace_prunes_logs_inputs_and_repo_artifacts(
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -786,8 +786,8 @@ def test_cleanup_remote_workspace_preserves_models_for_benchmark(
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         remote_run_timeout_seconds=21600,
     )
@@ -840,8 +840,8 @@ def test_provision_volume_and_pod_preserves_existing_cache_without_eviction(
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         evict_volume_on_capacity_failure=False,
     )
@@ -908,8 +908,8 @@ def test_provision_volume_and_pod_uses_same_datacenter_fallback_gpu_for_existing
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         evict_volume_on_capacity_failure=False,
     )
@@ -991,8 +991,8 @@ def test_provision_volume_and_pod_uses_fallback_gpu_for_new_volume_when_primary_
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
     )
 
@@ -1069,8 +1069,8 @@ def test_create_pod_reconciles_by_name_after_create_timeout(monkeypatch: pytest.
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         pod_create_timeout_seconds=10,
     )
@@ -1128,8 +1128,8 @@ def test_wait_for_pod_ready_reconciles_after_missing_pod(monkeypatch: pytest.Mon
         benchmark_notes=None,
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
         pod_ready_timeout_seconds=30,
     )

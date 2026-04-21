@@ -577,7 +577,7 @@ def test_retrain_model_suite_writes_training_only_summary(tmp_path: Path, monkey
     ]
     write_jsonl_records(labels_path, records)
 
-    call_counts = {"semantic_minilm_tuned": 0, "transformer_deberta_v3_small": 0}
+    call_counts = {"semantic_minilm_tuned": 0, "transformer_modernbert_base": 0}
 
     def make_runner(name: str, family: str, model_id: str):
         def runner(*, split, output_dir, prepared_data_summary=None, evaluate_on_test=True, **kwargs):
@@ -632,15 +632,15 @@ def test_retrain_model_suite_writes_training_only_summary(tmp_path: Path, monkey
                 },
             ),
             SuiteModelSpec(
-                name="transformer_deberta_v3_small",
-                display_name="Transformer DeBERTa-v3-small",
+                name="transformer_modernbert_base",
+                display_name="Transformer ModernBERT-base",
                 family="transformer_sequence_classifier",
                 runner=make_runner(
-                    "transformer_deberta_v3_small",
+                    "transformer_modernbert_base",
                     "transformer_sequence_classifier",
                     kwargs["transformer_model_id"],
                 ),
-                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer DeBERTa-v3-small"},
+                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer ModernBERT-base"},
             ),
         ]
 
@@ -648,7 +648,7 @@ def test_retrain_model_suite_writes_training_only_summary(tmp_path: Path, monkey
 
     summary = retrain_model_suite_from_labels(labels_path, tmp_path / "suite", evaluation_subreddit="seattle")
 
-    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_deberta_v3_small": 1}
+    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_modernbert_base": 1}
     assert (tmp_path / "suite" / "suite_input.json").exists()
     assert (tmp_path / "suite" / "suite_training_summary.json").exists()
     assert [model["status"] for model in summary["models"]] == ["trained", "trained"]
@@ -660,20 +660,22 @@ def test_suite_model_specs_include_tfidf_and_transformer_candidates_only() -> No
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
         semantic_tertiary_model_id="jinaai/jina-embeddings-v5-text-small-classification",
-        transformer_model_id="microsoft/deberta-v3-small",
-        transformer_secondary_model_id="answerdotai/ModernBERT-base",
-        transformer_tertiary_model_id="chandar-lab/NeoBERT",
-        transformer_quaternary_model_id="answerdotai/ModernBERT-large",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
+        transformer_tertiary_model_id="answerdotai/ModernBERT-large",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
     )
 
     names = [spec.name for spec in specs]
 
-    assert names[0] == "tfidf_recommended"
+    assert names == [
+        "tfidf_recommended",
+        "transformer_modernbert_base",
+        "transformer_neobert",
+        "transformer_modernbert_large",
+    ]
     assert "semantic_minilm_tuned" not in names
     assert "semantic_jina_embeddings_v5_text_small_classification" not in names
-    assert "transformer_neobert" in names
-    assert "transformer_modernbert_large" in names
     assert "causal_lm_qwen3_1_7b_lora" not in names
 
 
@@ -702,7 +704,7 @@ def test_benchmark_model_suite_writes_aggregate_summary(tmp_path: Path, monkeypa
     ]
     write_jsonl_records(labels_path, records)
 
-    call_counts = {"semantic_minilm_tuned": 0, "transformer_deberta_v3_small": 0}
+    call_counts = {"semantic_minilm_tuned": 0, "transformer_modernbert_base": 0}
 
     def make_runner(name: str, family: str, model_id: str):
         def runner(*, split, output_dir, prepared_data_summary=None, evaluate_on_test=True, **kwargs):
@@ -757,15 +759,15 @@ def test_benchmark_model_suite_writes_aggregate_summary(tmp_path: Path, monkeypa
                 },
             ),
             SuiteModelSpec(
-                name="transformer_deberta_v3_small",
-                display_name="Transformer DeBERTa-v3-small",
+                name="transformer_modernbert_base",
+                display_name="Transformer ModernBERT-base",
                 family="transformer_sequence_classifier",
                 runner=make_runner(
-                    "transformer_deberta_v3_small",
+                    "transformer_modernbert_base",
                     "transformer_sequence_classifier",
                     kwargs["transformer_model_id"],
                 ),
-                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer DeBERTa-v3-small"},
+                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer ModernBERT-base"},
             ),
         ]
 
@@ -784,7 +786,7 @@ def test_benchmark_model_suite_writes_aggregate_summary(tmp_path: Path, monkeypa
     monkeypatch.setattr(training, "score_rows", fake_score_rows)
 
     retrain_model_suite_from_labels(labels_path, tmp_path / "suite", evaluation_subreddit="seattle")
-    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_deberta_v3_small": 1}
+    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_modernbert_base": 1}
 
     summary = benchmark_model_suite_from_labels(
         labels_path,
@@ -857,11 +859,11 @@ def test_benchmark_model_suite_skips_untrained_models(tmp_path: Path, monkeypatc
                 },
             ),
             SuiteModelSpec(
-                name="transformer_deberta_v3_small",
-                display_name="Transformer DeBERTa-v3-small",
+                name="transformer_modernbert_base",
+                display_name="Transformer ModernBERT-base",
                 family="transformer_sequence_classifier",
                 runner=lambda **kwargs: {},
-                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer DeBERTa-v3-small"},
+                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer ModernBERT-base"},
             ),
         ]
 
@@ -1146,7 +1148,7 @@ def test_benchmark_model_suite_benchmarks_only_available_artifacts(tmp_path: Pat
     ]
     write_jsonl_records(labels_path, records)
 
-    call_counts = {"semantic_minilm_tuned": 0, "transformer_deberta_v3_small": 0}
+    call_counts = {"semantic_minilm_tuned": 0, "transformer_modernbert_base": 0}
 
     def make_runner(name: str, family: str, model_id: str):
         def runner(*, split, output_dir, prepared_data_summary=None, evaluate_on_test=True, **kwargs):
@@ -1201,15 +1203,15 @@ def test_benchmark_model_suite_benchmarks_only_available_artifacts(tmp_path: Pat
                 },
             ),
             SuiteModelSpec(
-                name="transformer_deberta_v3_small",
-                display_name="Transformer DeBERTa-v3-small",
+                name="transformer_modernbert_base",
+                display_name="Transformer ModernBERT-base",
                 family="transformer_sequence_classifier",
                 runner=make_runner(
-                    "transformer_deberta_v3_small",
+                    "transformer_modernbert_base",
                     "transformer_sequence_classifier",
                     kwargs["transformer_model_id"],
                 ),
-                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer DeBERTa-v3-small"},
+                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer ModernBERT-base"},
             ),
         ]
 
@@ -1222,13 +1224,13 @@ def test_benchmark_model_suite_benchmarks_only_available_artifacts(tmp_path: Pat
     )
 
     retrain_model_suite_from_labels(labels_path, tmp_path / "suite", evaluation_subreddit="seattle")
-    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_deberta_v3_small": 1}
+    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_modernbert_base": 1}
 
-    (tmp_path / "suite" / "transformer_deberta_v3_small" / "transformer_deberta_v3_small.joblib").unlink()
+    (tmp_path / "suite" / "transformer_modernbert_base" / "transformer_modernbert_base.joblib").unlink()
 
     second = benchmark_model_suite_from_labels(labels_path, tmp_path / "suite", evaluation_subreddit="seattle")
 
-    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_deberta_v3_small": 1}
+    assert call_counts == {"semantic_minilm_tuned": 1, "transformer_modernbert_base": 1}
     assert second["models"][0]["status"] == "ok"
     assert second["models"][0]["result_source"] == "benchmarked"
     assert second["models"][1]["status"] == "skipped"
@@ -1506,15 +1508,26 @@ def test_semantic_component_texts_support_jina_document_component() -> None:
 
 
 def test_transformer_candidate_profiles_keep_long_context_profiles_bounded_to_supported_runs() -> None:
+    modernbert_base_default = training._transformer_candidate_profiles("answerdotai/ModernBERT-base")
+    modernbert_base_cuda = training._transformer_candidate_profiles("answerdotai/ModernBERT-base", allow_long_context=True)
     neobert_default = training._transformer_candidate_profiles("chandar-lab/NeoBERT")
     neobert_cuda = training._transformer_candidate_profiles("chandar-lab/NeoBERT", allow_long_context=True)
     modernbert_large_cuda = training._transformer_candidate_profiles(
         "answerdotai/ModernBERT-large",
         allow_long_context=True,
     )
-    deberta_default = training._transformer_candidate_profiles("microsoft/deberta-v3-small")
-    deberta_cuda = training._transformer_candidate_profiles("microsoft/deberta-v3-small", allow_long_context=True)
 
+    assert [profile["name"] for profile in modernbert_base_default] == [
+        "baseline",
+        "precision_tuned",
+        "balanced_tuned",
+    ]
+    assert [profile["name"] for profile in modernbert_base_cuda] == [
+        "baseline",
+        "precision_tuned",
+        "balanced_tuned",
+        "long_context",
+    ]
     assert [profile["name"] for profile in neobert_default] == ["baseline", "precision_tuned"]
     assert [profile["name"] for profile in neobert_cuda] == [
         "baseline",
@@ -1528,13 +1541,6 @@ def test_transformer_candidate_profiles_keep_long_context_profiles_bounded_to_su
         "balanced_tuned",
         "long_context",
         "precision_long_context",
-    ]
-    assert [profile["name"] for profile in deberta_default] == ["baseline", "balanced_tuned", "precision_tuned"]
-    assert [profile["name"] for profile in deberta_cuda] == [
-        "baseline",
-        "balanced_tuned",
-        "precision_tuned",
-        "balanced_long_context",
     ]
 
 

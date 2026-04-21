@@ -17,6 +17,12 @@ from ask_seattle.data import (
     utc_now_iso,
     write_jsonl_records,
 )
+from ask_seattle.hybrid_policy import (
+    build_benchmark_weighted_hybrid_policy,
+    hybrid_decider_response,
+    hybrid_policy_response,
+    hybrid_route_reasons,
+)
 from ask_seattle.model import build_inference_row, classify_post, load_model
 from ask_seattle.training import train_model_bundle_from_labels
 
@@ -24,7 +30,6 @@ LOGGER = logging.getLogger("ask_seattle.local_bridge")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SUPPORTED_BRIDGE_COMPARISON_MODELS = (
     "tfidf_recommended",
-    "transformer_deberta_v3_small",
     "transformer_modernbert_base",
     "transformer_neobert",
     "transformer_modernbert_large",
@@ -38,7 +43,6 @@ SUPPORTED_BRIDGE_DECIDER_POLICIES = {
     "hybrid_consensus",
 }
 DEFAULT_BRIDGE_DECIDER_POLICY = "hybrid_consensus"
-HYBRID_DECIDER_PRIMARY_WEIGHT = 2.0
 HYBRID_DECIDER_MIN_COMPARISON_RESULTS = 2
 
 
@@ -75,6 +79,12 @@ class BridgeConfig:
             primary_bundle=self.bundle,
             primary_model_path=self.model_path,
             comparison_suite_path=self.comparison_suite_path,
+        )
+        self.hybrid_policy = _load_hybrid_policy(
+            primary_bundle=self.bundle,
+            primary_model_path=self.model_path,
+            comparison_suite_path=self.comparison_suite_path,
+            comparison_models=self.comparison_models,
         )
         LOGGER.info("labels will append to %s", self.label_path)
         self.auto_retrain = None
@@ -139,6 +149,7 @@ def run_bridge(
                     str(config.comparison_suite_path) if config.comparison_suite_path else None
                 ),
                 "comparison_models": _comparison_model_summaries(config.comparison_models),
+                "hybrid_policy": hybrid_policy_response(config.hybrid_policy),
                 "split_strategy": config.split_strategy,
                 "split_seed": config.split_seed,
                 "evaluation_subreddit": config.evaluation_subreddit,
@@ -178,6 +189,7 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
                         else None
                     ),
                     "comparison_models": _comparison_model_summaries(self.bridge_config.comparison_models),
+                    "hybrid_policy": hybrid_policy_response(getattr(self.bridge_config, "hybrid_policy", None)),
                     "split_strategy": self.bridge_config.split_strategy,
                     "split_seed": self.bridge_config.split_seed,
                     "evaluation_subreddit": self.bridge_config.evaluation_subreddit,
@@ -272,7 +284,7 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             DEFAULT_BRIDGE_DECIDER_POLICY,
         )
         route_reasons = (
-            _hybrid_route_reasons(row=row, primary_result=primary_result)
+            hybrid_route_reasons(row=row, primary_result=primary_result)
             if decider_policy == "hybrid_consensus"
             else []
         )
@@ -297,9 +309,11 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
         decider_result, decision_context = _decider_response(
             policy=decider_policy,
             primary_result=primary_result,
+            primary_model_name=(getattr(self.bridge_config, "hybrid_policy", {}) or {}).get("primary_model_name"),
             row=row,
             comparisons=comparisons,
             route_reasons=route_reasons,
+            hybrid_policy=getattr(self.bridge_config, "hybrid_policy", None),
         )
         self._send_json(
             {
@@ -760,22 +774,6 @@ def _truncate(value: str, limit: int) -> str:
     return value[: limit - 3] + "..."
 
 
-def _hybrid_route_reasons(*, row: dict[str, Any], primary_result: dict[str, Any]) -> list[str]:
-    reasons: list[str] = []
-    if str(primary_result.get("confidence_band") or "").strip().lower() == "borderline":
-        reasons.append("primary_borderline")
-    post_type = str(row.get("post_type") or "").strip().lower()
-    if post_type == "image":
-        reasons.append("image_post")
-    elif post_type == "link":
-        reasons.append("link_post")
-    if str(row.get("is_low_text") or "").strip().lower() == "yes":
-        reasons.append("low_text")
-    if bool(row.get("is_sparse_media")):
-        reasons.append("sparse_media")
-    return list(dict.fromkeys(reasons))
-
-
 def _comparison_result_entries(
     comparison_models: list[dict[str, Any]],
     *,
@@ -804,108 +802,26 @@ def _comparison_result_entries(
     ]
 
 
-def _review_priority(review_reasons: list[str]) -> str:
-    reason_set = set(review_reasons)
-    if not reason_set:
-        return "normal"
-    if {"label_changed_by_hybrid", "comparison_disagreement"} & reason_set:
-        return "high"
-    return "priority"
-
-
 def _decider_response(
     *,
     policy: str,
     primary_result: dict[str, Any],
+    primary_model_name: str | None,
     row: dict[str, Any],
     comparisons: list[dict[str, Any]],
     route_reasons: list[str],
+    hybrid_policy: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
-    review_reasons = list(route_reasons)
-    successful = [entry for entry in comparisons if isinstance(entry.get("result"), dict)]
-    positive_votes = [
-        entry
-        for entry in successful
-        if str((entry.get("result") or {}).get("label") or "") == "askseattle"
-    ]
-    negative_votes = [
-        entry
-        for entry in successful
-        if str((entry.get("result") or {}).get("label") or "") == "not_askseattle"
-    ]
-    high_positive_votes = [
-        entry
-        for entry in positive_votes
-        if str((entry.get("result") or {}).get("confidence_band") or "") == "high"
-    ]
-    decision_context: dict[str, Any] = {
-        "policy": policy,
-        "decision_source": "primary_model",
-        "routed": bool(route_reasons),
-        "route_reasons": route_reasons,
-        "review_priority": "normal",
-        "review_reasons": [],
-        "primary_result": primary_result,
-        "effective_high_threshold": float(primary_result.get("high_threshold") or 0.0),
-        "successful_comparison_count": len(successful),
-        "comparison_error_count": sum(1 for entry in comparisons if entry.get("error")),
-        "positive_vote_count": len(positive_votes),
-        "negative_vote_count": len(negative_votes),
-        "high_positive_vote_count": len(high_positive_votes),
-        "used_comparison_names": [str(entry.get("name") or "") for entry in successful],
-    }
-    if positive_votes and negative_votes:
-        review_reasons.append("comparison_disagreement")
-    if policy != "hybrid_consensus" or not route_reasons:
-        decision_context["review_reasons"] = list(dict.fromkeys(review_reasons))
-        decision_context["review_priority"] = _review_priority(decision_context["review_reasons"])
-        return None, decision_context
-    if len(successful) < HYBRID_DECIDER_MIN_COMPARISON_RESULTS:
-        review_reasons.append("insufficient_comparison_support")
-        decision_context["review_reasons"] = list(dict.fromkeys(review_reasons))
-        decision_context["review_priority"] = _review_priority(decision_context["review_reasons"])
-        return None, decision_context
-
-    primary_score = float(primary_result.get("score") or 0.0)
-    hybrid_score = (
-        primary_score * HYBRID_DECIDER_PRIMARY_WEIGHT
-        + sum(float((entry.get("result") or {}).get("score") or 0.0) for entry in successful)
-    ) / float(HYBRID_DECIDER_PRIMARY_WEIGHT + len(successful))
-    low_threshold = float(primary_result.get("low_threshold") or 0.0)
-    high_threshold = float(primary_result.get("high_threshold") or low_threshold)
-    label = "askseattle" if hybrid_score >= low_threshold else "not_askseattle"
-    confidence_band = "low"
-    if hybrid_score >= high_threshold:
-        confidence_band = "high"
-    elif hybrid_score >= low_threshold:
-        confidence_band = "borderline"
-    decider_result = {
-        **primary_result,
-        "model_name": "hybrid_consensus",
-        "display_name": "Hybrid consensus",
-        "score": float(hybrid_score),
-        "score_raw": float(hybrid_score),
-        "score_calibrated": float(hybrid_score),
-        "label": label,
-        "confidence_band": confidence_band,
-        "low_threshold": low_threshold,
-        "high_threshold": high_threshold,
-    }
-    if str(primary_result.get("label") or "") != label:
-        review_reasons.append("label_changed_by_hybrid")
-    elif str(primary_result.get("confidence_band") or "") != confidence_band:
-        review_reasons.append("confidence_changed_by_hybrid")
-    decision_context.update(
-        {
-            "decision_source": "hybrid_consensus",
-            "review_reasons": list(dict.fromkeys(review_reasons)),
-            "review_priority": _review_priority(review_reasons),
-            "hybrid_score": float(hybrid_score),
-            "primary_weight": HYBRID_DECIDER_PRIMARY_WEIGHT,
-            "comparison_weight": 1.0,
-        }
+    return hybrid_decider_response(
+        policy=policy,
+        primary_result=primary_result,
+        primary_model_name=primary_model_name,
+        row=row,
+        comparisons=comparisons,
+        route_reasons=route_reasons,
+        hybrid_policy=hybrid_policy,
+        min_comparison_results=HYBRID_DECIDER_MIN_COMPARISON_RESULTS,
     )
-    return decider_result, decision_context
 
 
 def _comparison_model_summaries(comparison_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1076,6 +992,121 @@ def _load_comparison_models(
             ",".join(comparison["name"] for comparison in loaded),
         )
     return loaded
+
+
+def _load_hybrid_policy(
+    *,
+    primary_bundle: dict[str, Any],
+    primary_model_path: Path,
+    comparison_suite_path: Path | None,
+    comparison_models: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if comparison_suite_path is None or not comparison_suite_path.exists():
+        return None
+    suite_summary = _load_suite_summary_payload(comparison_suite_path)
+    if not isinstance(suite_summary, dict):
+        return None
+    primary_entry = _find_primary_suite_entry(
+        primary_bundle=primary_bundle,
+        primary_model_path=primary_model_path,
+        suite_summary=suite_summary,
+    )
+    if primary_entry is None:
+        return None
+    active_models = [
+        {
+            "name": str(primary_entry.get("name") or ""),
+            "display_name": primary_entry.get("display_name") or primary_entry.get("name"),
+        }
+    ] + [
+        {
+            "name": str(comparison.get("name") or ""),
+            "display_name": comparison.get("display_name") or comparison.get("name"),
+        }
+        for comparison in comparison_models
+    ]
+    benchmark_history_path = comparison_suite_path.parent / "benchmark_history.json"
+    hybrid_policy = build_benchmark_weighted_hybrid_policy(
+        active_models=active_models,
+        primary_model_name=str(primary_entry.get("name") or ""),
+        split_strategy=(suite_summary.get("split") or {}).get("split_strategy")
+        if isinstance(suite_summary.get("split"), dict)
+        else None,
+        evaluation_subreddit=(suite_summary.get("split") or {}).get("evaluation_subreddit")
+        if isinstance(suite_summary.get("split"), dict)
+        else suite_summary.get("evaluation_subreddit"),
+        benchmark_history_path=benchmark_history_path,
+        comparison_suite_path=comparison_suite_path,
+        benchmark_history=_load_suite_summary_payload(benchmark_history_path),
+        suite_summary=suite_summary,
+    )
+    LOGGER.info(
+        "loaded hybrid policy comparison_suite_path=%s source=%s matched_run_count=%s primary=%s active_models=%s",
+        comparison_suite_path,
+        hybrid_policy.get("source") if isinstance(hybrid_policy, dict) else "",
+        hybrid_policy.get("matched_run_count") if isinstance(hybrid_policy, dict) else 0,
+        str(primary_entry.get("name") or ""),
+        ",".join(str(model.get("name") or "") for model in active_models),
+    )
+    return hybrid_policy
+
+
+def _load_suite_summary_payload(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _find_primary_suite_entry(
+    *,
+    primary_bundle: dict[str, Any],
+    primary_model_path: Path,
+    suite_summary: dict[str, Any],
+) -> dict[str, Any] | None:
+    primary_artifact_candidates = {
+        str(resolve_bridge_path(primary_model_path, must_exist=False)),
+    }
+    for candidate in (
+        primary_bundle.get("artifact_path"),
+        primary_bundle.get("model_dir"),
+    ):
+        if candidate:
+            try:
+                primary_artifact_candidates.add(str(resolve_bridge_path(str(candidate), must_exist=False)))
+            except Exception:
+                primary_artifact_candidates.add(str(candidate))
+
+    entries = [
+        entry
+        for entry in suite_summary.get("models") or []
+        if isinstance(entry, dict) and str(entry.get("status") or "") == "ok"
+    ]
+    for entry in entries:
+        artifact_path = entry.get("artifact_path")
+        if not artifact_path:
+            continue
+        try:
+            resolved_artifact = str(resolve_bridge_path(str(artifact_path), must_exist=False))
+        except Exception:
+            resolved_artifact = str(artifact_path)
+        if resolved_artifact in primary_artifact_candidates:
+            return entry
+
+    bundle_family = _bundle_family(primary_bundle)
+    bundle_model_id = str(primary_bundle.get("model_id") or "").strip()
+    if bundle_family == "tfidf":
+        for entry in entries:
+            if str(entry.get("name") or "") == "tfidf_recommended":
+                return entry
+    if bundle_model_id:
+        for entry in entries:
+            if str(entry.get("model_id") or "").strip() == bundle_model_id:
+                return entry
+    return None
 
 
 def find_label_record(

@@ -16,17 +16,16 @@ That choice is deliberate:
 
 This project does not currently need a larger or more complex stack to prove the workflow.
 
-That said, the repository now also includes a five-model benchmark suite so you can compare whether encoder-transformer families improve the fuzzy edge of the decision boundary without changing the operational TF-IDF retrain path.
+That said, the repository now also includes a four-model benchmark suite so you can compare whether encoder-transformer families improve the fuzzy edge of the decision boundary without changing the operational TF-IDF retrain path.
 
 The comparison stack currently includes:
 
 - TF-IDF baseline
-- DeBERTa-v3-small encoder classifier
 - ModernBERT-base encoder classifier
 - NeoBERT encoder classifier
 - ModernBERT-large encoder classifier
 
-The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by calibrated strict-threshold readiness before using recall and PR-AUC as tie breakers. DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection. The current grid adds a CUDA-only 512-token balanced DeBERTa-v3-small candidate, a CUDA-only 512-token precision NeoBERT candidate, and a 48 GB CUDA-only 512-token precision ModernBERT-large candidate.
+The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by calibrated strict-threshold readiness before using recall and PR-AUC as tie breakers. ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection. The current grid adds a CUDA-only 512-token precision NeoBERT candidate and 48 GB CUDA-only ModernBERT-large long-context and precision-long-context candidates.
 
 On CUDA runs, the neural training paths now also enable TF32 float32 matmul. That is a speed optimization for Ampere-and-newer NVIDIA GPUs; it lowers remote wall-clock cost without changing the product-level threshold policy.
 
@@ -157,7 +156,7 @@ Training now chooses it by maximizing recall subject to a minimum review-queue p
 
 The TF-IDF review-threshold policy now uses a looser review precision target of `0.70`. That keeps the review queue recall-oriented without letting the threshold collapse into a pure catch-everything setting.
 
-The broader five-model suite still reports fixed-constraint comparison metrics at stricter common bars:
+The broader four-model suite still reports fixed-constraint comparison metrics at stricter common bars:
 
 - `auto_recall_at_precision_95`
 - `review_recall_at_precision_75`
@@ -190,7 +189,22 @@ What changed is the default bridge policy. `make bridge` now starts with `DECIDE
 - hard cases can also get a routed `decider_result` when at least two comparison models are loaded
 - the bridge surfaces `decision_context` so the userscript can show review priority and disagreement signals
 
-The hybrid score is intentionally simple. It is a weighted average of the primary bridge score plus the successfully scored comparison-model outputs. The primary model gets extra weight so the bridge does not quietly turn into a pure ensemble on every post.
+The hybrid score is now benchmark-informed. The bridge still uses a simple weighted average of the primary bridge score plus the successfully scored comparison-model outputs, but the weights come from the local benchmark artifacts instead of a fixed primary-model boost.
+
+Current weighting policy:
+
+- prefer comparable runs from `models/benchmark-suite/benchmark_history.json`
+- fall back to the latest `benchmark_suite_summary.json` when there is not enough comparable history
+- fall back again to uniform weights only when neither benchmark source is usable
+
+The weight formula is precision-first:
+
+- `ready_rate` gates how much influence a model can carry across recent comparable runs
+- `auto_recall_at_precision_95` is the primary driver
+- `review_recall_at_precision_75` is the secondary driver
+- `pr_auc` is only a tie-breaker
+
+That means the two production-ready neural models can now carry most of the hybrid mass, while TF-IDF becomes a stabilizer instead of the fixed anchor and non-ready models keep some influence without dominating the routed decision.
 
 If you want to inspect only the primary TF-IDF behavior, run:
 
@@ -273,7 +287,7 @@ The time-based split still exists, but it is now an explicit option for the poin
 
 ## What The Benchmark Suite Is Actually Comparing
 
-The benchmark suite keeps the evaluation contract aligned across all five models:
+The benchmark suite keeps the evaluation contract aligned across all four models:
 
 - one persisted `suite_input.json` manifest
 - one split assignment reused by every family
@@ -298,7 +312,7 @@ But all of them still end in the same bridge-facing concepts:
 
 Operationally, retraining and benchmarking are now separate steps:
 
-- `make retrain` retrains the operational TF-IDF model plus all five suite models and writes training-only summaries
+- `make retrain` retrains the operational TF-IDF model plus all four suite models and writes training-only summaries
 - `make benchmark` reads those trained suite artifacts later and computes held-out metrics only for the compatible models already on disk
 
 That split is deliberate. It keeps training failures, resumability, and held-out evaluation easier to reason about than one giant command that mixes all three concerns.

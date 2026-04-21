@@ -22,7 +22,7 @@ PYTHONPATH=src python3 -m ask_seattle.cli retrain-all \
 This retrains:
 
 - the operational TF-IDF model under `models/real-labels-precision-refresh/`
-- the five-model comparison suite under `models/benchmark-suite/`
+- the four-model comparison suite under `models/benchmark-suite/`
 
 It does not run held-out benchmarks.
 
@@ -117,7 +117,6 @@ This is the stability pass for the top neural candidates. It retrains and benchm
 
 By default it evaluates:
 
-- `transformer_deberta_v3_small`
 - `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
@@ -140,7 +139,7 @@ Treat the first model in `model_aggregates` as the current winner. That list is 
 3. mean auto recall
 4. `mean_pr_auc`
 
-## Compare The Full Five-Model Suite
+## Compare The Full Four-Model Suite
 
 Install the optional model dependencies first:
 
@@ -171,7 +170,6 @@ The suite uses one shared split across all model families. Retraining writes:
 
 - `suite_input.json`
 - `tfidf_recommended/training_summary.json`
-- `transformer_deberta_v3_small/training_summary.json`
 - `transformer_modernbert_base/training_summary.json`
 - `transformer_neobert/training_summary.json`
 - `transformer_modernbert_large/training_summary.json`
@@ -183,10 +181,11 @@ Benchmarking writes:
 - `benchmark_history.json`
 - `history/<run_id>/benchmark_suite_summary.json`
 
-The default five-model suite is:
+If TF-IDF plus at least two comparison models benchmark successfully for the current manifest, `benchmark_suite_summary.json` also includes one derived `hybrid_consensus_policy` row. That row reports the routed bridge policy on the same held-out split and does not correspond to a separately trained artifact.
+
+The default four-model suite is:
 
 - TF-IDF baseline
-- DeBERTa-v3-small sequence classifier
 - ModernBERT-base sequence classifier
 - NeoBERT sequence classifier
 - ModernBERT-large sequence classifier
@@ -196,9 +195,10 @@ Important implementation details:
 - every family consumes the same persisted `suite_input.json` manifest
 - rerunning `make retrain` resumes from any compatible completed per-model artifact already on disk for that manifest
 - `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
+- the bridge hybrid policy weights now come from comparable benchmark history when available, then fall back to the latest suite summary, then to uniform weights
 - `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
-- the encoder transformer family uses title/body pair encoding, fits a sigmoid calibrator for every candidate, keeps the better candidate by calibrated strict-threshold readiness first, restores the best epoch checkpoint, and runs a small config grid for DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
-- that grid now includes a CUDA-only 512-token balanced DeBERTa-v3-small candidate, a CUDA-only 512-token precision NeoBERT candidate, and a 48 GB CUDA-only 512-token precision ModernBERT-large candidate
+- the encoder transformer family uses title/body pair encoding, fits a sigmoid calibrator for every candidate, keeps the better candidate by calibrated strict-threshold readiness first, restores the best epoch checkpoint, and runs a small config grid for ModernBERT-base, NeoBERT, and ModernBERT-large
+- that grid now includes a CUDA-only 512-token precision NeoBERT candidate and 48 GB CUDA-only ModernBERT-large long-context and precision-long-context candidates
 - CUDA neural training now enables TF32 matmul when available to reduce remote runtime cost
 
 ## What Training Does

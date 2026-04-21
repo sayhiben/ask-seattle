@@ -21,7 +21,7 @@ Returns bridge health and startup configuration.
 
 Example response:
 
-This example is illustrative. Real `comparison_models` arrays depend on which supported benchmark-suite artifacts currently exist and load successfully. The bridge only exposes the active suite set: `tfidf_recommended` plus the four transformer models.
+This example is illustrative. Real `comparison_models` arrays depend on which supported benchmark-suite artifacts currently exist and load successfully. The bridge only exposes the active suite set: `tfidf_recommended` plus the three transformer models.
 
 ```json
 {
@@ -33,13 +33,6 @@ This example is illustrative. Real `comparison_models` arrays depend on which su
   "split_seed": 13,
   "decider_policy": "hybrid_consensus",
   "comparison_models": [
-    {
-      "name": "transformer_deberta_v3_small",
-      "display_name": "Transformer DeBERTa-v3-small",
-      "model_family": "transformer_sequence_classifier",
-      "model_id": "microsoft/deberta-v3-small",
-      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_deberta_v3_small/transformer_bundle.joblib"
-    },
     {
       "name": "transformer_modernbert_base",
       "display_name": "Transformer ModernBERT-base",
@@ -62,6 +55,31 @@ This example is illustrative. Real `comparison_models` arrays depend on which su
       "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_modernbert_large/transformer_bundle.joblib"
     }
   ],
+  "hybrid_policy": {
+    "policy_name": "hybrid_consensus_policy",
+    "display_name": "Hybrid consensus policy",
+    "model_family": "hybrid_decider_policy",
+    "weight_formula_version": "v1_benchmark_weighted_precision_first",
+    "source": "benchmark_history",
+    "source_path": "/abs/path/to/models/benchmark-suite/benchmark_history.json",
+    "matched_run_count": 3,
+    "fallback_used": false,
+    "primary_model_name": "tfidf_recommended",
+    "split_strategy": "random_eval_subreddit",
+    "evaluation_subreddit": "seattle",
+    "active_model_names": [
+      "tfidf_recommended",
+      "transformer_modernbert_base",
+      "transformer_neobert",
+      "transformer_modernbert_large"
+    ],
+    "weights": [
+      {"name": "tfidf_recommended", "display_name": "TF-IDF", "weight": 0.06},
+      {"name": "transformer_modernbert_base", "display_name": "Transformer ModernBERT-base", "weight": 0.45},
+      {"name": "transformer_neobert", "display_name": "Transformer NeoBERT", "weight": 0.40},
+      {"name": "transformer_modernbert_large", "display_name": "Transformer ModernBERT-large", "weight": 0.09}
+    ]
+  },
   "auto_retrain": null
 }
 ```
@@ -108,6 +126,8 @@ If those optional metadata fields are present, the bridge includes them in the m
 
 The default bridge policy is `hybrid_consensus`. That keeps the primary bridge model result in `result`, but it can also compute a routed `decider_result` for borderline, low-text, image, link, or sparse-media posts when at least two comparison models are loaded successfully.
 
+When the benchmark suite history exists, the routed hybrid score uses benchmark-informed weights derived from the active comparison set on comparable prior suite runs. The bridge prefers `benchmark_history.json`, falls back to the latest `benchmark_suite_summary.json`, and only falls back again to uniform weights if neither source is usable.
+
 For low-text, image, and sparse-media posts, the bridge also applies a stricter effective high-confidence threshold. Those posts can still score positive, but they need a stronger score to return `confidence_band: "high"`.
 
 Example response:
@@ -147,16 +167,19 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
     "positive_vote_count": 0,
     "negative_vote_count": 0,
     "high_positive_vote_count": 0,
-    "used_comparison_names": []
+    "used_comparison_names": [],
+    "hybrid_policy": {
+      "policy_name": "hybrid_consensus_policy",
+      "source": "benchmark_history",
+      "weights": [
+        {"name": "tfidf_recommended", "weight": 0.06},
+        {"name": "transformer_modernbert_base", "weight": 0.45},
+        {"name": "transformer_neobert", "weight": 0.40},
+        {"name": "transformer_modernbert_large", "weight": 0.09}
+      ]
+    }
   },
   "comparison_models": [
-    {
-      "name": "transformer_deberta_v3_small",
-      "display_name": "Transformer DeBERTa-v3-small",
-      "model_family": "transformer_sequence_classifier",
-      "model_id": "microsoft/deberta-v3-small",
-      "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_deberta_v3_small/transformer_bundle.joblib"
-    },
     {
       "name": "transformer_modernbert_base",
       "display_name": "Transformer ModernBERT-base",
@@ -192,12 +215,13 @@ Response fields:
   - `null` when the bridge keeps the primary verdict only
 - `decision_context`
   - routing and review metadata for the current policy
+  - includes `hybrid_policy` when the bridge has a resolved weight policy for the active comparison set
 - `comparison_models`
   - loaded comparison-model metadata
 - `comparisons`
   - fully scored comparison entries
 
-When the full benchmark suite artifacts exist, the bridge includes all available supported comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. Under `hybrid_consensus`, the bridge may also populate `comparisons` even when `include_comparisons` is `false` if the post was routed through the hybrid decider. The current expected full set is five models total: TF-IDF plus four encoder transformers. When the active bridge model is TF-IDF, the comparison list normally contains the four transformer models.
+When the full benchmark suite artifacts exist, the bridge includes all available supported comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. Under `hybrid_consensus`, the bridge may also populate `comparisons` even when `include_comparisons` is `false` if the post was routed through the hybrid decider. The current expected full set is four models total: TF-IDF plus three encoder transformers. When the active bridge model is TF-IDF, the comparison list normally contains the three transformer models.
 
 If one comparison model fails during scoring, the bridge now keeps the main `result` and returns an `error` field for that comparison entry instead of failing the whole `/check` request.
 
@@ -220,6 +244,13 @@ On Apple Silicon, the bridge keeps all neural comparison models off MPS during `
 - `label_changed_by_hybrid`
 - `confidence_changed_by_hybrid`
 - `insufficient_comparison_support`
+
+If the bridge produced a routed `decider_result`, `decision_context` can also include:
+
+- `hybrid_score`
+- `primary_weight`
+- `hybrid_weight_source`
+- `hybrid_policy.applied_weights`
 
 ## `POST /check-comparison`
 

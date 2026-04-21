@@ -11,7 +11,7 @@ Use it when you need to understand the current system, make changes safely, or f
 - Want maintainer-specific guardrails and repo rules: [AGENTS.md](../AGENTS.md)
 - Want to label posts in the browser: [How to label posts](how-to/label-posts.md)
 - Want to retrain the model: [How to retrain](how-to/retrain.md)
-- Want to compare the full five-model benchmark suite: [How to retrain](how-to/retrain.md)
+- Want to compare the full four-model benchmark suite: [How to retrain](how-to/retrain.md)
 - Want the preferred remote training path: [How to run training on RunPod](how-to/runpod-training.md)
 - Want a no-cloud fallback on your own Windows GPU box: [How to run training on a remote Windows WSL box](how-to/remote-wsl-training.md)
 - Need the exact CLI surface: [CLI reference](reference/cli.md)
@@ -77,6 +77,6 @@ These assumptions define the current project scope:
 - local files only
 - binary labels only: `askseattle` and `not_askseattle`
 - one TF-IDF + logistic regression operational model path
-- one five-model local benchmark suite for comparison work
+- one four-model local benchmark suite for comparison work
 
 If any of those change, treat it as a documentation-impacting change, not just an implementation detail.

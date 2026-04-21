@@ -155,10 +155,10 @@ By default this command still evaluates the held-out test slice and writes bench
 
 ## `ask-seattle retrain-all`
 
-Retrain the operational TF-IDF model plus the five-model comparison suite without running held-out benchmarks.
+Retrain the operational TF-IDF model plus the four-model comparison suite without running held-out benchmarks.
 
 ```bash
-ask-seattle retrain-all --data PATH --operational-output-dir PATH --benchmark-output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large]
+ask-seattle retrain-all --data PATH --operational-output-dir PATH --benchmark-output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--transformer-model-id answerdotai/ModernBERT-base] [--transformer-secondary-model-id chandar-lab/NeoBERT] [--transformer-tertiary-model-id answerdotai/ModernBERT-large]
 ```
 
 Arguments:
@@ -171,7 +171,7 @@ Arguments:
   - directory where the operational TF-IDF artifacts are written
 - `--benchmark-output-dir`
   - required
-  - directory where the five suite model artifacts are written
+  - directory where the four suite model artifacts are written
 - `--eval-subreddit`
   - optional
   - when set, training still uses mixed reviewed data but restricts later calibration/test evaluation to the named subreddit
@@ -184,14 +184,11 @@ Arguments:
   - only affects `--split-strategy random`
 - `--transformer-model-id`
   - optional
-  - defaults to `microsoft/deberta-v3-small`
+  - defaults to `answerdotai/ModernBERT-base`
 - `--transformer-secondary-model-id`
   - optional
-  - defaults to `answerdotai/ModernBERT-base`
-- `--transformer-tertiary-model-id`
-  - optional
   - defaults to `chandar-lab/NeoBERT`
-- `--transformer-quaternary-model-id`
+- `--transformer-tertiary-model-id`
   - optional
   - defaults to `answerdotai/ModernBERT-large`
 
@@ -243,10 +240,10 @@ Current behavior:
 
 ## `ask-seattle benchmark-suite`
 
-Benchmark the active five-model suite on one shared held-out split, using already-trained suite artifacts.
+Benchmark the active four-model suite on one shared held-out split, using already-trained suite artifacts, and add a derived hybrid-policy row when enough benchmarked models are available for the routed bridge policy.
 
 ```bash
-ask-seattle benchmark-suite --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large] [--notes "free-form note"]
+ask-seattle benchmark-suite --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--transformer-model-id answerdotai/ModernBERT-base] [--transformer-secondary-model-id chandar-lab/NeoBERT] [--transformer-tertiary-model-id answerdotai/ModernBERT-large] [--notes "free-form note"]
 ```
 
 Arguments:
@@ -269,14 +266,11 @@ Arguments:
   - only affects `--split-strategy random`
 - `--transformer-model-id`
   - optional
-  - defaults to `microsoft/deberta-v3-small`
+  - defaults to `answerdotai/ModernBERT-base`
 - `--transformer-secondary-model-id`
   - optional
-  - defaults to `answerdotai/ModernBERT-base`
-- `--transformer-tertiary-model-id`
-  - optional
   - defaults to `chandar-lab/NeoBERT`
-- `--transformer-quaternary-model-id`
+- `--transformer-tertiary-model-id`
   - optional
   - defaults to `answerdotai/ModernBERT-large`
 - `--notes`
@@ -287,9 +281,10 @@ Current suite details:
 
 - the command loads the shared `suite_input.json` manifest and benchmarks any compatible trained model artifacts already present for that manifest
 - if a family is missing or incompatible, the command logs a warning and skips it instead of retraining it
-- the transformer family includes DeBERTa-v3-small, ModernBERT-base, NeoBERT, and ModernBERT-large
+- the transformer family includes ModernBERT-base, NeoBERT, and ModernBERT-large
 - the transformer family restores the best epoch checkpoint and ranks candidates with a precision-first calibration key
 - the shared model text includes normalized content metadata when available
+- when TF-IDF plus at least two comparison models benchmark successfully, the aggregate summary also includes `hybrid_consensus_policy`, a benchmarked policy row with `artifact_path: null` and `policy_metadata`
 
 Writes:
 
@@ -309,7 +304,7 @@ python -m pip install -e ".[dev,models]"
 Retrain and benchmark selected suite models across multiple deterministic split seeds.
 
 ```bash
-ask-seattle benchmark-seed-sweep --data PATH --output-dir PATH [--split-strategy random|time] [--eval-subreddit seattle] [--benchmark-seeds 13,21,34] [--benchmark-seed-models transformer_deberta_v3_small,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large] [--transformer-model-id microsoft/deberta-v3-small] [--transformer-secondary-model-id answerdotai/ModernBERT-base] [--transformer-tertiary-model-id chandar-lab/NeoBERT] [--transformer-quaternary-model-id answerdotai/ModernBERT-large]
+ask-seattle benchmark-seed-sweep --data PATH --output-dir PATH [--split-strategy random|time] [--eval-subreddit seattle] [--benchmark-seeds 13,21,34] [--benchmark-seed-models transformer_modernbert_base,transformer_neobert,transformer_modernbert_large] [--transformer-model-id answerdotai/ModernBERT-base] [--transformer-secondary-model-id chandar-lab/NeoBERT] [--transformer-tertiary-model-id answerdotai/ModernBERT-large]
 ```
 
 Arguments:
@@ -332,8 +327,17 @@ Arguments:
   - comma-separated deterministic split seeds
 - `--benchmark-seed-models`
   - optional
-  - defaults to `transformer_deberta_v3_small,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large`
+  - defaults to `transformer_modernbert_base,transformer_neobert,transformer_modernbert_large`
   - comma-separated suite model names to retrain and benchmark across those seeds
+- `--transformer-model-id`
+  - optional
+  - defaults to `answerdotai/ModernBERT-base`
+- `--transformer-secondary-model-id`
+  - optional
+  - defaults to `chandar-lab/NeoBERT`
+- `--transformer-tertiary-model-id`
+  - optional
+  - defaults to `answerdotai/ModernBERT-large`
 
 Writes:
 
@@ -403,6 +407,7 @@ Arguments:
   - defaults to `hybrid_consensus`
   - `primary_only` keeps `/check` anchored to the active bridge model only
   - `hybrid_consensus` keeps the primary `result` but can also return a routed `decider_result` for borderline or hard-slice posts when enough comparison models are loaded
+  - when benchmark-suite history exists, `hybrid_consensus` derives its per-model weights from comparable benchmark runs and exposes them in the bridge response metadata
 - `--log-level`
   - optional
   - one of `DEBUG`, `INFO`, `WARNING`, `ERROR`
@@ -448,7 +453,6 @@ Variables:
 - `TRANSFORMER_MODEL_ID`
 - `TRANSFORMER_SECONDARY_MODEL_ID`
 - `TRANSFORMER_TERTIARY_MODEL_ID`
-- `TRANSFORMER_QUATERNARY_MODEL_ID`
 - `BENCHMARK_SEEDS`
 - `BENCHMARK_SEED_MODELS`
 - `BENCHMARK_NOTES`

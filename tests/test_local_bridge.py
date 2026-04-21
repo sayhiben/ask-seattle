@@ -301,7 +301,7 @@ def test_bridge_check_returns_comparison_results(tmp_path: Path) -> None:
         {
             "name": "transformer_sequence_classifier",
             "model_family": "transformer_sequence_classifier",
-            "model_id": "microsoft/deberta-v3-small",
+            "model_id": "answerdotai/ModernBERT-base",
             "artifact_path": str(tmp_path / "transformer_bundle.joblib"),
             "bundle": {
                 "model": transformer_model,
@@ -387,7 +387,7 @@ def test_bridge_check_can_return_hybrid_decider_result_when_routed(tmp_path: Pat
         {
             "name": "transformer_sequence_classifier",
             "model_family": "transformer_sequence_classifier",
-            "model_id": "microsoft/deberta-v3-small",
+            "model_id": "answerdotai/ModernBERT-base",
             "artifact_path": str(tmp_path / "transformer_bundle.joblib"),
             "bundle": {
                 "model": ScoredFakeModel(0.95),
@@ -457,7 +457,7 @@ def test_bridge_check_primary_only_skips_hybrid_decider(tmp_path: Path) -> None:
         {
             "name": "transformer_sequence_classifier",
             "model_family": "transformer_sequence_classifier",
-            "model_id": "microsoft/deberta-v3-small",
+            "model_id": "answerdotai/ModernBERT-base",
             "artifact_path": str(tmp_path / "transformer_bundle.joblib"),
             "bundle": {
                 "model": ScoredFakeModel(0.95),
@@ -581,8 +581,8 @@ def test_load_comparison_models_filters_to_supported_active_suite(
 ) -> None:
     primary_artifact = tmp_path / "tfidf.joblib"
     primary_artifact.write_text("primary", encoding="utf-8")
-    deberta_artifact = tmp_path / "deberta.joblib"
-    deberta_artifact.write_text("deberta", encoding="utf-8")
+    modernbert_base_artifact = tmp_path / "modernbert-base.joblib"
+    modernbert_base_artifact.write_text("modernbert-base", encoding="utf-8")
     modernbert_artifact = tmp_path / "modernbert-large.joblib"
     modernbert_artifact.write_text("modernbert", encoding="utf-8")
     semantic_artifact = tmp_path / "semantic.joblib"
@@ -624,10 +624,10 @@ def test_load_comparison_models_filters_to_supported_active_suite(
                         "status": "ok",
                     },
                     {
-                        "name": "transformer_deberta_v3_small",
-                        "display_name": "Transformer DeBERTa-v3-small",
+                        "name": "transformer_modernbert_base",
+                        "display_name": "Transformer ModernBERT-base",
                         "model_family": "transformer_sequence_classifier",
-                        "artifact_path": str(deberta_artifact),
+                        "artifact_path": str(modernbert_base_artifact),
                         "status": "ok",
                     },
                 ]
@@ -638,8 +638,8 @@ def test_load_comparison_models_filters_to_supported_active_suite(
 
     def fake_load_model(path: Path) -> dict[str, Any]:
         artifact_name = Path(path).name
-        if artifact_name == "deberta.joblib":
-            return {"model_name": "transformer_deberta_v3_small", "model_family": "transformer_sequence_classifier"}
+        if artifact_name == "modernbert-base.joblib":
+            return {"model_name": "transformer_modernbert_base", "model_family": "transformer_sequence_classifier"}
         if artifact_name == "modernbert-large.joblib":
             return {"model_name": "transformer_modernbert_large", "model_family": "transformer_sequence_classifier"}
         raise AssertionError(f"unexpected artifact load: {artifact_name}")
@@ -653,7 +653,7 @@ def test_load_comparison_models_filters_to_supported_active_suite(
     )
 
     assert [entry["name"] for entry in loaded] == [
-        "transformer_deberta_v3_small",
+        "transformer_modernbert_base",
         "transformer_modernbert_large",
     ]
 
