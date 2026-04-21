@@ -17,8 +17,7 @@ from ask_seattle.data import (
     utc_now_iso,
     write_jsonl_records,
 )
-from ask_seattle.model import load_model
-from ask_seattle.model import classify_post
+from ask_seattle.model import build_inference_row, classify_post, load_model
 from ask_seattle.training import train_model_bundle_from_labels
 
 LOGGER = logging.getLogger("ask_seattle.local_bridge")
@@ -34,6 +33,13 @@ SUPPORTED_BRIDGE_COMPARISON_MODEL_FAMILIES = {
     "tfidf",
     "transformer_sequence_classifier",
 }
+SUPPORTED_BRIDGE_DECIDER_POLICIES = {
+    "primary_only",
+    "hybrid_consensus",
+}
+DEFAULT_BRIDGE_DECIDER_POLICY = "hybrid_consensus"
+HYBRID_DECIDER_PRIMARY_WEIGHT = 2.0
+HYBRID_DECIDER_MIN_COMPARISON_RESULTS = 2
 
 
 class BridgeConfig:
@@ -47,6 +53,7 @@ class BridgeConfig:
         split_strategy: str = "random",
         split_seed: int = 13,
         evaluation_subreddit: str | None = None,
+        decider_policy: str = DEFAULT_BRIDGE_DECIDER_POLICY,
     ) -> None:
         self.model_path = resolve_bridge_path(model_path, must_exist=True)
         self.label_path = resolve_bridge_path(label_path, must_exist=False)
@@ -58,6 +65,9 @@ class BridgeConfig:
         self.split_strategy = split_strategy
         self.split_seed = split_seed
         self.evaluation_subreddit = evaluation_subreddit
+        self.decider_policy = str(decider_policy or DEFAULT_BRIDGE_DECIDER_POLICY)
+        if self.decider_policy not in SUPPORTED_BRIDGE_DECIDER_POLICIES:
+            raise ValueError(f"Unsupported decider policy: {self.decider_policy}")
         self.label_lock = threading.Lock()
         LOGGER.info("loading model from %s", self.model_path)
         self.bundle = load_model(self.model_path)
@@ -87,6 +97,7 @@ def run_bridge(
     split_strategy: str = "random",
     split_seed: int = 13,
     evaluation_subreddit: str | None = None,
+    decider_policy: str = DEFAULT_BRIDGE_DECIDER_POLICY,
 ) -> None:
     configure_logging(log_level)
     config = BridgeConfig(
@@ -97,6 +108,7 @@ def run_bridge(
         split_strategy=split_strategy,
         split_seed=split_seed,
         evaluation_subreddit=evaluation_subreddit,
+        decider_policy=decider_policy,
     )
 
     class RequestHandler(LocalBridgeRequestHandler):
@@ -104,7 +116,7 @@ def run_bridge(
 
     server = ThreadingHTTPServer((host, port), RequestHandler)
     LOGGER.info(
-        "starting local bridge host=%s port=%s model_path=%s label_path=%s split_strategy=%s split_seed=%s evaluation_subreddit=%s comparison_models=%s",
+        "starting local bridge host=%s port=%s model_path=%s label_path=%s split_strategy=%s split_seed=%s evaluation_subreddit=%s decider_policy=%s comparison_models=%s",
         host,
         port,
         config.model_path,
@@ -112,6 +124,7 @@ def run_bridge(
         config.split_strategy,
         config.split_seed,
         config.evaluation_subreddit or "",
+        config.decider_policy,
         len(config.comparison_models),
     )
     print(
@@ -129,6 +142,7 @@ def run_bridge(
                 "split_strategy": config.split_strategy,
                 "split_seed": config.split_seed,
                 "evaluation_subreddit": config.evaluation_subreddit,
+                "decider_policy": config.decider_policy,
                 "auto_retrain": config.auto_retrain.status_snapshot() if config.auto_retrain else None,
             },
             sort_keys=True,
@@ -167,6 +181,11 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
                     "split_strategy": self.bridge_config.split_strategy,
                     "split_seed": self.bridge_config.split_seed,
                     "evaluation_subreddit": self.bridge_config.evaluation_subreddit,
+                    "decider_policy": getattr(
+                        self.bridge_config,
+                        "decider_policy",
+                        DEFAULT_BRIDGE_DECIDER_POLICY,
+                    ),
                     "auto_retrain": (
                         self.bridge_config.auto_retrain.status_snapshot()
                         if self.bridge_config.auto_retrain
@@ -238,27 +257,56 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             result.score,
             result.high_threshold,
         )
+        primary_result = asdict(result)
+        row = build_inference_row(
+            title=title,
+            selftext=selftext,
+            post_type=post_type,
+            content_domain=content_domain,
+            is_crosspost=is_crosspost,
+        )
         include_comparisons = bool(payload.get("include_comparisons") is True)
+        decider_policy = getattr(
+            self.bridge_config,
+            "decider_policy",
+            DEFAULT_BRIDGE_DECIDER_POLICY,
+        )
+        route_reasons = (
+            _hybrid_route_reasons(row=row, primary_result=primary_result)
+            if decider_policy == "hybrid_consensus"
+            else []
+        )
+        should_run_hybrid = (
+            decider_policy == "hybrid_consensus"
+            and bool(route_reasons)
+            and len(self.bridge_config.comparison_models) >= HYBRID_DECIDER_MIN_COMPARISON_RESULTS
+        )
         comparisons = []
-        if include_comparisons:
-            comparisons = [
-                _comparison_result_entry(
-                    comparison,
-                    title=title,
-                    selftext=selftext,
-                    post_type=post_type,
-                    content_domain=content_domain,
-                    is_crosspost=is_crosspost,
-                    post_id=post_id,
-                    permalink=permalink,
-                    time_source=time_source,
-                )
-                for comparison in self.bridge_config.comparison_models
-            ]
+        if include_comparisons or should_run_hybrid:
+            comparisons = _comparison_result_entries(
+                self.bridge_config.comparison_models,
+                title=title,
+                selftext=selftext,
+                post_type=post_type,
+                content_domain=content_domain,
+                is_crosspost=is_crosspost,
+                post_id=post_id,
+                permalink=permalink,
+                time_source=time_source,
+            )
+        decider_result, decision_context = _decider_response(
+            policy=decider_policy,
+            primary_result=primary_result,
+            row=row,
+            comparisons=comparisons,
+            route_reasons=route_reasons,
+        )
         self._send_json(
             {
                 "ok": True,
-                "result": asdict(result),
+                "result": primary_result,
+                "decider_result": decider_result,
+                "decision_context": decision_context,
                 "comparison_models": _comparison_model_summaries(self.bridge_config.comparison_models),
                 "comparisons": comparisons,
             }
@@ -710,6 +758,154 @@ def _truncate(value: str, limit: int) -> str:
     if len(value) <= limit:
         return value
     return value[: limit - 3] + "..."
+
+
+def _hybrid_route_reasons(*, row: dict[str, Any], primary_result: dict[str, Any]) -> list[str]:
+    reasons: list[str] = []
+    if str(primary_result.get("confidence_band") or "").strip().lower() == "borderline":
+        reasons.append("primary_borderline")
+    post_type = str(row.get("post_type") or "").strip().lower()
+    if post_type == "image":
+        reasons.append("image_post")
+    elif post_type == "link":
+        reasons.append("link_post")
+    if str(row.get("is_low_text") or "").strip().lower() == "yes":
+        reasons.append("low_text")
+    if bool(row.get("is_sparse_media")):
+        reasons.append("sparse_media")
+    return list(dict.fromkeys(reasons))
+
+
+def _comparison_result_entries(
+    comparison_models: list[dict[str, Any]],
+    *,
+    title: str,
+    selftext: str,
+    post_type: str | None,
+    content_domain: str | None,
+    is_crosspost: bool | None,
+    post_id: str | None,
+    permalink: str | None,
+    time_source: str | None,
+) -> list[dict[str, Any]]:
+    return [
+        _comparison_result_entry(
+            comparison,
+            title=title,
+            selftext=selftext,
+            post_type=post_type,
+            content_domain=content_domain,
+            is_crosspost=is_crosspost,
+            post_id=post_id,
+            permalink=permalink,
+            time_source=time_source,
+        )
+        for comparison in comparison_models
+    ]
+
+
+def _review_priority(review_reasons: list[str]) -> str:
+    reason_set = set(review_reasons)
+    if not reason_set:
+        return "normal"
+    if {"label_changed_by_hybrid", "comparison_disagreement"} & reason_set:
+        return "high"
+    return "priority"
+
+
+def _decider_response(
+    *,
+    policy: str,
+    primary_result: dict[str, Any],
+    row: dict[str, Any],
+    comparisons: list[dict[str, Any]],
+    route_reasons: list[str],
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    review_reasons = list(route_reasons)
+    successful = [entry for entry in comparisons if isinstance(entry.get("result"), dict)]
+    positive_votes = [
+        entry
+        for entry in successful
+        if str((entry.get("result") or {}).get("label") or "") == "askseattle"
+    ]
+    negative_votes = [
+        entry
+        for entry in successful
+        if str((entry.get("result") or {}).get("label") or "") == "not_askseattle"
+    ]
+    high_positive_votes = [
+        entry
+        for entry in positive_votes
+        if str((entry.get("result") or {}).get("confidence_band") or "") == "high"
+    ]
+    decision_context: dict[str, Any] = {
+        "policy": policy,
+        "decision_source": "primary_model",
+        "routed": bool(route_reasons),
+        "route_reasons": route_reasons,
+        "review_priority": "normal",
+        "review_reasons": [],
+        "primary_result": primary_result,
+        "effective_high_threshold": float(primary_result.get("high_threshold") or 0.0),
+        "successful_comparison_count": len(successful),
+        "comparison_error_count": sum(1 for entry in comparisons if entry.get("error")),
+        "positive_vote_count": len(positive_votes),
+        "negative_vote_count": len(negative_votes),
+        "high_positive_vote_count": len(high_positive_votes),
+        "used_comparison_names": [str(entry.get("name") or "") for entry in successful],
+    }
+    if positive_votes and negative_votes:
+        review_reasons.append("comparison_disagreement")
+    if policy != "hybrid_consensus" or not route_reasons:
+        decision_context["review_reasons"] = list(dict.fromkeys(review_reasons))
+        decision_context["review_priority"] = _review_priority(decision_context["review_reasons"])
+        return None, decision_context
+    if len(successful) < HYBRID_DECIDER_MIN_COMPARISON_RESULTS:
+        review_reasons.append("insufficient_comparison_support")
+        decision_context["review_reasons"] = list(dict.fromkeys(review_reasons))
+        decision_context["review_priority"] = _review_priority(decision_context["review_reasons"])
+        return None, decision_context
+
+    primary_score = float(primary_result.get("score") or 0.0)
+    hybrid_score = (
+        primary_score * HYBRID_DECIDER_PRIMARY_WEIGHT
+        + sum(float((entry.get("result") or {}).get("score") or 0.0) for entry in successful)
+    ) / float(HYBRID_DECIDER_PRIMARY_WEIGHT + len(successful))
+    low_threshold = float(primary_result.get("low_threshold") or 0.0)
+    high_threshold = float(primary_result.get("high_threshold") or low_threshold)
+    label = "askseattle" if hybrid_score >= low_threshold else "not_askseattle"
+    confidence_band = "low"
+    if hybrid_score >= high_threshold:
+        confidence_band = "high"
+    elif hybrid_score >= low_threshold:
+        confidence_band = "borderline"
+    decider_result = {
+        **primary_result,
+        "model_name": "hybrid_consensus",
+        "display_name": "Hybrid consensus",
+        "score": float(hybrid_score),
+        "score_raw": float(hybrid_score),
+        "score_calibrated": float(hybrid_score),
+        "label": label,
+        "confidence_band": confidence_band,
+        "low_threshold": low_threshold,
+        "high_threshold": high_threshold,
+    }
+    if str(primary_result.get("label") or "") != label:
+        review_reasons.append("label_changed_by_hybrid")
+    elif str(primary_result.get("confidence_band") or "") != confidence_band:
+        review_reasons.append("confidence_changed_by_hybrid")
+    decision_context.update(
+        {
+            "decision_source": "hybrid_consensus",
+            "review_reasons": list(dict.fromkeys(review_reasons)),
+            "review_priority": _review_priority(review_reasons),
+            "hybrid_score": float(hybrid_score),
+            "primary_weight": HYBRID_DECIDER_PRIMARY_WEIGHT,
+            "comparison_weight": 1.0,
+        }
+    )
+    return decider_result, decision_context
 
 
 def _comparison_model_summaries(comparison_models: list[dict[str, Any]]) -> list[dict[str, Any]]:

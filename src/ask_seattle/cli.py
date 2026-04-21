@@ -229,6 +229,15 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     bridge.add_argument(
+        "--decider-policy",
+        choices=["primary_only", "hybrid_consensus"],
+        default="hybrid_consensus",
+        help=(
+            "How `/check` should decide the main verdict. `primary_only` keeps the active bridge model, "
+            "while `hybrid_consensus` can route borderline and hard-slice posts through loaded comparison models"
+        ),
+    )
+    bridge.add_argument(
         "--eval-subreddit",
         help="If set, auto-retrain will calibrate and test only on this subreddit while training on mixed data",
     )
@@ -374,6 +383,7 @@ def serve_bridge_command(args: argparse.Namespace) -> int:
         split_strategy=args.split_strategy,
         split_seed=args.split_seed,
         evaluation_subreddit=args.eval_subreddit,
+        decider_policy=args.decider_policy,
     )
     return 0
 

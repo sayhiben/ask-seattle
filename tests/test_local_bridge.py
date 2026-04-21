@@ -8,6 +8,8 @@ from threading import Thread
 import threading
 from typing import Any
 
+import pytest
+
 from ask_seattle.data import load_jsonl_records, write_jsonl_records
 import ask_seattle.local_bridge as local_bridge
 from ask_seattle.local_bridge import (
@@ -33,6 +35,17 @@ class FakeModel:
     def predict_proba(self, texts: list[object]) -> list[list[float]]:
         self.last_rows = list(texts)
         return [[0.2, 0.8] for _ in texts]
+
+
+class ScoredFakeModel(FakeModel):
+    def __init__(self, positive_probability: float) -> None:
+        super().__init__()
+        self.positive_probability = positive_probability
+
+    def predict_proba(self, texts: list[object]) -> list[list[float]]:
+        self.last_rows = list(texts)
+        negative_probability = 1 - self.positive_probability
+        return [[negative_probability, self.positive_probability] for _ in texts]
 
 
 class FakeServer:
@@ -98,7 +111,10 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
             {
                 "id": "abc",
                 "title": "Where should I stay?",
-                "selftext": "Visiting",
+                "selftext": (
+                    "Visiting Seattle soon and need help comparing neighborhoods, hotels, "
+                    "transit access, and easy food options for a weekend trip."
+                ),
                 "post_type": "image",
                 "content_domain": "reddit.com",
                 "is_crosspost": True,
@@ -125,6 +141,11 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
     assert check["ok"] is True
     assert check["result"]["label"] == "askseattle"
     assert check["result"]["confidence_band"] == "high"
+    assert check["decider_result"] is None
+    assert check["decision_context"]["policy"] == "hybrid_consensus"
+    assert check["decision_context"]["routed"] is True
+    assert "image_post" in check["decision_context"]["route_reasons"]
+    assert "insufficient_comparison_support" in check["decision_context"]["review_reasons"]
     assert check["comparison_models"] == []
     assert check["comparisons"] == []
     assert "POST_TYPE:image" in fake_model.last_rows[0]["body"]
@@ -324,6 +345,168 @@ def test_bridge_check_returns_comparison_results(tmp_path: Path) -> None:
     ]
     assert check["comparisons"][0]["result"]["model_name"] == "semantic_embedding_logreg"
     assert check["comparisons"][1]["result"]["model_name"] == "transformer_sequence_classifier"
+
+
+def test_bridge_check_can_return_hybrid_decider_result_when_routed(tmp_path: Path) -> None:
+    from http.server import ThreadingHTTPServer
+
+    labels = tmp_path / "labels.jsonl"
+
+    class Handler(LocalBridgeRequestHandler):
+        bridge_config = FakeServer()
+
+    Handler.bridge_config = BridgeConfig.__new__(BridgeConfig)
+    Handler.bridge_config.model_path = tmp_path / "fake.joblib"
+    Handler.bridge_config.label_path = labels
+    Handler.bridge_config.comparison_suite_path = tmp_path / "benchmark_suite_summary.json"
+    Handler.bridge_config.label_lock = threading.Lock()
+    Handler.bridge_config.auto_retrain = None
+    Handler.bridge_config.decider_policy = "hybrid_consensus"
+    Handler.bridge_config.bundle = {
+        "model": ScoredFakeModel(0.7),
+        "model_family": "tfidf",
+        "model_name": "tfidf_logreg",
+        "model_version": "test",
+        "low_threshold": 0.75,
+        "high_threshold": 0.9,
+    }
+    Handler.bridge_config.comparison_models = [
+        {
+            "name": "semantic_embedding",
+            "model_family": "semantic_embedding",
+            "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+            "artifact_path": str(tmp_path / "semantic.joblib"),
+            "bundle": {
+                "model": ScoredFakeModel(0.95),
+                "model_family": "tfidf",
+                "model_name": "semantic_embedding_logreg",
+                "model_version": "test",
+                "threshold": 0.7,
+            },
+        },
+        {
+            "name": "transformer_sequence_classifier",
+            "model_family": "transformer_sequence_classifier",
+            "model_id": "microsoft/deberta-v3-small",
+            "artifact_path": str(tmp_path / "transformer_bundle.joblib"),
+            "bundle": {
+                "model": ScoredFakeModel(0.95),
+                "model_family": "tfidf",
+                "model_name": "transformer_sequence_classifier",
+                "model_version": "test",
+                "threshold": 0.7,
+            },
+        },
+    ]
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+
+    try:
+        check = request_json(
+            port,
+            "POST",
+            "/check",
+            {
+                "id": "abc",
+                "title": "Where should I stay?",
+                "selftext": "",
+            },
+        )
+    finally:
+        server.shutdown()
+
+    assert check["ok"] is True
+    assert check["result"]["label"] == "not_askseattle"
+    assert check["decider_result"]["label"] == "askseattle"
+    assert check["decider_result"]["confidence_band"] == "borderline"
+    assert check["decider_result"]["score"] == pytest.approx(0.825)
+    assert check["decision_context"]["decision_source"] == "hybrid_consensus"
+    assert check["decision_context"]["review_priority"] == "high"
+    assert "low_text" in check["decision_context"]["route_reasons"]
+    assert "label_changed_by_hybrid" in check["decision_context"]["review_reasons"]
+    assert len(check["comparisons"]) == 2
+
+
+def test_bridge_check_primary_only_skips_hybrid_decider(tmp_path: Path) -> None:
+    from http.server import ThreadingHTTPServer
+
+    labels = tmp_path / "labels.jsonl"
+
+    class Handler(LocalBridgeRequestHandler):
+        bridge_config = FakeServer()
+
+    Handler.bridge_config = BridgeConfig.__new__(BridgeConfig)
+    Handler.bridge_config.model_path = tmp_path / "fake.joblib"
+    Handler.bridge_config.label_path = labels
+    Handler.bridge_config.comparison_suite_path = tmp_path / "benchmark_suite_summary.json"
+    Handler.bridge_config.label_lock = threading.Lock()
+    Handler.bridge_config.auto_retrain = None
+    Handler.bridge_config.decider_policy = "primary_only"
+    Handler.bridge_config.bundle = {
+        "model": ScoredFakeModel(0.7),
+        "model_family": "tfidf",
+        "model_name": "tfidf_logreg",
+        "model_version": "test",
+        "low_threshold": 0.75,
+        "high_threshold": 0.9,
+    }
+    Handler.bridge_config.comparison_models = [
+        {
+            "name": "transformer_sequence_classifier",
+            "model_family": "transformer_sequence_classifier",
+            "model_id": "microsoft/deberta-v3-small",
+            "artifact_path": str(tmp_path / "transformer_bundle.joblib"),
+            "bundle": {
+                "model": ScoredFakeModel(0.95),
+                "model_family": "tfidf",
+                "model_name": "transformer_sequence_classifier",
+                "model_version": "test",
+                "threshold": 0.7,
+            },
+        },
+        {
+            "name": "semantic_embedding",
+            "model_family": "semantic_embedding",
+            "model_id": "sentence-transformers/all-MiniLM-L6-v2",
+            "artifact_path": str(tmp_path / "semantic.joblib"),
+            "bundle": {
+                "model": ScoredFakeModel(0.95),
+                "model_family": "tfidf",
+                "model_name": "semantic_embedding_logreg",
+                "model_version": "test",
+                "threshold": 0.7,
+            },
+        },
+    ]
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+
+    try:
+        check = request_json(
+            port,
+            "POST",
+            "/check",
+            {
+                "id": "abc",
+                "title": "Where should I stay?",
+                "selftext": "",
+            },
+        )
+    finally:
+        server.shutdown()
+
+    assert check["ok"] is True
+    assert check["result"]["label"] == "not_askseattle"
+    assert check["decider_result"] is None
+    assert check["decision_context"]["policy"] == "primary_only"
+    assert check["decision_context"]["decision_source"] == "primary_model"
+    assert check["comparisons"] == []
 
 
 def test_bridge_check_comparison_returns_single_result(tmp_path: Path) -> None:

@@ -662,7 +662,7 @@ def test_classify_post_returns_borderline_match_between_thresholds() -> None:
     assert result.label == "askseattle"
 
 
-def test_classify_post_keeps_sparse_media_in_high_bucket_when_score_clears_high_threshold() -> None:
+def test_classify_post_uses_stricter_effective_high_threshold_for_sparse_media() -> None:
     model = FakeModel(positive_probability=0.9)
     model.named_steps["classifier"] = FakeClassifier()
     bundle = {
@@ -683,7 +683,8 @@ def test_classify_post_keeps_sparse_media_in_high_bucket_when_score_clears_high_
     )
 
     assert result.label == "askseattle"
-    assert result.confidence_band == "high"
+    assert result.confidence_band == "borderline"
+    assert result.high_threshold == pytest.approx(0.97)
 
 
 def test_bundle_runtime_device_keeps_causal_lm_off_mps() -> None:

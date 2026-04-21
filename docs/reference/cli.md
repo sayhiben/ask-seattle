@@ -370,6 +370,7 @@ ask-seattle serve-bridge \
   --model PATH \
   [--labels PATH] \
   [--comparison-suite PATH] \
+  [--decider-policy primary_only|hybrid_consensus] \
   [--host 127.0.0.1] \
   [--port 8765] \
   [--log-level INFO] \
@@ -397,6 +398,11 @@ Arguments:
   - optional
   - defaults to `models/benchmark-suite/benchmark_suite_summary.json`
   - when the summary exists, the bridge loads the other benchmark models so `/check` can return side-by-side comparison results
+- `--decider-policy`
+  - optional
+  - defaults to `hybrid_consensus`
+  - `primary_only` keeps `/check` anchored to the active bridge model only
+  - `hybrid_consensus` keeps the primary `result` but can also return a routed `decider_result` for borderline or hard-slice posts when enough comparison models are loaded
 - `--log-level`
   - optional
   - one of `DEBUG`, `INFO`, `WARNING`, `ERROR`
@@ -448,6 +454,7 @@ Variables:
 - `BENCHMARK_NOTES`
 - `LOG_LEVEL`
 - `RETRAIN_EVERY`
+- `DECIDER_POLICY`
 
 Examples:
 
@@ -462,6 +469,7 @@ make benchmark-suite EVAL_SUBREDDIT=seattle
 make benchmark EVAL_SUBREDDIT=seattle SPLIT_STRATEGY=time
 make benchmark SPLIT_SEED=21
 make bridge MODEL_PATH=models/run-002/tfidf_logreg.joblib LOG_LEVEL=DEBUG
+make bridge DECIDER_POLICY=primary_only
 make bridge RETRAIN_EVERY=25 EVAL_SUBREDDIT=seattle
 make bridge RETRAIN_EVERY=25
 ```

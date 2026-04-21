@@ -246,7 +246,7 @@ The current default model applies these conservative refinements relative to the
 - default `min_df` now scales with corpus size so larger label sets suppress more brittle low-support phrases
 - high-threshold selection now requires the precision target, at least `5` calibration predictions in the strict bucket, and a bootstrap precision `p20` check on the calibration slice; if calibration cannot satisfy the stricter gate, the summary records the fallback reason explicitly
 - TF-IDF review-threshold selection now maximizes review recall subject to `review precision >= 0.70`, while the strict auto bucket still targets `high precision >= 0.95`
-- slice-aware positive weighting during training now uses only `image` and `low_text` as active tuning levers
+- slice-aware positive weighting now boosts under-covered positives from existing labels without changing the capture format: `image` and `low_text` are active immediately, while `sparse_media` and `low_text_image` are tracked with minimum-support gates and stay observational until the split has enough positive examples
 
 The shared post representation still includes normalized content metadata when available:
 
@@ -258,6 +258,22 @@ The shared post representation still includes normalized content metadata when a
 - `BODY_LEN_BUCKET`
 - `HAS_QUESTION_MARK`
 - `LOW_TEXT`
+
+## Bridge Decider Policy
+
+`make bridge` now defaults to:
+
+```bash
+make bridge DECIDER_POLICY=hybrid_consensus
+```
+
+That does not change the operational retrain path. The TF-IDF bundle is still the primary bridge model. The policy only affects how `/check` decides the top-line verdict on hard slices when benchmark comparison models are loaded.
+
+If you want the bridge to expose the raw primary-model verdict only, use:
+
+```bash
+make bridge DECIDER_POLICY=primary_only
+```
 - `SPARSE_MEDIA`
 - `IMAGE_NO_BODY`
 - `LOW_TEXT_IMAGE`

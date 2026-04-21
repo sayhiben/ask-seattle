@@ -22,7 +22,9 @@ Install:
 
 The script expects the bridge at:
 
-- `http://127.0.0.1:8765`
+- `http://localhost:8765`
+
+The current userscript prefers `localhost` and only falls back to `127.0.0.1` if needed.
 
 ## Review Flow
 
@@ -40,14 +42,28 @@ On post pages, the helper automatically runs `/check` once after the page loads.
 
 ### 3. Read The Verdict
 
-The verdict block shows the active bridge model verdict:
+The verdict block shows the active `/check` verdict:
 
 - `Looks like askseattle (...)`
 - `Does not look like askseattle`
+- `Hybrid says askseattle (...)`
+- `Hybrid says not askseattle`
+
+The bridge always keeps the primary TF-IDF result internally, but with the default `hybrid_consensus` policy it can route borderline, low-text, image, link, or sparse-media posts through the loaded comparison models and return that routed verdict as the main panel message.
+
+If the bridge thinks a post needs extra attention, the panel also shows a review-priority banner. That banner is driven by `decision_context.review_priority` and usually means one of these:
+
+- the post landed in a hard slice such as `low_text`, `image_post`, `link_post`, or `sparse_media`
+- the primary result was borderline
+- the comparison models disagreed
+- the hybrid decider changed the label or confidence band
+- the post was routed, but there were not enough comparison results to support the hybrid policy
 
 If benchmark-suite artifacts are available, the panel also shows a `Transformer checks` section with one card per loaded comparison transformer. The section title also shows the loaded comparison-model count.
 
 The panel now renders those comparison cards incrementally. The main bridge verdict appears first, then each transformer card updates as its own `/check-comparison` request finishes.
+
+If the bridge already routed the post through `hybrid_consensus`, some or all comparison cards may be filled immediately from that same `/check` response instead of starting from a loading state.
 
 On Apple Silicon, those neural comparison cards now run on CPU instead of MPS. That is slower, but it avoids current local MPS crashes in bridge inference.
 
@@ -70,7 +86,7 @@ Each card shows:
 
 If one comparison model fails, only that card shows a failure state. The main verdict still uses the active bridge model.
 
-The lower status line still shows the active bridge model score and threshold details.
+The lower status line still shows the active bridge model score and threshold details. The reported `high_threshold` is the effective per-post threshold actually used for that verdict, so low-text, image, and sparse-media posts can show a stricter value than the base artifact threshold.
 
 ### 4. Take An Action
 

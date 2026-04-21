@@ -27,7 +27,7 @@ The panel says it timed out waiting for the local bridge.
 ### What To Check
 
 - the bridge is running
-- it is listening on `127.0.0.1:8765`
+- it is listening on `localhost:8765` or `127.0.0.1:8765`
 - Tampermonkey can reach localhost
 
 ### What To Do
@@ -43,6 +43,33 @@ If you need request-level diagnostics:
 ```bash
 make bridge LOG_LEVEL=DEBUG
 ```
+
+## The Userscript Says The Domain Is Not Part Of The `@connect` List
+
+### Problem
+
+The browser console shows an error like:
+
+```text
+Refused to connect to "http://127.0.0.1:8765/recorded": This domain is not a part of the @connect list
+```
+
+### What It Means
+
+The request is being blocked by the userscript manager before it ever reaches the local bridge.
+
+### What To Check
+
+- the installed userscript is the current version
+- the userscript manager actually reloaded the metadata block after the last update
+- the userscript manager has not cached an older domain whitelist for this script
+
+### What To Do
+
+- reinstall or update the userscript from `userscripts/ask-seattle-reddit-helper.user.js`
+- if your userscript manager shows a network-permission prompt, allow localhost access
+- if the problem persists in one browser profile only, remove and reinstall the script in that profile
+- the current userscript prefers `http://localhost:8765` first, because some browser profiles treat `localhost` and `127.0.0.1` differently for `@connect` permission checks
 
 ## Retraining Finished But The Browser Still Uses The Old Model
 

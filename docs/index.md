@@ -22,7 +22,7 @@ Use it when you need to understand the current system, make changes safely, or f
 
 ## Current System In One Paragraph
 
-The project is a local-only review and classification loop. A Tampermonkey userscript reads the visible Reddit post in the browser, sends title/body text to a localhost bridge for `/check`, and sends reviewed labels to the same bridge for `/train`. The operational training path reads the reviewed JSONL file, normalizes and dedupes it, performs a deterministic random train/calibration/test split by default, fits a TF-IDF + logistic regression model, calibrates probabilities, and writes a `.joblib` model bundle plus `training_summary.json`. The benchmark-suite path reuses one persisted split manifest to compare five model families on the same examples.
+The project is a local-only review and classification loop. A Tampermonkey userscript reads the visible Reddit post in the browser, sends title/body text to a localhost bridge for `/check`, and sends reviewed labels to the same bridge for `/train`. The operational training path reads the reviewed JSONL file, normalizes and dedupes it, performs a deterministic random train/calibration/test split by default, fits a TF-IDF + logistic regression model, calibrates probabilities, and writes a `.joblib` model bundle plus `training_summary.json`. The benchmark-suite path reuses one persisted split manifest to compare five model families on the same examples, and the default bridge policy can optionally route hard `/check` cases through those loaded comparison models without changing the TF-IDF retrain path.
 
 ## Documentation Map
 

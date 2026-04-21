@@ -6,6 +6,7 @@ The current stack is intentionally small:
 
 - browser-captured text only
 - one TF-IDF + logistic regression operational model
+- one optional bridge-side hybrid decider for hard slices when comparison models are loaded
 - one local five-model benchmark suite for comparison work
 - local JSONL training data
 - optional remote RunPod Pod execution for the existing train and benchmark targets
@@ -272,6 +273,8 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the userscript can auto-check, re-check, skip through a seeded queue, and save binary labels
 - when benchmark-suite artifacts exist, the userscript also shows one side-by-side result card per comparison transformer in a `Transformer checks` section, with the loaded comparison-model count in the section title
 - the userscript now gets the main bridge verdict first, then fills in each comparison card as that model finishes instead of waiting for the whole suite before updating the panel
+- the default bridge policy is `hybrid_consensus`, which keeps the primary TF-IDF `result` but can also return a routed `decider_result` for borderline or hard-slice posts when at least two comparison models are loaded
+- the userscript now shows a review-priority banner when the bridge routes a post through the hybrid decider, detects model disagreement, or flags a hard slice without enough comparison support
 - the bridge only accepts browser-originated text and local file paths
 - `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs a deterministic random train, calibration, and test split by default
 - `ask-seattle retrain-all` retrains the operational TF-IDF model plus the five-model suite without running held-out benchmarks
@@ -286,7 +289,7 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the default TF-IDF model also scales `min_df` upward as the corpus grows so low-support phrases do not dominate once the label set is larger
 - the high-threshold selector now also requires a minimum calibration support count for the strict bucket and a bootstrap precision check on the calibration slice; if calibration cannot satisfy the stricter gate, the summary records an explicit fallback reason
 - the TF-IDF review threshold now uses a looser review-queue target than the strict auto bucket, so review recall does not collapse on the latest label snapshots
-- the training harness now reports cohort coverage and applies conservative slice-aware positive weighting, but only `image` and `low_text` remain active tuning levers
+- the training harness now reports cohort coverage and applies conservative slice-aware positive weighting; `image` and `low_text` are active immediately, while `sparse_media` and `low_text_image` stay support-gated until they have enough positive examples
 - `ask-seattle retrain-all` writes the shared `suite_input.json` manifest plus five training-only suite summaries, and `ask-seattle benchmark-suite` adds held-out metrics later
 - rerunning `retrain-all` now resumes from compatible completed model artifacts for the same manifest, so a later failure does not force the whole suite to start over
 - benchmark summaries are written separately from training-only suite summaries, so retrain and benchmark are now two explicit steps
@@ -337,6 +340,7 @@ make benchmark-variants EVAL_SUBREDDIT=seattle
 make benchmark-seed-sweep EVAL_SUBREDDIT=seattle
 make benchmark-suite EVAL_SUBREDDIT=seattle
 make bridge
+make bridge DECIDER_POLICY=primary_only
 make bridge RETRAIN_EVERY=25
 make benchmark EVAL_SUBREDDIT=seattle SPLIT_STRATEGY=time
 python3 -m ruff check src tests

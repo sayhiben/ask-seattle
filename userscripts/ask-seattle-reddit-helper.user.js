@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.11
+// @version      0.1.15
 // @description  Adds auto-checking, skip, re-check, binary labeling, and transformer comparison cards for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
@@ -12,12 +12,14 @@
 // @grant        GM_xmlhttpRequest
 // @connect      127.0.0.1
 // @connect      localhost
+// @connect      *
 // ==/UserScript==
 
 (function () {
   'use strict';
 
-  const BRIDGE_URL = 'http://127.0.0.1:8765';
+  const SCRIPT_VERSION = '0.1.15';
+  const BRIDGE_URL_CANDIDATES = ['http://localhost:8765', 'http://127.0.0.1:8765'];
   const PANEL_ID = 'ask-seattle-local-helper';
   const QUEUE_KEY = 'askSeattlePostQueue';
   const AUTO_NEXT_KEY = 'askSeattleAutoNext';
@@ -37,6 +39,11 @@
   };
   let lastAutoCheckedKey = '';
   let currentCheckToken = 0;
+  let activeBridgeUrl = BRIDGE_URL_CANDIDATES[0];
+
+  console.info(`[Ask Seattle] helper ${SCRIPT_VERSION} loaded`, {
+    bridgeCandidates: BRIDGE_URL_CANDIDATES,
+  });
 
   function textFrom(selector, root = document) {
     const node = root.querySelector(selector);
@@ -250,28 +257,63 @@
 
   function bridgePost(path, payload, options = {}) {
     const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : CHECK_TIMEOUT_MS;
+    const candidateUrls = [activeBridgeUrl, ...BRIDGE_URL_CANDIDATES.filter((url) => url !== activeBridgeUrl)];
     return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
-        method: 'POST',
-        url: `${BRIDGE_URL}${path}`,
-        headers: { 'Content-Type': 'application/json' },
-        data: JSON.stringify(payload),
-        timeout: timeoutMs,
-        onload: (response) => {
-          try {
-            const body = JSON.parse(response.responseText || '{}');
-            if (response.status >= 200 && response.status < 300 && body.ok !== false) {
-              resolve(body);
-            } else {
-              reject(new Error(body.error || `Bridge returned HTTP ${response.status}`));
-            }
-          } catch (error) {
-            reject(error);
+      function attempt(index, lastError = null) {
+        const bridgeUrl = candidateUrls[index];
+        if (!bridgeUrl) {
+          reject(lastError || new Error('Could not reach the local Ask Seattle bridge.'));
+          return;
+        }
+
+        try {
+          GM_xmlhttpRequest({
+            method: 'POST',
+            url: `${bridgeUrl}${path}`,
+            headers: { 'Content-Type': 'application/json' },
+            data: JSON.stringify(payload),
+            timeout: timeoutMs,
+            onload: (response) => {
+              try {
+                const body = JSON.parse(response.responseText || '{}');
+                if (response.status >= 200 && response.status < 300 && body.ok !== false) {
+                  activeBridgeUrl = bridgeUrl;
+                  resolve(body);
+                } else {
+                  reject(new Error(body.error || `Bridge returned HTTP ${response.status}`));
+                }
+              } catch (error) {
+                reject(error);
+              }
+            },
+            onerror: () => {
+              const fallbackError = new Error(`Could not reach the local Ask Seattle bridge at ${bridgeUrl}.`);
+              if (index + 1 < candidateUrls.length) {
+                attempt(index + 1, fallbackError);
+                return;
+              }
+              reject(fallbackError);
+            },
+            ontimeout: () => {
+              const fallbackError = new Error(`Timed out waiting for the local Ask Seattle bridge at ${bridgeUrl}.`);
+              if (index + 1 < candidateUrls.length) {
+                attempt(index + 1, fallbackError);
+                return;
+              }
+              reject(fallbackError);
+            },
+          });
+        } catch (error) {
+          const fallbackError = error instanceof Error ? error : new Error(String(error));
+          if (index + 1 < candidateUrls.length) {
+            attempt(index + 1, fallbackError);
+            return;
           }
-        },
-        onerror: () => reject(new Error('Could not reach the local Ask Seattle bridge.')),
-        ontimeout: () => reject(new Error('Timed out waiting for the local Ask Seattle bridge.')),
-      });
+          reject(fallbackError);
+        }
+      }
+
+      attempt(0);
     });
   }
 
@@ -356,6 +398,44 @@
     if (result.label === 'askseattle' && result.confidence_band === 'high') return 'flag';
     if (result.label === 'askseattle') return 'pending';
     return 'pass';
+  }
+
+  function reviewReasonLabel(reason) {
+    const labels = {
+      primary_borderline: 'primary verdict was borderline',
+      image_post: 'image post',
+      link_post: 'link post',
+      low_text: 'low-text post',
+      sparse_media: 'sparse-media post',
+      comparison_disagreement: 'models disagree',
+      label_changed_by_hybrid: 'hybrid changed the label',
+      confidence_changed_by_hybrid: 'hybrid changed the confidence band',
+      insufficient_comparison_support: 'not enough comparison support',
+    };
+    return labels[String(reason || '')] || String(reason || '');
+  }
+
+  function setReviewPriority(decisionContext) {
+    const priority = document.querySelector(`#${PANEL_ID} .ask-seattle-review-priority`);
+    if (!priority) return;
+    const reviewPriority = String(decisionContext?.review_priority || 'normal');
+    const reasons = Array.isArray(decisionContext?.review_reasons) ? decisionContext.review_reasons : [];
+    if (!decisionContext || reviewPriority === 'normal' || reasons.length === 0) {
+      priority.textContent = '';
+      priority.style.display = 'none';
+      return;
+    }
+
+    const prefix = reviewPriority === 'high' ? 'High-priority review' : 'Priority review';
+    priority.textContent = `${prefix}: ${reasons.map(reviewReasonLabel).join(' | ')}`;
+    priority.style.display = 'block';
+    priority.style.padding = '8px';
+    priority.style.border = reviewPriority === 'high' ? '1px solid #b00020' : '1px solid #8a6d1d';
+    priority.style.borderRadius = '6px';
+    priority.style.background = reviewPriority === 'high' ? '#fdecef' : '#fff7e0';
+    priority.style.color = reviewPriority === 'high' ? '#8a1111' : '#6f5717';
+    priority.style.lineHeight = '1.35';
+    priority.style.wordBreak = 'break-word';
   }
 
   function setEvaluationResultsPending(message) {
@@ -545,20 +625,30 @@
     }
   }
 
-  async function loadComparisonResults(checkToken, post, models, baseStatusText) {
+  async function loadComparisonResults(checkToken, post, models, baseStatusText, initialEntries = []) {
     if (!models || models.length === 0) {
       renderEvaluationResults([]);
       setStatus(baseStatusText);
       return;
     }
 
-    const entries = loadingComparisonEntries(models);
-    let completed = 0;
+    const initialByName = new Map(
+      (Array.isArray(initialEntries) ? initialEntries : [])
+        .filter((entry) => entry && entry.name)
+        .map((entry) => [entry.name, entry])
+    );
+    const entries = models.map((model) => initialByName.get(model.name) || { ...model, loading: true });
+    let completed = entries.filter((entry) => !entry.loading).length;
     renderEvaluationResults(entries);
+    if (completed >= models.length) {
+      setStatus(baseStatusText);
+      return;
+    }
     setStatus(comparisonStatusText(baseStatusText, completed, models));
 
     await Promise.all(
       models.map(async (model, index) => {
+        if (initialByName.has(model.name)) return;
         try {
           const response = await bridgePost(
             '/check-comparison',
@@ -630,25 +720,33 @@
 
     setStatus(auto ? 'Auto-checking...' : 'Checking...');
     setDecisionState('Checking current post...', 'pending');
+    setReviewPriority(null);
     setEvaluationResultsPending('Checking transformer cards...');
     try {
       const response = await bridgePost('/check', { ...post, include_comparisons: false });
       if (checkToken !== currentCheckToken) return;
-      const result = response.result;
+      const result = response.decider_result || response.result;
+      const decisionContext = response.decision_context || null;
       const bandLabel = String(result.confidence_band || '').toUpperCase();
+      const verdictPrefix = response.decider_result ? 'Hybrid says' : result.label === 'askseattle' ? 'Looks like' : 'Does not look like';
       const verdictMessage =
         result.label === 'askseattle'
           ? bandLabel === 'HIGH'
-            ? 'Looks like askseattle (high confidence)'
-            : 'Looks like askseattle (borderline)'
-          : 'Does not look like askseattle';
-      setDecisionState(verdictMessage, result.label === 'askseattle' ? 'flag' : 'pass');
-      const baseStatusText = `${result.confidence_band} ${result.label} score=${result.score.toFixed(3)} low=${result.low_threshold} high=${result.high_threshold}`;
+            ? `${verdictPrefix} askseattle (high confidence)`
+            : `${verdictPrefix} askseattle (borderline)`
+          : response.decider_result
+            ? 'Hybrid says not askseattle'
+            : 'Does not look like askseattle';
+      setDecisionState(verdictMessage, resultTone(result));
+      setReviewPriority(decisionContext);
+      const baseStatusText = `${result.model_name} ${result.confidence_band} ${result.label} score=${result.score.toFixed(3)} low=${result.low_threshold} high=${result.high_threshold}`;
       const comparisonModels = Array.isArray(response.comparison_models) ? response.comparison_models : [];
-      void loadComparisonResults(checkToken, post, comparisonModels, baseStatusText);
+      const initialComparisons = Array.isArray(response.comparisons) ? response.comparisons : [];
+      void loadComparisonResults(checkToken, post, comparisonModels, baseStatusText, initialComparisons);
     } catch (error) {
       if (checkToken !== currentCheckToken) return;
       setDecisionState('Check failed', 'error');
+      setReviewPriority(null);
       setEvaluationResultsPending('Check failed.');
       setStatus(error.message, true);
     }
@@ -831,6 +929,10 @@
     verdict.style.color = '#333';
     verdict.style.fontWeight = '600';
 
+    const reviewPriority = document.createElement('div');
+    reviewPriority.className = 'ask-seattle-review-priority';
+    reviewPriority.style.display = 'none';
+
     const evaluationsTitle = document.createElement('div');
     evaluationsTitle.className = 'ask-seattle-evaluations-title';
     evaluationsTitle.textContent = 'Transformer checks';
@@ -854,11 +956,11 @@
 
     const status = document.createElement('div');
     status.className = 'ask-seattle-status';
-    status.textContent = 'Bridge: 127.0.0.1:8765';
+    status.textContent = `Bridge: localhost:8765 | helper ${SCRIPT_VERSION}`;
     status.style.lineHeight = '1.35';
     status.style.wordBreak = 'break-word';
 
-    panel.append(title, row, autoNextLabel, queueStatus, recorded, verdict, evaluationsTitle, evaluations, status);
+    panel.append(title, row, autoNextLabel, queueStatus, recorded, verdict, reviewPriority, evaluationsTitle, evaluations, status);
     document.body.append(panel);
     setEvaluationResultsPending(isCommentPage() ? 'Waiting for auto-check...' : 'Open a post to check it');
     updateQueueStatus();
@@ -875,11 +977,13 @@
       if (!isCommentPage()) {
         seedQueueFromPage(false);
         setDecisionState('Open a post to check it');
+        setReviewPriority(null);
         setEvaluationResultsPending('Open a post to check it');
       }
       if (isCommentPage()) {
         mountPanel();
         setDecisionState('Waiting for auto-check...', 'pending');
+        setReviewPriority(null);
         setEvaluationResultsPending('Waiting for auto-check...');
         updateQueueStatus();
         refreshRecordedStatus();
@@ -899,9 +1003,11 @@
   if (!isCommentPage()) {
     seedQueueFromPage(false);
     setDecisionState('Open a post to check it');
+    setReviewPriority(null);
     setEvaluationResultsPending('Open a post to check it');
   } else {
     setDecisionState('Waiting for auto-check...', 'pending');
+    setReviewPriority(null);
     setEvaluationResultsPending('Waiting for auto-check...');
     scheduleAutoCheck();
   }

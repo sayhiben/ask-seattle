@@ -82,7 +82,7 @@ The default TF-IDF pipeline also raises `min_df` as the corpus grows:
 
 That change is there to suppress brittle low-support phrases once the reviewed label set is no longer tiny.
 
-The training harness also applies conservative slice-aware positive weighting. Right now that weighting only uses `image` and `low_text` as active levers. `sparse_media` remains in the data model and benchmark output, but it is monitoring-only until the corpus has enough support to trust that slice.
+The training harness also applies conservative slice-aware positive weighting. `image` and `low_text` are active levers immediately. `sparse_media` and `low_text_image` are also tracked, but they stay support-gated until the current split has enough positive examples to trust them. That lets the system overweight hard positives from the existing reviewed data without pretending tiny cohorts are stable enough to steer defaults.
 
 ## What TF-IDF Means Here
 
@@ -147,6 +147,8 @@ Training now chooses it by maximizing recall subject to meeting the precision ta
 
 The current minimum calibration support for the strict bucket is `5`, and the bootstrap check uses the `p20` precision across `200` deterministic resamples. If no calibration threshold satisfies the stricter gate, the training summary records the fallback reason instead of pretending the stricter evidence existed.
 
+At bridge inference time, the reported `high_threshold` can also become stricter on a per-post basis for low-text, image, and sparse-media posts. Those are the cohorts where a single lexical match is most likely to look stronger than it really is.
+
 ### Low threshold
 
 This is the lower threshold for the `borderline` band.
@@ -177,6 +179,24 @@ The predicted label is binary:
 - `not_askseattle` otherwise
 
 That means the bridge can expose more structure than a single yes/no answer without embedding moderation actions into the bridge itself.
+
+## Bridge Decider
+
+The operational retrain path is still TF-IDF. That part did not change.
+
+What changed is the default bridge policy. `make bridge` now starts with `DECIDER_POLICY=hybrid_consensus`, which means:
+
+- `/check` always returns the primary TF-IDF verdict in `result`
+- hard cases can also get a routed `decider_result` when at least two comparison models are loaded
+- the bridge surfaces `decision_context` so the userscript can show review priority and disagreement signals
+
+The hybrid score is intentionally simple. It is a weighted average of the primary bridge score plus the successfully scored comparison-model outputs. The primary model gets extra weight so the bridge does not quietly turn into a pure ensemble on every post.
+
+If you want to inspect only the primary TF-IDF behavior, run:
+
+```bash
+make bridge DECIDER_POLICY=primary_only
+```
 
 ## Why Precision-First
 

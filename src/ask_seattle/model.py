@@ -49,6 +49,9 @@ DEFAULT_MIN_HIGH_CONFIDENCE_CALIBRATION_PREDICTIONS = 5
 DEFAULT_THRESHOLD_BOOTSTRAP_SAMPLE_COUNT = 200
 DEFAULT_THRESHOLD_BOOTSTRAP_PRECISION_PERCENTILE = 0.20
 DEFAULT_THRESHOLD_BOOTSTRAP_SEED = 13
+DEFAULT_LOW_TEXT_HIGH_THRESHOLD_DELTA = 0.03
+DEFAULT_IMAGE_HIGH_THRESHOLD_DELTA = 0.04
+DEFAULT_SPARSE_MEDIA_HIGH_THRESHOLD_DELTA = 0.05
 LOGGER = logging.getLogger("ask_seattle.model")
 WORD_STOPWORDS = frozenset(
     {
@@ -1112,7 +1115,16 @@ def _effective_high_threshold_for_row(
     *,
     high_threshold: float,
 ) -> float:
-    return high_threshold
+    if not isinstance(row, dict):
+        return high_threshold
+    adjusted = float(high_threshold)
+    if str(row.get("is_low_text") or "").strip().lower() == "yes":
+        adjusted += DEFAULT_LOW_TEXT_HIGH_THRESHOLD_DELTA
+    if str(row.get("post_type") or "").strip().lower() == "image":
+        adjusted += DEFAULT_IMAGE_HIGH_THRESHOLD_DELTA
+    if bool(row.get("is_sparse_media")):
+        adjusted += DEFAULT_SPARSE_MEDIA_HIGH_THRESHOLD_DELTA
+    return min(adjusted, 0.99)
 
 
 def confidence_band_for_row(
@@ -1157,6 +1169,7 @@ def classify_post(
 
     raw_score = raw_score_rows(bundle, [row])[0]
     calibrated_score = score_rows(bundle, [row])[0]
+    effective_high_threshold = _effective_high_threshold_for_row(row, high_threshold=high_threshold)
     label = "askseattle" if calibrated_score >= low_threshold else "not_askseattle"
 
     return CheckResult(
@@ -1166,7 +1179,7 @@ def classify_post(
         display_name=str(bundle.get("display_name") or bundle.get("model_name") or bundle.get("model_type") or "unknown"),
         model_version=str(bundle.get("model_version") or bundle.get("version") or "unknown"),
         low_threshold=low_threshold,
-        high_threshold=high_threshold,
+        high_threshold=effective_high_threshold,
         score=calibrated_score,
         score_raw=raw_score,
         score_calibrated=calibrated_score,

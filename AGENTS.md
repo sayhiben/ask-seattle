@@ -267,6 +267,28 @@ Words that look unimportant can still carry useful ask-style structure. Converse
 
 Future moderation actions, dashboards, or workflows should build on top of `/check`. Do not push moderation-side effects down into the bridge unless the project goal changes explicitly.
 
+## Five things I wish I knew before I started
+
+### 1. The shipped decider is still the TF-IDF path
+
+The transformer suite is real and useful, but it is still comparison infrastructure first. Treat `models/benchmark-suite/` as evidence for future decisions, not as proof that the operational bridge path has already changed.
+
+### 2. `/r/seattle` is the evaluation reality
+
+Mixed-subreddit training data is acceptable, but promotion decisions should usually be judged on `/r/seattle`. If you are comparing variants or recommending a new default, use `EVAL_SUBREDDIT=seattle` and never sneak `subreddit` in as a model feature.
+
+### 3. Slice coverage matters more than one pretty aggregate number
+
+This project is especially vulnerable on image, low-text, and sparse-media posts. Before concluding that a change helped, inspect slice metrics and support counts, not just overall PR-AUC or one held-out precision number.
+
+### 4. Thresholding and calibration are part of the product
+
+A model can rank posts better overall and still fail the actual production gate. High-confidence precision, the minimum number of high-confidence predictions, and calibration readiness all matter just as much as the underlying model family.
+
+### 5. Most mistakes here are scope mistakes, not coding mistakes
+
+It is easy to drift into “helpful” additions that quietly change the product: new data sources, automation side effects, or benchmark-only ideas leaking into the operational path. Keep the browser-to-local-label-to-local-bridge loop explicit, and update docs whenever behavior changes.
+
 ## Things not to commit
 
 Do not commit:

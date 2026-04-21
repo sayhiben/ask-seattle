@@ -362,7 +362,7 @@ def test_train_model_bundle_from_labels_can_evaluate_only_one_subreddit(tmp_path
     assert summary["production_gate"]["minimum_high_confidence_test_predictions"] == 5
 
 
-def test_slice_aware_positive_weighting_uses_image_and_low_text_only() -> None:
+def test_slice_aware_positive_weighting_tracks_support_gated_hard_slices() -> None:
     posts = [
         training.LabeledPost(
             title="What is this?",
@@ -407,7 +407,10 @@ def test_slice_aware_positive_weighting_uses_image_and_low_text_only() -> None:
     assert weighting.sample_weights[1] == 1.0
     assert weighting.summary["bucket_weights"]["image_post"]["yes"] > 1.0
     assert weighting.summary["bucket_weights"]["low_text"]["yes"] > 1.0
-    assert "sparse_media" not in weighting.summary["bucket_weights"]
+    assert weighting.summary["bucket_weights"]["sparse_media"] == {}
+    assert weighting.summary["bucket_weights"]["low_text_image"] == {}
+    assert weighting.summary["slice_support_status"]["sparse_media"]["support_status"] == "observational"
+    assert weighting.summary["slice_support_status"]["low_text_image"]["support_status"] == "observational"
 
 
 def test_benchmark_model_variants_writes_aggregate_summary(tmp_path: Path) -> None:

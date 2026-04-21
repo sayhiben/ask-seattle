@@ -90,6 +90,8 @@ DEFAULT_BENCHMARK_SEED_MODELS = (
 )
 SPARSE_MEDIA_ACTIVE_TRAIN_POSITIVES = 10
 SPARSE_MEDIA_ACTIVE_TEST_POSITIVES = 5
+SPARSE_MEDIA_WEIGHTING_MIN_POSITIVES = 5
+LOW_TEXT_IMAGE_WEIGHTING_MIN_POSITIVES = 5
 MPS_PROACTIVE_AVAILABLE_MEMORY_FLOOR_BYTES = 8 * 1024**3
 MPS_PROACTIVE_AVAILABLE_MEMORY_DROP_BYTES = 12 * 1024**3
 LOGGER = logging.getLogger("ask_seattle.training")
@@ -4132,6 +4134,8 @@ def _slice_aware_positive_weighting(
     positive_bucket_counts: dict[str, Counter[str]] = {
         "image_post": Counter(),
         "low_text": Counter(),
+        "sparse_media": Counter(),
+        "low_text_image": Counter(),
     }
 
     for label, row in zip(labels, resolved_rows, strict=True):
@@ -4140,11 +4144,39 @@ def _slice_aware_positive_weighting(
         for slice_name, bucket in _weighting_bucket_values(row).items():
             positive_bucket_counts[slice_name][bucket] += 1
 
+    slice_support_status: dict[str, dict[str, Any]] = {}
     bucket_weights: dict[str, dict[str, float]] = {}
     for slice_name, counts in positive_bucket_counts.items():
         if not counts:
+            slice_support_status[slice_name] = {
+                "support_status": "inactive",
+                "reason": "no_positive_examples",
+                "positive_yes": 0,
+                "minimum_positive_yes": 0,
+            }
             bucket_weights[slice_name] = {}
             continue
+        minimum_positive_yes = 0
+        if slice_name == "sparse_media":
+            minimum_positive_yes = SPARSE_MEDIA_WEIGHTING_MIN_POSITIVES
+        elif slice_name == "low_text_image":
+            minimum_positive_yes = LOW_TEXT_IMAGE_WEIGHTING_MIN_POSITIVES
+        positive_yes = int(counts.get("yes", 0))
+        if positive_yes < minimum_positive_yes:
+            slice_support_status[slice_name] = {
+                "support_status": "observational",
+                "reason": "minimum_positive_yes_not_met",
+                "positive_yes": positive_yes,
+                "minimum_positive_yes": minimum_positive_yes,
+            }
+            bucket_weights[slice_name] = {}
+            continue
+        slice_support_status[slice_name] = {
+            "support_status": "active",
+            "reason": None,
+            "positive_yes": positive_yes,
+            "minimum_positive_yes": minimum_positive_yes,
+        }
         max_count = max(counts.values())
         bucket_weights[slice_name] = {
             bucket: round(
@@ -4174,6 +4206,7 @@ def _slice_aware_positive_weighting(
         "strategy": "slice_aware_positive_weighting",
         "max_slice_positive_weight": float(max_slice_positive_weight),
         "bucket_weights": bucket_weights,
+        "slice_support_status": slice_support_status,
         "train_positive_bucket_counts": {
             slice_name: dict(counts)
             for slice_name, counts in positive_bucket_counts.items()
@@ -4191,9 +4224,13 @@ def _slice_aware_positive_weighting(
 
 
 def _weighting_bucket_values(row: dict[str, Any]) -> dict[str, str]:
+    low_text = row.get("body_length_bucket") in {"none", "short"}
+    image_post = row.get("post_type") == "image"
     return {
-        "image_post": "yes" if row.get("post_type") == "image" else "no",
-        "low_text": "yes" if row.get("body_length_bucket") in {"none", "short"} else "no",
+        "image_post": "yes" if image_post else "no",
+        "low_text": "yes" if low_text else "no",
+        "sparse_media": "yes" if bool(row.get("is_sparse_media")) else "no",
+        "low_text_image": "yes" if image_post and low_text else "no",
     }
 
 

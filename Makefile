@@ -24,6 +24,7 @@ BENCHMARK_SEEDS ?= 13,21,34
 BENCHMARK_SEED_MODELS ?= transformer_deberta_v3_small,transformer_modernbert_base,transformer_neobert,transformer_modernbert_large
 LOG_LEVEL ?= INFO
 RETRAIN_EVERY ?= 0
+DECIDER_POLICY ?= hybrid_consensus
 REMOTE ?= local
 REMOTE_RUN_TIMEOUT ?= 21600
 REMOTE_WSL_HOST ?= gpu-win
@@ -132,6 +133,7 @@ help:
 		'  EVAL_SUBREDDIT=seattle  Restrict calibration/test evaluation to /r/seattle' \
 		'  SPLIT_STRATEGY=random|time  Control the train/calibration/test split policy' \
 		'  SPLIT_SEED=13           Deterministic seed for random splits' \
+		'  DECIDER_POLICY=primary_only|hybrid_consensus  Control how the bridge decides the main /check verdict' \
 		'  BENCHMARK_NOTES="..."  Attach a note to the archived benchmark history entry'
 
 runpod-bootstrap:
@@ -253,6 +255,7 @@ bridge:
 		--model $(MODEL_PATH) \
 		--labels $(LABELS) \
 		--comparison-suite $(BENCHMARK_SUITE_SUMMARY) \
+		--decider-policy $(DECIDER_POLICY) \
 		--log-level $(LOG_LEVEL) \
 		--retrain-every $(RETRAIN_EVERY) \
 		$(SPLIT_ARGS)$(EVAL_SUBREDDIT_ARG)

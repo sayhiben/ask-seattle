@@ -67,6 +67,7 @@ Responsibilities:
 - optionally load comparison bundles from the benchmark-suite summary
 - expose localhost-only HTTP endpoints
 - classify posts
+- optionally route hard cases through a bridge-side hybrid consensus decider
 - append reviewed labels
 - optionally auto-retrain and hot-reload the model
 
@@ -136,7 +137,9 @@ The bridge accepts title and body text that is already visible in the browser. T
 
 The operational retrain path is TF-IDF + logistic regression because it is fast, easy to inspect, cheap to retrain, and strong enough for repeated wording patterns.
 
-That does not mean the repository only supports one model family. The benchmark suite now compares five local model paths on the same split so the project can make evidence-based promotion decisions without changing the default bridge model prematurely.
+That does not mean the repository only supports one model family. The benchmark suite now compares five local model paths on the same split so the project can make evidence-based promotion decisions without changing the default retrain path prematurely.
+
+The bridge can now optionally use those loaded comparison models at inference time on hard slices. That is still a bridge-layer decision policy, not a second operational training path.
 
 ### One shared benchmark manifest
 
