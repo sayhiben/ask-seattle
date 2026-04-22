@@ -18,6 +18,7 @@ The normal operator entry points are still the repository make targets:
 
 - `make runpod-bootstrap`
 - `make runpod-cleanup`
+- `make runpod-prune-volumes`
 - `make install-git-hooks`
 - `make secret-scan`
 - `make retrain`
@@ -50,6 +51,7 @@ make benchmark-variants REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark-seed-sweep REMOTE=runpod EVAL_SUBREDDIT=seattle
 make retrain REMOTE=runpod RUNPOD_FALLBACK_GPU_TYPES="NVIDIA L4,NVIDIA RTX A4000" EVAL_SUBREDDIT=seattle
 make runpod-cleanup
+make runpod-prune-volumes
 make retrain REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=wsl REMOTE_WSL_HOST=gpu-win EVAL_SUBREDDIT=seattle
 ```

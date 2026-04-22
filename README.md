@@ -225,7 +225,7 @@ The default RunPod settings are now reliability-first and VRAM-biased:
    - `US-GA-2`
 
 The RunPod helper now prefers 48 GB cards first because they materially reduce long-context training failures while staying in a reasonable on-demand price band, and it keeps the `4090` in the primary set for faster allocation when those higher-VRAM cards are not available. The helper also performs a hard GPU smoke test before syncing labels or starting training, so it fails fast if CUDA is not actually usable inside the pod.
-Successful RunPod cache volumes are now retained for 3 days by default so the next run can reuse the checkout, virtualenv, and model caches, but pods are still deleted at the end of every run.
+Successful RunPod cache volumes are now retained for 3 days by default so the next run can reuse the checkout, virtualenv, and model caches, but pods are still deleted at the end of every run. Expired retained volumes are no longer deleted opportunistically before reuse; instead, prune them explicitly with `make runpod-prune-volumes` or schedule that target locally on your Mac.
 If a retained cache volume gets pinned to a region that no longer has your preferred GPU, the helper now tries a bounded same-datacenter fallback GPU list before giving up. If none of those GPUs can be allocated, it preserves the cache by default and fails clearly. Opt into relocation with `RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE=1`, or delete the cache explicitly with `make runpod-cleanup`.
 Pod creation now uses the official RunPod REST API directly, with `runpodctl` left in place for the simpler discovery, SSH, volume, and cleanup operations.
 

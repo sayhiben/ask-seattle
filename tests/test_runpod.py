@@ -19,7 +19,6 @@ from ask_seattle.runpod import (
     candidate_datacenters,
     candidate_gpu_ids_for_existing_volume,
     cleanup_remote_workspace,
-    cleanup_expired_cached_volume,
     create_pod,
     datacenter_has_gpu,
     ensure_clean_worktree,
@@ -30,6 +29,8 @@ from ask_seattle.runpod import (
     pull_artifacts,
     wait_for_pod_ready,
     provision_volume_and_pod,
+    prune_expired_cached_volumes,
+    reconcile_cached_volume_lease,
     remote_clone_url,
     select_datacenter,
     is_retryable_pod_create_error,
@@ -518,7 +519,7 @@ def test_ensure_clean_worktree_raises_for_dirty_repo(monkeypatch: pytest.MonkeyP
         ensure_clean_worktree(tmp_path)
 
 
-def test_cleanup_expired_cached_volume_deletes_volume_and_lease(
+def test_reconcile_cached_volume_lease_keeps_expired_volume_for_reuse(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -573,10 +574,105 @@ def test_cleanup_expired_cached_volume_deletes_volume_and_lease(
     deleted: list[str] = []
     monkeypatch.setattr(runpod, "delete_network_volume", lambda volume_id: deleted.append(volume_id))
 
-    cleanup_expired_cached_volume(config)
+    reconcile_cached_volume_lease(config)
+
+    assert deleted == []
+    assert lease_path.exists()
+
+
+def test_prune_expired_cached_volumes_deletes_volume_and_lease(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from ask_seattle import runpod
+
+    lease_dir = tmp_path / "meta" / "volumes"
+    lease_dir.mkdir(parents=True, exist_ok=True)
+    lease_path = lease_dir / "ask-seattle-train-sayhiben.json"
+    lease_path.write_text(
+        '{"expires_at":"2020-01-01T00:00:00Z","volume_id":"vol-123","volume_name":"ask-seattle-train-sayhiben"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runpod,
+        "list_network_volumes",
+        lambda: [
+            runpod.NetworkVolume(
+                volume_id="vol-123",
+                name="ask-seattle-train-sayhiben",
+                data_center_id="EU-RO-1",
+                size_gb=100,
+            )
+        ],
+    )
+    monkeypatch.setattr(runpod, "list_pod_payloads", lambda **kwargs: [])
+    deleted: list[str] = []
+    monkeypatch.setattr(runpod, "delete_network_volume", lambda volume_id: deleted.append(volume_id))
+
+    results = prune_expired_cached_volumes(tmp_path / "meta")
 
     assert deleted == ["vol-123"]
     assert not lease_path.exists()
+    assert results == [
+        {
+            "action": "deleted",
+            "volume_name": "ask-seattle-train-sayhiben",
+            "volume_id": "vol-123",
+            "reason": "lease_expired",
+        }
+    ]
+
+
+def test_prune_expired_cached_volumes_skips_attached_active_volume(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from ask_seattle import runpod
+
+    lease_dir = tmp_path / "meta" / "volumes"
+    lease_dir.mkdir(parents=True, exist_ok=True)
+    lease_path = lease_dir / "ask-seattle-train-sayhiben.json"
+    lease_path.write_text(
+        '{"expires_at":"2020-01-01T00:00:00Z","volume_id":"vol-123","volume_name":"ask-seattle-train-sayhiben"}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        runpod,
+        "list_network_volumes",
+        lambda: [
+            runpod.NetworkVolume(
+                volume_id="vol-123",
+                name="ask-seattle-train-sayhiben",
+                data_center_id="EU-RO-1",
+                size_gb=100,
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        runpod,
+        "list_pod_payloads",
+        lambda **kwargs: [{"id": "pod-123", "name": "test-pod", "desiredStatus": "RUNNING"}],
+    )
+    monkeypatch.setattr(
+        runpod,
+        "get_pod_payload",
+        lambda pod_id: {"id": pod_id, "networkVolumeId": "vol-123", "desiredStatus": "RUNNING"},
+    )
+    deleted: list[str] = []
+    monkeypatch.setattr(runpod, "delete_network_volume", lambda volume_id: deleted.append(volume_id))
+
+    results = prune_expired_cached_volumes(tmp_path / "meta")
+
+    assert deleted == []
+    assert lease_path.exists()
+    assert results == [
+        {
+            "action": "skipped_attached",
+            "volume_name": "ask-seattle-train-sayhiben",
+            "volume_id": "vol-123",
+            "reason": "attached_to_active_pod",
+        }
+    ]
 
 
 def test_pull_artifacts_uses_uncompressed_rsync_for_large_directories(

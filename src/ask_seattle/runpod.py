@@ -180,6 +180,13 @@ def main(argv: list[str] | None = None) -> int:
     _add_common_arguments(cleanup_parser, include_target=False)
     cleanup_parser.set_defaults(func=cleanup_command)
 
+    prune_parser = subparsers.add_parser(
+        "prune-volumes",
+        help="Delete expired retained RunPod cache volumes recorded in local metadata.",
+    )
+    prune_parser.add_argument("--benchmark-meta-dir", default="models/runpod-meta")
+    prune_parser.set_defaults(func=prune_volumes_command)
+
     run_parser = subparsers.add_parser("run", help="Run a make target on an ephemeral RunPod Pod.")
     _add_common_arguments(run_parser, include_target=True)
     run_parser.set_defaults(func=run_command)
@@ -207,6 +214,47 @@ def cleanup_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def prune_volumes_command(args: argparse.Namespace) -> int:
+    ensure_local_prerequisites()
+    ensure_runpodctl_features()
+    meta_dir = Path(args.benchmark_meta_dir).resolve()
+    results = prune_expired_cached_volumes(meta_dir)
+    deleted_count = 0
+    stale_lease_count = 0
+    skipped_attached_count = 0
+    skipped_unexpired_count = 0
+    skipped_invalid_count = 0
+    for result in results:
+        action = str(result.get("action") or "")
+        volume_name = str(result.get("volume_name") or "<unknown>")
+        volume_id = str(result.get("volume_id") or "")
+        reason = str(result.get("reason") or "")
+        suffix = f" id={volume_id}" if volume_id else ""
+        message = f"prune {action} volume={volume_name}{suffix}"
+        if reason:
+            message = f"{message} reason={reason}"
+        print_runpod(message)
+        if action == "deleted":
+            deleted_count += 1
+        elif action == "deleted_stale_lease":
+            stale_lease_count += 1
+        elif action == "skipped_attached":
+            skipped_attached_count += 1
+        elif action == "skipped_unexpired":
+            skipped_unexpired_count += 1
+        else:
+            skipped_invalid_count += 1
+    print_runpod(
+        "prune summary "
+        f"deleted={deleted_count} "
+        f"stale_leases={stale_lease_count} "
+        f"skipped_attached={skipped_attached_count} "
+        f"skipped_unexpired={skipped_unexpired_count} "
+        f"skipped_invalid={skipped_invalid_count}"
+    )
+    return 0
+
+
 def run_command(args: argparse.Namespace) -> int:
     config = config_from_args(args)
     target = str(args.target)
@@ -218,7 +266,7 @@ def run_command(args: argparse.Namespace) -> int:
     remote_origin_url = remote_clone_url(origin_url)
     ensure_runpod_ssh_key(config.ssh_key_path)
     commit_sha = push_current_head(config.repo_root)
-    cleanup_expired_cached_volume(config)
+    reconcile_cached_volume_lease(config)
     existing_volume_before_run = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
 
     pod_name = build_pod_name(target=target, commit_sha=commit_sha)
@@ -1324,7 +1372,7 @@ def list_network_volumes() -> list[NetworkVolume]:
     return volumes
 
 
-def list_pods(*, name: str | None = None, include_all: bool = False) -> list[PodInfo]:
+def list_pod_payloads(*, name: str | None = None, include_all: bool = False) -> list[dict[str, Any]]:
     command: list[str] = ["runpodctl", "pod", "list"]
     if include_all:
         command.append("--all")
@@ -1334,11 +1382,11 @@ def list_pods(*, name: str | None = None, include_all: bool = False) -> list[Pod
     payload = json.loads(output or "[]")
     if not isinstance(payload, list):
         raise RunPodOrchestrationError("unexpected runpodctl pod list output")
-    pods: list[PodInfo] = []
-    for item in payload:
-        if isinstance(item, dict):
-            pods.append(parse_pod_info(item))
-    return pods
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def list_pods(*, name: str | None = None, include_all: bool = False) -> list[PodInfo]:
+    return [parse_pod_info(item) for item in list_pod_payloads(name=name, include_all=include_all)]
 
 
 def reconcile_pod_by_name(pod_name: str, *, wait_timeout_seconds: int) -> PodInfo | None:
@@ -1401,7 +1449,7 @@ def cleanup_runpod_resources(*, pod_id: str, volume_id: str, delete_volume: bool
         delete_network_volume(volume_id)
 
 
-def cleanup_expired_cached_volume(config: RunPodConfig) -> None:
+def reconcile_cached_volume_lease(config: RunPodConfig) -> None:
     existing_volume = next((item for item in list_network_volumes() if item.name == config.volume_name), None)
     lease = load_volume_lease(config)
     if existing_volume is None:
@@ -1415,9 +1463,6 @@ def cleanup_expired_cached_volume(config: RunPodConfig) -> None:
     if expires_at is None:
         record_volume_retention(config, existing_volume)
         return
-    if datetime.now(UTC) >= expires_at:
-        delete_network_volume(existing_volume.volume_id)
-        delete_volume_lease(config)
 
 
 def delete_cached_volume(config: RunPodConfig) -> None:
@@ -1441,6 +1486,167 @@ def record_volume_retention(config: RunPodConfig, volume: NetworkVolume) -> None
             "volume_name": volume.name,
         },
     )
+
+
+def prune_expired_cached_volumes(meta_dir: Path) -> list[dict[str, str]]:
+    leases = list_volume_leases(meta_dir)
+    if not leases:
+        return []
+    existing_volumes = list_network_volumes()
+    existing_by_id = {volume.volume_id: volume for volume in existing_volumes}
+    existing_by_name = {volume.name: volume for volume in existing_volumes}
+    candidate_ids = {lease["volume_id"] for lease in leases if lease["volume_id"]}
+    candidate_name_to_ids: dict[str, set[str]] = {}
+    for lease in leases:
+        volume_name = str(lease["volume_name"] or "")
+        volume_id = str(lease["volume_id"] or "")
+        if volume_name and volume_id:
+            candidate_name_to_ids.setdefault(volume_name, set()).add(volume_id)
+    attached_volume_ids = attached_candidate_volume_ids(candidate_ids, candidate_name_to_ids)
+    now = datetime.now(UTC)
+    results: list[dict[str, str]] = []
+    for lease in leases:
+        lease_path = lease["lease_path"]
+        volume_id = lease["volume_id"]
+        volume_name = lease["volume_name"]
+        expires_at = lease["expires_at"]
+        existing = existing_by_id.get(volume_id) if volume_id else None
+        if existing is None and volume_name:
+            existing = existing_by_name.get(volume_name)
+        if existing is None:
+            lease_path.unlink(missing_ok=True)
+            results.append(
+                {
+                    "action": "deleted_stale_lease",
+                    "volume_name": volume_name,
+                    "volume_id": volume_id,
+                    "reason": "volume_missing",
+                }
+            )
+            continue
+        if expires_at is None:
+            results.append(
+                {
+                    "action": "skipped_invalid",
+                    "volume_name": existing.name,
+                    "volume_id": existing.volume_id,
+                    "reason": "invalid_or_missing_expires_at",
+                }
+            )
+            continue
+        if now < expires_at:
+            results.append(
+                {
+                    "action": "skipped_unexpired",
+                    "volume_name": existing.name,
+                    "volume_id": existing.volume_id,
+                    "reason": "lease_active",
+                }
+            )
+            continue
+        if existing.volume_id in attached_volume_ids:
+            results.append(
+                {
+                    "action": "skipped_attached",
+                    "volume_name": existing.name,
+                    "volume_id": existing.volume_id,
+                    "reason": "attached_to_active_pod",
+                }
+            )
+            continue
+        delete_network_volume(existing.volume_id)
+        lease_path.unlink(missing_ok=True)
+        results.append(
+            {
+                "action": "deleted",
+                "volume_name": existing.name,
+                "volume_id": existing.volume_id,
+                "reason": "lease_expired",
+            }
+        )
+    return results
+
+
+def list_volume_leases(meta_dir: Path) -> list[dict[str, Any]]:
+    lease_dir = meta_dir / "volumes"
+    if not lease_dir.exists():
+        return []
+    leases: list[dict[str, Any]] = []
+    for lease_path in sorted(lease_dir.glob("*.json")):
+        try:
+            payload = json.loads(lease_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            payload = None
+        if not isinstance(payload, dict):
+            leases.append(
+                {
+                    "lease_path": lease_path,
+                    "volume_id": "",
+                    "volume_name": lease_path.stem,
+                    "expires_at": None,
+                }
+            )
+            continue
+        leases.append(
+            {
+                "lease_path": lease_path,
+                "volume_id": str(payload.get("volume_id") or "").strip(),
+                "volume_name": str(payload.get("volume_name") or "").strip(),
+                "expires_at": parse_utc_timestamp(str(payload.get("expires_at") or "")),
+            }
+        )
+    return leases
+
+
+def attached_candidate_volume_ids(candidate_ids: set[str], candidate_name_to_ids: dict[str, set[str]]) -> set[str]:
+    if not candidate_ids and not candidate_name_to_ids:
+        return set()
+    active_attached: set[str] = set()
+    pod_payloads = list_pod_payloads(include_all=True)
+    for item in pod_payloads:
+        pod = parse_pod_info(item)
+        if is_terminal_pod_status(pod.desired_status):
+            continue
+        payload = item
+        if pod.pod_id:
+            try:
+                payload = get_pod_payload(pod.pod_id)
+            except RunPodOrchestrationError:
+                payload = item
+        active_attached.update(extract_matching_volume_ids(payload, candidate_ids, candidate_name_to_ids))
+    return active_attached
+
+
+def extract_matching_volume_ids(
+    payload: Any,
+    candidate_ids: set[str],
+    candidate_name_to_ids: dict[str, set[str]],
+) -> set[str]:
+    matches: set[str] = set()
+
+    def _visit(value: Any) -> None:
+        if isinstance(value, dict):
+            for nested in value.values():
+                _visit(nested)
+            return
+        if isinstance(value, list):
+            for nested in value:
+                _visit(nested)
+            return
+        if isinstance(value, str):
+            token = value.strip()
+            if token in candidate_ids:
+                matches.add(token)
+            elif token in candidate_name_to_ids:
+                matches.update(candidate_name_to_ids[token])
+
+    _visit(payload)
+    return matches
+
+
+def is_terminal_pod_status(status: str) -> bool:
+    normalized = status.strip().upper()
+    return normalized in {"CANCELLED", "COMPLETED", "DELETED", "EXITED", "FAILED", "STOPPED", "TERMINATED"}
 
 
 def print_runpod(message: str) -> None:
@@ -1612,8 +1818,15 @@ def datacenter_has_gpu(datacenter: dict[str, Any], gpu_id: str) -> bool:
 
 
 def get_pod(pod_id: str) -> PodInfo:
+    return parse_pod_info(get_pod_payload(pod_id))
+
+
+def get_pod_payload(pod_id: str) -> dict[str, Any]:
     output = run_command_capture(("runpodctl", "pod", "get", pod_id))
-    return parse_pod_info(json.loads(output or "{}"))
+    payload = json.loads(output or "{}")
+    if not isinstance(payload, dict):
+        raise RunPodOrchestrationError("unexpected pod payload type")
+    return payload
 
 
 def parse_pod_info(payload: dict[str, Any]) -> PodInfo:

@@ -1,4 +1,4 @@
-.PHONY: help runpod-bootstrap runpod-cleanup install-git-hooks secret-scan retrain benchmark benchmark-variants benchmark-seed-sweep benchmark-suite bridge
+.PHONY: help runpod-bootstrap runpod-cleanup runpod-prune-volumes install-git-hooks secret-scan retrain benchmark benchmark-variants benchmark-seed-sweep benchmark-suite bridge
 
 ASK_SEATTLE ?= PYTHONPATH=src python3 -m ask_seattle.cli
 RUNPOD_TRAIN ?= PYTHONPATH=src python3 scripts/runpod_train.py
@@ -110,6 +110,7 @@ help:
 	@printf '%s\n' \
 		'make runpod-bootstrap   Verify GitHub/RunPod prerequisites, create origin when missing, and register the local SSH key with RunPod' \
 		'make runpod-cleanup     Delete the retained RunPod cache volume for the current contributor settings' \
+		'make runpod-prune-volumes Delete expired retained RunPod cache volumes recorded in local metadata' \
 		'make install-git-hooks  Install the repo pre-commit hook that runs the secret scan on staged files' \
 		'make secret-scan        Scan tracked repo files for likely secrets before commit or push' \
 		'make retrain           Retrain the operational TF-IDF model and all suite models without benchmarking' \
@@ -138,6 +139,9 @@ runpod-bootstrap:
 
 runpod-cleanup:
 	$(RUNPOD_TRAIN) cleanup $(RUNPOD_COMMON_ARGS)
+
+runpod-prune-volumes:
+	$(RUNPOD_TRAIN) prune-volumes --benchmark-meta-dir $(RUNPOD_META_DIR)
 
 install-git-hooks:
 	git config core.hooksPath .githooks

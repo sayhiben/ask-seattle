@@ -10,7 +10,7 @@ This path keeps the existing project boundary intact:
 - reviewed labels stay local to each contributor
 - the label file is synced to the Pod for one run, then used as a normal local input there
 - the Pod is ephemeral; persistence comes from a contributor-specific network volume
-- successful cache volumes are retained for 3 days by default, then cleaned up on the next RunPod command
+- successful cache volumes are retained for 3 days by default and can be pruned later with a separate local cleanup command
 - the retained volume now keeps a warm repo checkout, virtualenv, and model/download caches, and only rebuilds the venv when the dependency environment key changes or the cached venv fails a health check
 
 ## What The RunPod Path Does
@@ -141,7 +141,7 @@ The retained virtualenv is no longer rebuilt on every run. The bootstrap compare
 
 If that key still matches and the cached venv passes a health check, the helper reuses it directly.
 
-Expired cache volumes are deleted opportunistically at the start of the next RunPod command.
+Expired cache volumes are not deleted opportunistically at the start of the next RunPod command anymore. Reuse still works even if the lease is old; pruning is now a separate local cleanup action.
 
 If a retained cache volume is pinned to a datacenter that no longer has your preferred GPU capacity, the helper first tries a bounded same-datacenter fallback GPU list. That keeps the same network volume warm when a slightly weaker or slightly more expensive GPU is the only thing available in that region.
 
@@ -204,6 +204,12 @@ Delete the retained cache volume immediately with:
 
 ```bash
 make runpod-cleanup
+```
+
+Prune any expired retained cache volumes recorded in local metadata with:
+
+```bash
+make runpod-prune-volumes
 ```
 
 The default datacenter preference order is:
