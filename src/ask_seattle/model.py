@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
+import gc
 import json
 import logging
 from math import ceil
@@ -91,6 +92,7 @@ DEFAULT_CHAR_WEIGHT = 0.25
 DEFAULT_METADATA_WEIGHT = 0.4
 DEFAULT_TFIDF_URL_NORMALIZATION = True
 DEFAULT_TFIDF_STRIP_URLS = False
+STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY = "stacked_transformer_decider"
 
 
 class TextFieldExtractor(BaseEstimator, TransformerMixin):
@@ -884,14 +886,17 @@ def load_model(path: str | Path) -> dict[str, Any]:
     if not isinstance(bundle, dict):
         msg = f"{path} is not an ask-seattle model bundle"
         raise ValueError(msg)
+    model_family = str(bundle.get("model_family") or bundle.get("model_type") or "")
+    if model_family == STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY:
+        return _load_stacked_transformer_bundle_from_joblib(bundle, source_path=model_path)
+    if model_family == "transformer_sequence_classifier":
+        return _load_transformer_bundle_from_joblib(bundle, source_path=model_path)
+    if model_family == "causal_lm_classifier":
+        return _load_causal_lm_bundle_from_joblib(bundle, source_path=model_path)
+    if model_family == "semantic_embedding" and "classifier" in bundle:
+        return _load_semantic_bundle(bundle)
     if "model" in bundle:
         return _normalize_tfidf_bundle(bundle)
-    if bundle.get("model_family") == "semantic_embedding" and "classifier" in bundle:
-        return _load_semantic_bundle(bundle)
-    if bundle.get("model_family") == "transformer_sequence_classifier":
-        return _load_transformer_bundle_from_joblib(bundle, source_path=model_path)
-    if bundle.get("model_family") == "causal_lm_classifier":
-        return _load_causal_lm_bundle_from_joblib(bundle, source_path=model_path)
     msg = f"{path} is not an ask-seattle model bundle"
     raise ValueError(msg)
 
@@ -964,7 +969,81 @@ def raw_score_rows(bundle: dict[str, Any], rows: list[dict[str, str]]) -> list[f
         return _transformer_positive_probabilities(bundle, rows)
     if family == "causal_lm_classifier":
         return _causal_lm_positive_probabilities(bundle, rows)
+    if family == STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY:
+        return _stacked_transformer_positive_probabilities(bundle, rows)
     raise ValueError(f"Unsupported model family: {family}")
+
+
+def stacked_transformer_feature_names(component_names: list[str]) -> list[str]:
+    return [
+        *[f"score_{name}" for name in component_names],
+        "score_mean",
+        "score_max",
+        "score_min",
+        "score_spread",
+        "score_top_gap",
+        "post_type_text",
+        "post_type_link",
+        "post_type_image",
+        "post_type_other",
+        "is_low_text",
+        "is_sparse_media",
+        "is_crosspost_yes",
+    ]
+
+
+def stacked_transformer_feature_matrix(
+    rows: list[dict[str, Any]],
+    component_scores_by_name: dict[str, list[float]],
+    *,
+    component_names: list[str],
+) -> np.ndarray:
+    if not component_names:
+        raise ValueError("stacked transformer feature matrix requires at least one component model")
+    column_scores = [
+        np.asarray(component_scores_by_name.get(name) or [], dtype=np.float32)
+        for name in component_names
+    ]
+    expected_size = len(rows)
+    if any(scores.shape[0] != expected_size for scores in column_scores):
+        raise ValueError("stacked transformer component scores must match row count")
+    score_matrix = np.column_stack(column_scores).astype(np.float32)
+    sorted_scores = np.sort(score_matrix, axis=1)
+    top_scores = sorted_scores[:, -1]
+    second_scores = sorted_scores[:, -2] if score_matrix.shape[1] > 1 else sorted_scores[:, -1]
+    post_type_text: list[float] = []
+    post_type_link: list[float] = []
+    post_type_image: list[float] = []
+    post_type_other: list[float] = []
+    low_text: list[float] = []
+    sparse_media: list[float] = []
+    crosspost_yes: list[float] = []
+    for row in rows:
+        post_type = str(row.get("post_type") or "").strip().lower()
+        post_type_text.append(1.0 if post_type == "text" else 0.0)
+        post_type_link.append(1.0 if post_type == "link" else 0.0)
+        post_type_image.append(1.0 if post_type == "image" else 0.0)
+        post_type_other.append(1.0 if post_type not in {"text", "link", "image"} else 0.0)
+        low_text.append(1.0 if str(row.get("is_low_text") or "").strip().lower() == "yes" else 0.0)
+        sparse_media.append(1.0 if bool(row.get("is_sparse_media")) else 0.0)
+        crosspost_yes.append(1.0 if str(row.get("is_crosspost") or "").strip().lower() == "yes" else 0.0)
+    return np.column_stack(
+        [
+            score_matrix,
+            np.mean(score_matrix, axis=1, dtype=np.float32),
+            np.max(score_matrix, axis=1),
+            np.min(score_matrix, axis=1),
+            np.max(score_matrix, axis=1) - np.min(score_matrix, axis=1),
+            top_scores - second_scores,
+            np.asarray(post_type_text, dtype=np.float32),
+            np.asarray(post_type_link, dtype=np.float32),
+            np.asarray(post_type_image, dtype=np.float32),
+            np.asarray(post_type_other, dtype=np.float32),
+            np.asarray(low_text, dtype=np.float32),
+            np.asarray(sparse_media, dtype=np.float32),
+            np.asarray(crosspost_yes, dtype=np.float32),
+        ]
+    ).astype(np.float32)
 
 
 def positive_probabilities(model: Pipeline, rows: list[dict[str, str]]) -> list[float]:
@@ -1049,24 +1128,103 @@ def _transformer_positive_probabilities(bundle: dict[str, Any], rows: list[dict[
     if model is None or tokenizer is None:
         raise ValueError("Transformer bundle is missing model or tokenizer")
     device = _bundle_runtime_device(bundle, torch)
+    try:
+        return _transformer_positive_probabilities_on_device(bundle, rows, device=device, torch_module=torch)
+    except (NotImplementedError, RuntimeError) as exc:
+        if device == "mps" and _should_retry_transformer_inference_on_cpu(exc):
+            LOGGER.warning(
+                "transformer inference leaving mps model_id=%s reason=%s retrying_runtime=cpu",
+                bundle.get("model_id") or "",
+                str(exc),
+            )
+            _clear_torch_inference_memory(torch)
+            return _transformer_positive_probabilities_on_device(bundle, rows, device="cpu", torch_module=torch)
+        raise
+
+
+def _transformer_positive_probabilities_on_device(
+    bundle: dict[str, Any],
+    rows: list[dict[str, str]],
+    *,
+    device: str,
+    torch_module: Any,
+) -> list[float]:
+    model = bundle.get("model")
+    tokenizer = bundle.get("tokenizer")
+    if model is None or tokenizer is None:
+        raise ValueError("Transformer bundle is missing model or tokenizer")
+    batch_size = _transformer_inference_batch_size(bundle)
 
     titles = [str(row.get("title") or "") for row in rows]
     bodies = [str(row.get("body") or "") for row in rows]
-    encoded = tokenizer(
-        titles,
-        bodies,
-        truncation=True,
-        max_length=int(bundle.get("max_length") or 384),
-        padding=True,
-        return_tensors="pt",
-    )
-    encoded = _move_token_batch_to_device(encoded, device=device, torch_module=torch)
     model.to(device)
     model.eval()
-    with torch.no_grad():
-        outputs = model(**encoded)
-        logits = outputs.get("logits") if isinstance(outputs, dict) else outputs.logits
-    return _positive_scores_from_logits(logits.detach().cpu().numpy())
+    probabilities: list[float] = []
+    max_length = int(bundle.get("max_length") or 384)
+    padding_strategy: bool | str = "max_length" if device == "mps" else True
+    with torch_module.no_grad():
+        for start in range(0, len(rows), batch_size):
+            batch_titles = titles[start : start + batch_size]
+            batch_bodies = bodies[start : start + batch_size]
+            encoded = tokenizer(
+                batch_titles,
+                batch_bodies,
+                truncation=True,
+                max_length=max_length,
+                padding=padding_strategy,
+                return_tensors="pt",
+            )
+            encoded = _move_token_batch_to_device(encoded, device=device, torch_module=torch_module)
+            outputs = model(**encoded)
+            logits = outputs.get("logits") if isinstance(outputs, dict) else outputs.logits
+            probabilities.extend(_positive_scores_from_logits(logits.detach().cpu().numpy()))
+    return probabilities
+
+
+def _should_retry_transformer_inference_on_cpu(exc: BaseException) -> bool:
+    if isinstance(exc, NotImplementedError):
+        return True
+    message = str(exc).lower()
+    retry_signals = (
+        "mps",
+        "metal",
+        "placeholder storage",
+        "not implemented",
+        "out of memory",
+        "invalid buffer",
+    )
+    return any(signal in message for signal in retry_signals)
+
+
+def _clear_torch_inference_memory(torch_module: Any) -> None:
+    gc.collect()
+    cuda_backend = getattr(torch_module, "cuda", None)
+    if cuda_backend is not None and hasattr(cuda_backend, "is_available") and cuda_backend.is_available():
+        empty_cache = getattr(cuda_backend, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+    mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+    if mps_backend is not None and hasattr(mps_backend, "is_available") and mps_backend.is_available():
+        mps_module = getattr(torch_module, "mps", None)
+        empty_cache = getattr(mps_module, "empty_cache", None)
+        if callable(empty_cache):
+            empty_cache()
+
+
+def _transformer_inference_batch_size(bundle: dict[str, Any]) -> int:
+    training_args = bundle.get("training_args")
+    explicit_value = bundle.get("inference_batch_size")
+    raw_value = explicit_value or bundle.get("per_device_eval_batch_size") or (
+        training_args.get("per_device_eval_batch_size")
+        if isinstance(training_args, dict)
+        else None
+    )
+    try:
+        if explicit_value is not None:
+            return max(1, int(raw_value))
+        return max(8, int(raw_value or 8))
+    except (TypeError, ValueError):
+        return 8
 
 
 def _causal_lm_positive_probabilities(bundle: dict[str, Any], rows: list[dict[str, str]]) -> list[float]:
@@ -1100,6 +1258,31 @@ def _causal_lm_positive_probabilities(bundle: dict[str, Any], rows: list[dict[st
     for ask_score, not_score in zip(ask_scores, not_scores, strict=True):
         probabilities.append(_safe_binary_completion_probability(ask_score, not_score))
     return probabilities
+
+
+def _stacked_transformer_positive_probabilities(bundle: dict[str, Any], rows: list[dict[str, str]]) -> list[float]:
+    classifier = bundle.get("model")
+    components = list(bundle.get("component_models") or [])
+    if classifier is None or not components:
+        raise ValueError("Stacked transformer decider bundle is missing classifier or component models")
+    component_names = [str(component.get("name") or "") for component in components if str(component.get("name") or "")]
+    if not component_names:
+        raise ValueError("Stacked transformer decider bundle is missing component model names")
+    component_scores_by_name: dict[str, list[float]] = {}
+    for component in components:
+        name = str(component.get("name") or "").strip()
+        component_bundle = component.get("bundle")
+        if not name or not isinstance(component_bundle, dict):
+            raise ValueError("Stacked transformer decider component bundle is incomplete")
+        component_scores_by_name[name] = score_rows(component_bundle, rows)
+    feature_matrix = stacked_transformer_feature_matrix(
+        rows,
+        component_scores_by_name,
+        component_names=component_names,
+    )
+    probabilities = classifier.predict_proba(feature_matrix)
+    positive_index = list(classifier.classes_).index(1)
+    return [float(row[positive_index]) for row in probabilities]
 
 
 def confidence_band_for_score(score: float, *, low_threshold: float, high_threshold: float) -> str:
@@ -1889,6 +2072,43 @@ def _load_causal_lm_bundle_from_joblib(bundle: dict[str, Any], *, source_path: P
     return _load_causal_lm_runtime_bundle(normalized, model_dir=model_dir)
 
 
+def _load_stacked_transformer_bundle_from_joblib(bundle: dict[str, Any], *, source_path: Path) -> dict[str, Any]:
+    normalized = dict(bundle)
+    components = []
+    for component in bundle.get("component_models") or []:
+        if not isinstance(component, dict):
+            continue
+        artifact_reference = component.get("artifact_path")
+        if not artifact_reference:
+            raise ValueError(f"{source_path} is missing stacked decider component artifact metadata")
+        resolved_artifact = _resolve_bundle_reference_path(
+            artifact_reference,
+            source_path=source_path,
+            label="stacked-transformer component",
+        )
+        loaded_bundle = load_model(resolved_artifact)
+        if str(loaded_bundle.get("model_family") or "") != "transformer_sequence_classifier":
+            raise ValueError(
+                f"{source_path} component {resolved_artifact} is not a transformer_sequence_classifier bundle"
+            )
+        components.append(
+            {
+                "name": str(component.get("name") or loaded_bundle.get("model_name") or resolved_artifact.stem),
+                "display_name": component.get("display_name") or loaded_bundle.get("display_name"),
+                "model_id": component.get("model_id") or loaded_bundle.get("model_id"),
+                "artifact_path": str(resolved_artifact),
+                "bundle": loaded_bundle,
+            }
+        )
+    normalized["component_models"] = components
+    normalized.setdefault("model_family", STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY)
+    normalized.setdefault("model_name", STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY)
+    normalized.setdefault("model_version", str(normalized.get("version") or __version__))
+    _apply_threshold_policy_defaults(normalized)
+    _apply_representation_defaults(normalized)
+    return normalized
+
+
 def _resolve_bundle_model_dir(
     bundle: dict[str, Any],
     *,
@@ -1921,6 +2141,28 @@ def _resolve_bundle_model_dir(
     raise ValueError(
         f"{source_path} references missing {family_label} artifact directory {candidate}"
     )
+
+
+def _resolve_bundle_reference_path(reference: Any, *, source_path: Path, label: str) -> Path:
+    candidate = Path(str(reference))
+    if not candidate.is_absolute():
+        resolved = (source_path.parent / candidate).resolve()
+        if resolved.exists():
+            return resolved
+        raise ValueError(f"{source_path} references missing {label} {resolved}")
+    if candidate.exists():
+        return candidate
+    sibling = (source_path.parent / candidate.name).resolve()
+    if sibling.exists():
+        LOGGER.info(
+            "rebasing stale absolute %s path bundle=%s from=%s to=%s",
+            label,
+            str(source_path),
+            str(candidate),
+            str(sibling),
+        )
+        return sibling
+    raise ValueError(f"{source_path} references missing {label} {candidate}")
 
 
 def _load_causal_lm_runtime_bundle(metadata: dict[str, Any], *, model_dir: Path) -> dict[str, Any]:

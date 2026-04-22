@@ -22,7 +22,7 @@ PYTHONPATH=src python3 -m ask_seattle.cli retrain-all \
 This retrains:
 
 - the operational TF-IDF model under `models/real-labels-precision-refresh/`
-- the four-model comparison suite under `models/benchmark-suite/`
+- the five-model comparison suite under `models/benchmark-suite/`
 
 It does not run held-out benchmarks.
 
@@ -139,7 +139,7 @@ Treat the first model in `model_aggregates` as the current winner. That list is 
 3. mean auto recall
 4. `mean_pr_auc`
 
-## Compare The Full Four-Model Suite
+## Compare The Full Five-Model Suite
 
 Install the optional model dependencies first:
 
@@ -173,6 +173,7 @@ The suite uses one shared split across all model families. Retraining writes:
 - `transformer_modernbert_base/training_summary.json`
 - `transformer_neobert/training_summary.json`
 - `transformer_modernbert_large/training_summary.json`
+- `stacked_transformer_decider/training_summary.json`
 - `suite_training_summary.json`
 
 Benchmarking writes:
@@ -181,20 +182,23 @@ Benchmarking writes:
 - `benchmark_history.json`
 - `history/<run_id>/benchmark_suite_summary.json`
 
-If TF-IDF plus at least two comparison models benchmark successfully for the current manifest, `benchmark_suite_summary.json` also includes one derived `hybrid_consensus_policy` row. That row reports the routed bridge policy on the same held-out split and does not correspond to a separately trained artifact.
+If TF-IDF plus at least two comparison models benchmark successfully for the current manifest, `benchmark_suite_summary.json` also includes one derived `hybrid_consensus_policy` row. That row reports the optional routed bridge policy on the same held-out split and does not correspond to a separately trained artifact.
 
-The default four-model suite is:
+The default five-model suite is:
 
 - TF-IDF baseline
 - ModernBERT-base sequence classifier
 - NeoBERT sequence classifier
 - ModernBERT-large sequence classifier
+- stacked transformer decider trained from the three transformer scores plus shared post-shape features
 
 Important implementation details:
 
 - every family consumes the same persisted `suite_input.json` manifest
 - rerunning `make retrain` resumes from any compatible completed per-model artifact already on disk for that manifest
 - `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
+- the stacked transformer decider is trained after the three transformer bundles and owns its own calibrator plus low/high thresholds
+- the stacked transformer decider now fits its meta-model on out-of-fold transformer probabilities from the suite train split, then calibrates that stacked score on the normal suite calibration split
 - the bridge hybrid policy weights now come from comparable benchmark history when available, then fall back to the latest suite summary, then to uniform weights
 - `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
 - the encoder transformer family uses title/body pair encoding, fits a sigmoid calibrator for every candidate, keeps the better candidate by calibrated strict-threshold readiness first, restores the best epoch checkpoint, and runs a small config grid for ModernBERT-base, NeoBERT, and ModernBERT-large
@@ -264,10 +268,24 @@ The shared post representation still includes normalized content metadata when a
 `make bridge` now defaults to:
 
 ```bash
+make bridge DECIDER_POLICY=stacked_transformer_decider
+```
+
+That does not change the operational retrain path. The TF-IDF bundle is still the cheap local model that bridge auto-retrain refreshes. What changes is the deployed `/check` verdict:
+
+- when the stacked transformer decider artifact exists, `/check` returns that policy in `result`
+- the primary TF-IDF verdict remains available under `decision_context.primary_result`
+- if the stacked artifact is missing or fails, the bridge falls back to the TF-IDF verdict and records the reason in `decision_context.review_reasons`
+
+The stacked decider is only refreshed when you rerun `make retrain` and then `make benchmark`. Bridge auto-retrain does not retrain the benchmark suite artifacts in the background.
+
+If you want the routed bridge-side hybrid instead, use:
+
+```bash
 make bridge DECIDER_POLICY=hybrid_consensus
 ```
 
-That does not change the operational retrain path. The TF-IDF bundle is still the primary bridge model. The policy only affects how `/check` decides the top-line verdict on hard slices when benchmark comparison models are loaded.
+That policy is benchmark-weighted and still useful for comparison work on routed hard slices, but it is no longer the default top-line verdict.
 
 If you want the bridge to expose the raw primary-model verdict only, use:
 
@@ -296,7 +314,7 @@ make retrain MODEL_DIR=models/run-002
 
 ## After A Manual Retrain
 
-After `make retrain`, run `make benchmark` if you want fresh suite metrics. Restart the bridge after retraining so it loads the new TF-IDF artifact:
+After `make retrain`, run `make benchmark` if you want fresh suite metrics and a refreshed stacked decider artifact. Restart the bridge after retraining so it loads the new TF-IDF artifact and any updated suite models:
 
 ```bash
 make bridge

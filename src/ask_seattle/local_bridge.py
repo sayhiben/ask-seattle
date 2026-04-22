@@ -28,6 +28,7 @@ from ask_seattle.training import train_model_bundle_from_labels
 
 LOGGER = logging.getLogger("ask_seattle.local_bridge")
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+STACKED_TRANSFORMER_DECIDER_NAME = "stacked_transformer_decider"
 SUPPORTED_BRIDGE_COMPARISON_MODELS = (
     "tfidf_recommended",
     "transformer_modernbert_base",
@@ -41,8 +42,9 @@ SUPPORTED_BRIDGE_COMPARISON_MODEL_FAMILIES = {
 SUPPORTED_BRIDGE_DECIDER_POLICIES = {
     "primary_only",
     "hybrid_consensus",
+    "stacked_transformer_decider",
 }
-DEFAULT_BRIDGE_DECIDER_POLICY = "hybrid_consensus"
+DEFAULT_BRIDGE_DECIDER_POLICY = "stacked_transformer_decider"
 HYBRID_DECIDER_MIN_COMPARISON_RESULTS = 2
 
 
@@ -85,6 +87,9 @@ class BridgeConfig:
             primary_model_path=self.model_path,
             comparison_suite_path=self.comparison_suite_path,
             comparison_models=self.comparison_models,
+        )
+        self.stacked_decider_model = _load_stacked_decider_model(
+            comparison_suite_path=self.comparison_suite_path,
         )
         LOGGER.info("labels will append to %s", self.label_path)
         self.auto_retrain = None
@@ -150,6 +155,7 @@ def run_bridge(
                 ),
                 "comparison_models": _comparison_model_summaries(config.comparison_models),
                 "hybrid_policy": hybrid_policy_response(config.hybrid_policy),
+                "stacked_decider_model": _policy_model_summary(config.stacked_decider_model),
                 "split_strategy": config.split_strategy,
                 "split_seed": config.split_seed,
                 "evaluation_subreddit": config.evaluation_subreddit,
@@ -190,6 +196,9 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
                     ),
                     "comparison_models": _comparison_model_summaries(self.bridge_config.comparison_models),
                     "hybrid_policy": hybrid_policy_response(getattr(self.bridge_config, "hybrid_policy", None)),
+                    "stacked_decider_model": _policy_model_summary(
+                        getattr(self.bridge_config, "stacked_decider_model", None)
+                    ),
                     "split_strategy": self.bridge_config.split_strategy,
                     "split_seed": self.bridge_config.split_seed,
                     "evaluation_subreddit": self.bridge_config.evaluation_subreddit,
@@ -288,6 +297,30 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             if decider_policy == "hybrid_consensus"
             else []
         )
+        stacked_decider_result = None
+        stacked_decider_error: str | None = None
+        if decider_policy == "stacked_transformer_decider" and getattr(
+            self.bridge_config,
+            "stacked_decider_model",
+            None,
+        ):
+            try:
+                stacked_decider_result = asdict(
+                    classify_post(
+                        self.bridge_config.stacked_decider_model["bundle"],
+                        title=title,
+                        selftext=selftext,
+                        post_type=post_type,
+                        content_domain=content_domain,
+                        is_crosspost=is_crosspost,
+                        post_id=post_id,
+                        permalink=permalink,
+                        time_source=time_source,
+                    )
+                )
+            except Exception as exc:  # pragma: no cover - defensive runtime fallback
+                LOGGER.exception("stacked transformer decider check failed")
+                stacked_decider_error = str(exc)
         should_run_hybrid = (
             decider_policy == "hybrid_consensus"
             and bool(route_reasons)
@@ -314,11 +347,15 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             comparisons=comparisons,
             route_reasons=route_reasons,
             hybrid_policy=getattr(self.bridge_config, "hybrid_policy", None),
+            stacked_decider_model=getattr(self.bridge_config, "stacked_decider_model", None),
+            stacked_decider_result=stacked_decider_result,
+            stacked_decider_error=stacked_decider_error,
         )
+        effective_result = decider_result or primary_result
         self._send_json(
             {
                 "ok": True,
-                "result": primary_result,
+                "result": effective_result,
                 "decider_result": decider_result,
                 "decision_context": decision_context,
                 "comparison_models": _comparison_model_summaries(self.bridge_config.comparison_models),
@@ -811,7 +848,18 @@ def _decider_response(
     comparisons: list[dict[str, Any]],
     route_reasons: list[str],
     hybrid_policy: dict[str, Any] | None,
+    stacked_decider_model: dict[str, Any] | None,
+    stacked_decider_result: dict[str, Any] | None,
+    stacked_decider_error: str | None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    if policy == "stacked_transformer_decider":
+        return _stacked_decider_response(
+            policy=policy,
+            primary_result=primary_result,
+            stacked_decider_model=stacked_decider_model,
+            stacked_decider_result=stacked_decider_result,
+            stacked_decider_error=stacked_decider_error,
+        )
     return hybrid_decider_response(
         policy=policy,
         primary_result=primary_result,
@@ -822,6 +870,57 @@ def _decider_response(
         hybrid_policy=hybrid_policy,
         min_comparison_results=HYBRID_DECIDER_MIN_COMPARISON_RESULTS,
     )
+
+
+def _stacked_decider_response(
+    *,
+    policy: str,
+    primary_result: dict[str, Any],
+    stacked_decider_model: dict[str, Any] | None,
+    stacked_decider_result: dict[str, Any] | None,
+    stacked_decider_error: str | None,
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    review_reasons: list[str] = []
+    decision_context: dict[str, Any] = {
+        "policy": policy,
+        "decision_source": "primary_model",
+        "routed": False,
+        "route_reasons": [],
+        "review_priority": "normal",
+        "review_reasons": [],
+        "primary_result": primary_result,
+        "effective_high_threshold": float(primary_result.get("high_threshold") or 0.0),
+        "stacked_decider_model": _policy_model_summary(stacked_decider_model),
+    }
+    if stacked_decider_model is None:
+        review_reasons.append("stacked_decider_unavailable")
+        decision_context["review_reasons"] = review_reasons
+        decision_context["review_priority"] = _review_priority(review_reasons)
+        return None, decision_context
+    if stacked_decider_error:
+        review_reasons.append("stacked_decider_failed")
+        decision_context["stacked_decider_error"] = stacked_decider_error
+        decision_context["review_reasons"] = review_reasons
+        decision_context["review_priority"] = _review_priority(review_reasons)
+        return None, decision_context
+    if stacked_decider_result is None:
+        review_reasons.append("stacked_decider_missing_result")
+        decision_context["review_reasons"] = review_reasons
+        decision_context["review_priority"] = _review_priority(review_reasons)
+        return None, decision_context
+    if str(primary_result.get("label") or "") != str(stacked_decider_result.get("label") or ""):
+        review_reasons.append("label_changed_by_stacked_decider")
+    elif str(primary_result.get("confidence_band") or "") != str(stacked_decider_result.get("confidence_band") or ""):
+        review_reasons.append("confidence_changed_by_stacked_decider")
+    decision_context.update(
+        {
+            "decision_source": "stacked_transformer_decider",
+            "effective_high_threshold": float(stacked_decider_result.get("high_threshold") or 0.0),
+            "review_reasons": review_reasons,
+            "review_priority": _review_priority(review_reasons),
+        }
+    )
+    return stacked_decider_result, decision_context
 
 
 def _comparison_model_summaries(comparison_models: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -835,6 +934,31 @@ def _comparison_model_summaries(comparison_models: list[dict[str, Any]]) -> list
         }
         for comparison in comparison_models
     ]
+
+
+def _policy_model_summary(model_entry: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(model_entry, dict):
+        return None
+    return {
+        "name": model_entry.get("name"),
+        "display_name": model_entry.get("display_name"),
+        "model_family": model_entry.get("model_family"),
+        "model_id": model_entry.get("model_id"),
+        "artifact_path": model_entry.get("artifact_path"),
+    }
+
+
+def _review_priority(review_reasons: list[str]) -> str:
+    high_priority_reasons = {
+        "comparison_disagreement",
+        "label_changed_by_hybrid",
+        "label_changed_by_stacked_decider",
+    }
+    if any(reason in high_priority_reasons for reason in review_reasons):
+        return "high"
+    if review_reasons:
+        return "elevated"
+    return "normal"
 
 
 def _find_comparison_model(
@@ -1049,6 +1173,54 @@ def _load_hybrid_policy(
         ",".join(str(model.get("name") or "") for model in active_models),
     )
     return hybrid_policy
+
+
+def _load_stacked_decider_model(
+    *,
+    comparison_suite_path: Path | None,
+) -> dict[str, Any] | None:
+    if comparison_suite_path is None or not comparison_suite_path.exists():
+        return None
+    suite_summary = _load_suite_summary_payload(comparison_suite_path)
+    if not isinstance(suite_summary, dict):
+        return None
+    entry = next(
+        (
+            item
+            for item in suite_summary.get("models") or []
+            if isinstance(item, dict)
+            and str(item.get("status") or "") == "ok"
+            and str(item.get("name") or "") == STACKED_TRANSFORMER_DECIDER_NAME
+            and item.get("artifact_path")
+        ),
+        None,
+    )
+    if entry is None:
+        return None
+    try:
+        resolved_artifact = resolve_bridge_path(str(entry["artifact_path"]), must_exist=True)
+        bundle = load_model(resolved_artifact)
+    except Exception as exc:  # pragma: no cover - defensive runtime fallback
+        LOGGER.warning(
+            "skipping stacked decider model artifact_path=%s error=%s",
+            entry.get("artifact_path"),
+            exc,
+        )
+        return None
+    loaded = {
+        "name": str(entry.get("name") or STACKED_TRANSFORMER_DECIDER_NAME),
+        "display_name": entry.get("display_name") or bundle.get("display_name") or entry.get("name"),
+        "model_family": str(entry.get("model_family") or bundle.get("model_family") or ""),
+        "model_id": entry.get("model_id") or bundle.get("model_id"),
+        "artifact_path": str(resolved_artifact),
+        "bundle": bundle,
+    }
+    LOGGER.info(
+        "loaded stacked decider model comparison_suite_path=%s artifact_path=%s",
+        comparison_suite_path,
+        resolved_artifact,
+    )
+    return loaded
 
 
 def _load_suite_summary_payload(path: Path | None) -> dict[str, Any] | None:

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.16
+// @version      0.1.17
 // @description  Adds auto-checking, skip, re-check, binary labeling, and transformer comparison cards for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.16';
+  const SCRIPT_VERSION = '0.1.17';
   const BRIDGE_URL_CANDIDATES = ['http://localhost:8765', 'http://127.0.0.1:8765'];
   const PANEL_ID = 'ask-seattle-local-helper';
   const QUEUE_KEY = 'askSeattlePostQueue';
@@ -408,6 +408,10 @@
       comparison_disagreement: 'models disagree',
       label_changed_by_hybrid: 'hybrid changed the label',
       confidence_changed_by_hybrid: 'hybrid changed the confidence band',
+      label_changed_by_stacked_decider: 'stacked decider changed the label',
+      confidence_changed_by_stacked_decider: 'stacked decider changed the confidence band',
+      stacked_decider_unavailable: 'stacked decider unavailable',
+      stacked_decider_failed: 'stacked decider failed',
       insufficient_comparison_support: 'not enough comparison support',
     };
     return labels[String(reason || '')] || String(reason || '');
@@ -723,18 +727,26 @@
     try {
       const response = await bridgePost('/check', { ...post, include_comparisons: false });
       if (checkToken !== currentCheckToken) return;
-      const result = response.decider_result || response.result;
+      const result = response.result;
       const decisionContext = response.decision_context || null;
       const bandLabel = String(result.confidence_band || '').toUpperCase();
-      const verdictPrefix = response.decider_result ? 'Hybrid says' : result.label === 'askseattle' ? 'Looks like' : 'Does not look like';
+      const decisionSource = String(decisionContext?.decision_source || 'primary_model');
+      let verdictPrefix = result.label === 'askseattle' ? 'Looks like' : 'Does not look like';
+      if (decisionSource === 'hybrid_consensus') {
+        verdictPrefix = 'Hybrid says';
+      } else if (decisionSource === 'stacked_transformer_decider') {
+        verdictPrefix = 'Stacked decider says';
+      }
       const verdictMessage =
         result.label === 'askseattle'
           ? bandLabel === 'HIGH'
             ? `${verdictPrefix} askseattle (high confidence)`
             : `${verdictPrefix} askseattle (borderline)`
-          : response.decider_result
+          : decisionSource === 'hybrid_consensus'
             ? 'Hybrid says not askseattle'
-            : 'Does not look like askseattle';
+            : decisionSource === 'stacked_transformer_decider'
+              ? 'Stacked decider says not askseattle'
+              : 'Does not look like askseattle';
       setDecisionState(verdictMessage, resultTone(result));
       setReviewPriority(decisionContext);
       const baseStatusText = `${result.model_name} ${result.confidence_band} ${result.label} score=${result.score.toFixed(3)} low=${result.low_threshold} high=${result.high_threshold}`;

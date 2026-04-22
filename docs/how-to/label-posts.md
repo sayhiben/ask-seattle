@@ -46,10 +46,14 @@ The verdict block shows the active `/check` verdict:
 
 - `Looks like askseattle (...)`
 - `Does not look like askseattle`
+- `Stacked decider says askseattle (...)`
+- `Stacked decider says not askseattle`
 - `Hybrid says askseattle (...)`
 - `Hybrid says not askseattle`
 
-The bridge always keeps the primary TF-IDF result internally, but with the default `hybrid_consensus` policy it can route borderline, low-text, image, link, or sparse-media posts through the loaded comparison models and return that routed verdict as the main panel message.
+The default bridge policy is `stacked_transformer_decider`. When the stacked suite artifact exists, the panel message is driven by that stacked verdict while the primary TF-IDF result stays available in `decision_context.primary_result` for audit and fallback.
+
+If you start the bridge with `DECIDER_POLICY=hybrid_consensus`, it can still route borderline, low-text, image, link, or sparse-media posts through the loaded comparison models and return that routed verdict as the main panel message.
 
 If the bridge thinks a post needs extra attention, the panel also shows a review-priority banner. That banner is driven by `decision_context.review_priority` and usually means one of these:
 
@@ -75,6 +79,7 @@ The current full suite is:
 - Transformer ModernBERT-large
 
 Because the active bridge model is still TF-IDF, the comparison card area normally shows the three transformer models only. If an older benchmark summary still contains semantic or decoder rows, the bridge ignores them instead of surfacing stale cards.
+The stacked transformer decider does not get its own comparison card because it is the deployed bridge policy, not a side-by-side comparison row.
 
 Each card shows:
 

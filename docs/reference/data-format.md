@@ -137,6 +137,7 @@ The benchmark suite writes:
 - `transformer_modernbert_base/training_summary.json`
 - `transformer_neobert/training_summary.json`
 - `transformer_modernbert_large/training_summary.json`
+- `stacked_transformer_decider/training_summary.json`
 - `suite_input.json`
 - `benchmark_suite_summary.json`
 - `benchmark_history.json`
@@ -149,7 +150,7 @@ The optional RunPod remote wrapper also writes local pulled metadata and logs un
 
 `benchmark_suite_summary.json` can now contain two kinds of rows under `models`:
 
-- artifact-backed model rows such as `tfidf_recommended` or the transformer bundles
+- artifact-backed model rows such as `tfidf_recommended`, the transformer bundles, or `stacked_transformer_decider`
 - a derived policy row named `hybrid_consensus_policy`
 
 That hybrid policy row is benchmark-only:
@@ -171,7 +172,7 @@ The manifest includes:
 - optional `evaluation_subreddit`
 - prepared-data summary counts
 
-Every benchmark-suite model family consumes that same manifest so the shared four-model comparison remains apples-to-apples.
+Every benchmark-suite model family consumes that same manifest so the shared five-model comparison remains apples-to-apples.
 
 `make retrain` writes or refreshes this manifest before training the suite models. `make benchmark` loads the same manifest later and only benchmarks compatible trained artifacts for that manifest.
 
@@ -257,6 +258,8 @@ Important sections:
 Neural benchmark summaries replace `feature_audit` with model-specific metadata such as `training_args`, but keep the same `split`, `calibration`, `threshold_selection`, `metrics`, and `operating_metrics` structure so results can be compared consistently.
 
 Neural summaries now also record the active `representation_config`, so later benchmark or inference runs can reconstruct the same metadata-token policy that the model was trained with.
+
+For `stacked_transformer_decider`, `training_args` and `oof_training` also record how many out-of-fold component-training folds were used and whether the meta-model was fit from true OOF component probabilities or an explicit fallback path.
 
 Training-only suite summaries intentionally omit `metrics` and `operating_metrics` until a later benchmark step writes them.
 

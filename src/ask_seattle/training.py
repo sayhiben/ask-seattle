@@ -69,6 +69,8 @@ from ask_seattle.model import (
     save_model,
     score_rows,
     select_decision_thresholds,
+    stacked_transformer_feature_matrix,
+    stacked_transformer_feature_names,
     split_labeled_posts,
     threshold_sweep,
     tfidf_feature_audit,
@@ -96,6 +98,18 @@ DEFAULT_BENCHMARK_SEED_MODELS = (
     "transformer_neobert",
     "transformer_modernbert_large",
 )
+STACKED_TRANSFORMER_DECIDER_NAME = "stacked_transformer_decider"
+STACKED_TRANSFORMER_DECIDER_DISPLAY_NAME = "Stacked transformer decider"
+STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY = "stacked_transformer_decider"
+STACKED_TRANSFORMER_DECIDER_CONFIG_VERSION = "v2_oof_meta_logreg_probability_stack"
+STACKED_TRANSFORMER_COMPONENT_NAMES = (
+    "transformer_modernbert_base",
+    "transformer_neobert",
+    "transformer_modernbert_large",
+)
+STACKED_TRANSFORMER_OOF_FOLD_COUNT = 2
+STACKED_TRANSFORMER_OOF_CALIBRATION_SIZE = 0.2
+STACKED_TRANSFORMER_OOF_COMPONENT_NUM_TRAIN_EPOCHS = 1
 SPARSE_MEDIA_ACTIVE_TRAIN_POSITIVES = 10
 SPARSE_MEDIA_ACTIVE_TEST_POSITIVES = 5
 SPARSE_MEDIA_WEIGHTING_MIN_POSITIVES = 5
@@ -589,6 +603,7 @@ def retrain_model_suite_from_labels(
         causal_lm_model_id=causal_lm_model_id,
     )
     results: list[dict[str, Any]] = []
+    trained_summaries: dict[str, dict[str, Any]] = {}
     for index, spec in enumerate(specs, start=1):
         model_started_at = time.perf_counter()
         existing_summary = _load_resumable_suite_summary(
@@ -608,6 +623,7 @@ def retrain_model_suite_from_labels(
                 _format_elapsed(time.perf_counter() - model_started_at),
             )
             results.append(_suite_training_entry_from_summary(spec, existing_summary, result_source="reused"))
+            trained_summaries[spec.name] = existing_summary
             continue
         LOGGER.info(
             "suite retrain model start index=%s/%s name=%s family=%s display_name=%s",
@@ -619,12 +635,13 @@ def retrain_model_suite_from_labels(
         )
         _clear_torch_memory()
         try:
-            summary = spec.runner(
+            summary = _run_suite_model_spec(
+                spec,
                 split=split,
                 output_dir=benchmark_dir / spec.name,
                 prepared_data_summary=prepared_data_summary,
                 evaluate_on_test=False,
-                **spec.kwargs,
+                component_summaries=trained_summaries,
             )
         except OptionalModelDependencyError as exc:
             LOGGER.warning(
@@ -660,6 +677,7 @@ def retrain_model_suite_from_labels(
                 _format_elapsed(time.perf_counter() - model_started_at),
             )
             results.append(_suite_training_entry_from_summary(spec, summary, result_source="trained"))
+            trained_summaries[spec.name] = summary
         finally:
             _clear_torch_memory()
 
@@ -987,16 +1005,29 @@ def benchmark_seed_sweep_from_labels(
             )
             _clear_torch_memory()
             try:
-                summary = spec.runner(
+                component_summaries = {
+                    entry["name"]: entry["summary"]
+                    for entry in seed_models
+                    if isinstance(entry, dict)
+                    and isinstance(entry.get("summary"), dict)
+                    and str(entry.get("name") or "")
+                }
+                summary = _run_suite_model_spec(
+                    spec,
                     split=split,
                     output_dir=seed_result_dir / spec.name,
                     prepared_data_summary=prepared_data_summary,
                     evaluate_on_test=True,
-                    **spec.kwargs,
+                    component_summaries=component_summaries,
                 )
             finally:
                 _clear_torch_memory()
-            seed_models.append(_suite_entry_from_summary(spec, summary, result_source="seed_sweep"))
+            seed_models.append(
+                {
+                    **_suite_entry_from_summary(spec, summary, result_source="seed_sweep"),
+                    "summary": summary,
+                }
+            )
             LOGGER.info(
                 "benchmark seed sweep model complete seed=%s name=%s auto_precision=%.3f auto_recall=%.3f review_precision=%.3f review_recall=%.3f elapsed=%s",
                 seed,
@@ -1011,7 +1042,14 @@ def benchmark_seed_sweep_from_labels(
             {
                 "seed": seed,
                 "split": _split_summary(split),
-                "models": seed_models,
+                "models": [
+                    {
+                        key: value
+                        for key, value in model.items()
+                        if key != "summary"
+                    }
+                    for model in seed_models
+                ],
             }
         )
     aggregate = {
@@ -1146,7 +1184,39 @@ def _suite_model_specs(
                 "config_version": "v6_bootstrap_precision_grid",
             },
         ),
+        SuiteModelSpec(
+            name=STACKED_TRANSFORMER_DECIDER_NAME,
+            display_name=STACKED_TRANSFORMER_DECIDER_DISPLAY_NAME,
+            family=STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY,
+            runner=_train_stacked_transformer_decider_for_split,
+            kwargs={
+                "component_names": STACKED_TRANSFORMER_COMPONENT_NAMES,
+                "display_name": STACKED_TRANSFORMER_DECIDER_DISPLAY_NAME,
+                "config_version": STACKED_TRANSFORMER_DECIDER_CONFIG_VERSION,
+            },
+        ),
     ]
+
+
+def _run_suite_model_spec(
+    spec: SuiteModelSpec,
+    *,
+    split: DatasetSplit,
+    output_dir: Path,
+    prepared_data_summary: dict[str, int],
+    evaluate_on_test: bool,
+    component_summaries: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    kwargs = dict(spec.kwargs)
+    if spec.family == STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY:
+        kwargs["component_summaries"] = dict(component_summaries or {})
+    return spec.runner(
+        split=split,
+        output_dir=output_dir,
+        prepared_data_summary=prepared_data_summary,
+        evaluate_on_test=evaluate_on_test,
+        **kwargs,
+    )
 
 
 def _prepare_suite_input_from_labels(
@@ -2773,6 +2843,10 @@ def _train_transformer_bundle_for_split(
     prepared_data_summary: dict[str, int] | None = None,
     runtime_profile: str | None = None,
     config_version: str = "v2_pr_auc_early_stop",
+    representation_config_override: dict[str, bool] | None = None,
+    locked_candidate_profile: dict[str, Any] | None = None,
+    locked_loss_mode: str | None = None,
+    num_train_epochs_override: int | None = None,
     evaluate_on_test: bool = True,
 ) -> dict[str, Any]:
     try:
@@ -2811,14 +2885,18 @@ def _train_transformer_bundle_for_split(
     if "modernbert-large" in normalized_model_id:
         total_cuda_memory_gb = _cuda_total_memory_gb(torch)
         allow_long_context = bool(total_cuda_memory_gb is not None and total_cuda_memory_gb >= 40.0)
-    candidate_profiles = _transformer_candidate_profiles(
-        model_id,
-        allow_long_context=allow_long_context,
+    candidate_profiles = (
+        [dict(locked_candidate_profile)]
+        if isinstance(locked_candidate_profile, dict)
+        else _transformer_candidate_profiles(
+            model_id,
+            allow_long_context=allow_long_context,
+        )
     )
     default_max_length = int(candidate_profiles[0]["max_length"])
     max_length = default_max_length
     model_dtype = None
-    num_train_epochs = 2
+    num_train_epochs = int(num_train_epochs_override) if num_train_epochs_override is not None else 2
     if use_mps:
         per_device_train_batch_size = 1
         per_device_eval_batch_size = 2
@@ -2845,7 +2923,11 @@ def _train_transformer_bundle_for_split(
         str(model_dtype).replace("torch.", "") if model_dtype is not None else "default",
     )
 
-    representation_config = _representation_config_for_split(split)
+    representation_config = (
+        dict(representation_config_override)
+        if isinstance(representation_config_override, dict)
+        else _representation_config_for_split(split)
+    )
     train_inference_rows = _inference_rows(split.train, representation_config=representation_config)
     slice_weighting = _slice_aware_positive_weighting(split.train, rows=train_inference_rows)
     train_rows = _sequence_classification_rows(
@@ -2947,7 +3029,11 @@ def _train_transformer_bundle_for_split(
 
     best_candidate: dict[str, Any] | None = None
     candidate_results: dict[str, dict[str, float | int | str]] = {}
-    loss_modes = ("plain_cross_entropy", "balanced_cross_entropy")
+    loss_modes = (
+        (str(locked_loss_mode),)
+        if locked_loss_mode is not None
+        else ("plain_cross_entropy", "balanced_cross_entropy")
+    )
     previous_transformers_verbosity = transformers_logging.get_verbosity()
     transformers_logging.set_verbosity_error()
     try:
@@ -3039,6 +3125,10 @@ def _train_transformer_bundle_for_split(
                             prepared_data_summary=prepared_data_summary,
                             runtime_profile="cpu_fallback",
                             config_version=config_version,
+                            representation_config_override=representation_config_override,
+                            locked_candidate_profile=locked_candidate_profile,
+                            locked_loss_mode=locked_loss_mode,
+                            num_train_epochs_override=num_train_epochs_override,
                             evaluate_on_test=evaluate_on_test,
                         )
                     raise
@@ -3196,6 +3286,8 @@ def _train_transformer_bundle_for_split(
         "early_stopping": {"metric": "pr_auc", "patience": 1},
         "best_checkpoint_restored": True,
         "candidate_results": candidate_results,
+        "locked_candidate_profile": dict(locked_candidate_profile) if isinstance(locked_candidate_profile, dict) else None,
+        "locked_loss_mode": str(locked_loss_mode) if locked_loss_mode is not None else None,
     }
     joblib.dump(
         {
@@ -4395,6 +4487,471 @@ def _benchmark_existing_suite_model(
         encoding="utf-8",
     )
     return benchmarked_summary
+
+
+def _stacked_transformer_outer_holdout_folds(
+    posts: list[LabeledPost],
+    *,
+    requested_fold_count: int,
+    seed: int,
+) -> list[list[int]]:
+    if requested_fold_count < 2:
+        return []
+    indices_by_label: dict[int, list[int]] = {0: [], 1: []}
+    for index, post in enumerate(posts):
+        indices_by_label[int(post.label)].append(index)
+    if not indices_by_label[0] or not indices_by_label[1]:
+        return []
+    actual_fold_count = min(
+        int(requested_fold_count),
+        len(posts),
+        len(indices_by_label[0]),
+        len(indices_by_label[1]),
+    )
+    if actual_fold_count < 2:
+        return []
+    rng = np.random.default_rng(seed)
+    for label in (0, 1):
+        rng.shuffle(indices_by_label[label])
+    folds: list[list[int]] = [[] for _ in range(actual_fold_count)]
+    for label in (0, 1):
+        for offset, index in enumerate(indices_by_label[label]):
+            folds[offset % actual_fold_count].append(index)
+    for fold in folds:
+        fold.sort()
+    return [fold for fold in folds if fold]
+
+
+def _stacked_transformer_inner_train_calibration_split(
+    posts: list[LabeledPost],
+    *,
+    calibration_size: float,
+    seed: int,
+) -> tuple[list[LabeledPost], list[LabeledPost]]:
+    if len(posts) < 2:
+        raise ValueError("stacked transformer OOF inner split requires at least two posts")
+    buckets: dict[int, list[LabeledPost]] = {0: [], 1: []}
+    for post in posts:
+        buckets[int(post.label)].append(post)
+    rng = np.random.default_rng(seed)
+    for label in (0, 1):
+        rng.shuffle(buckets[label])
+
+    train_posts: list[LabeledPost] = []
+    calibration_posts: list[LabeledPost] = []
+    for label in (0, 1):
+        bucket = buckets[label]
+        if not bucket:
+            continue
+        if len(bucket) == 1:
+            train_posts.extend(bucket)
+            continue
+        calibration_count = int(round(len(bucket) * calibration_size))
+        calibration_count = min(max(calibration_count, 1), len(bucket) - 1)
+        calibration_posts.extend(bucket[:calibration_count])
+        train_posts.extend(bucket[calibration_count:])
+
+    if not calibration_posts:
+        if len(train_posts) < 2:
+            raise ValueError("stacked transformer OOF inner split could not reserve calibration posts")
+        calibration_posts.append(train_posts.pop())
+
+    train_rng = np.random.default_rng(seed + 1)
+    calibration_rng = np.random.default_rng(seed + 2)
+    train_rng.shuffle(train_posts)
+    calibration_rng.shuffle(calibration_posts)
+    return train_posts, calibration_posts
+
+
+def _stacked_transformer_fold_training_kwargs(
+    payload: dict[str, Any],
+    *,
+    representation_config: dict[str, bool],
+) -> dict[str, Any]:
+    summary = payload.get("summary") if isinstance(payload.get("summary"), dict) else {}
+    training_args = summary.get("training_args") if isinstance(summary.get("training_args"), dict) else {}
+    model_id = summary.get("model_id") or payload["bundle"].get("model_id")
+    if not model_id:
+        raise ValueError(f"stacked transformer component {payload['name']} is missing model_id")
+    kwargs: dict[str, Any] = {
+        "model_id": str(model_id),
+        "display_name": str(summary.get("display_name") or payload.get("display_name") or payload["name"]),
+        "config_version": str(summary.get("config_version") or "oof_locked_component"),
+        "runtime_profile": "cpu_fallback",
+        "representation_config_override": dict(representation_config),
+        "num_train_epochs_override": STACKED_TRANSFORMER_OOF_COMPONENT_NUM_TRAIN_EPOCHS,
+    }
+    if isinstance(training_args.get("candidate_profile"), dict):
+        kwargs["locked_candidate_profile"] = dict(training_args["candidate_profile"])
+    if training_args.get("class_weighting") is not None:
+        kwargs["locked_loss_mode"] = str(training_args["class_weighting"])
+    return kwargs
+
+
+def _stacked_transformer_oof_train_scores(
+    *,
+    split: DatasetSplit,
+    artifact_dir: Path,
+    component_payloads: list[dict[str, Any]],
+    representation_config: dict[str, bool],
+) -> tuple[dict[str, list[float]], dict[str, Any]]:
+    train_rows = _inference_rows(split.train, representation_config=representation_config)
+    seed = split.split_seed or DEFAULT_SPLIT_SEED
+    holdout_folds = _stacked_transformer_outer_holdout_folds(
+        split.train,
+        requested_fold_count=STACKED_TRANSFORMER_OOF_FOLD_COUNT,
+        seed=seed,
+    )
+    if len(holdout_folds) < 2:
+        return (
+            {
+                payload["name"]: score_rows(payload["bundle"], train_rows)
+                for payload in component_payloads
+            },
+            {
+                "meta_training_source": "in_sample_component_scores_fallback",
+                "requested_fold_count": STACKED_TRANSFORMER_OOF_FOLD_COUNT,
+                "actual_fold_count": len(holdout_folds),
+                "inner_calibration_size": STACKED_TRANSFORMER_OOF_CALIBRATION_SIZE,
+                "fallback_reason": "insufficient_stratified_outer_fold_support",
+            },
+        )
+
+    oof_root = artifact_dir / "_stacked_component_oof"
+    shutil.rmtree(oof_root, ignore_errors=True)
+    oof_root.mkdir(parents=True, exist_ok=True)
+    component_scores_by_name = {
+        payload["name"]: [float("nan")] * len(split.train)
+        for payload in component_payloads
+    }
+    fold_summaries: list[dict[str, Any]] = []
+    try:
+        for fold_index, holdout_indices in enumerate(holdout_folds):
+            holdout_lookup = set(holdout_indices)
+            remaining_posts = [
+                post for index, post in enumerate(split.train) if index not in holdout_lookup
+            ]
+            inner_train, inner_calibration = _stacked_transformer_inner_train_calibration_split(
+                remaining_posts,
+                calibration_size=STACKED_TRANSFORMER_OOF_CALIBRATION_SIZE,
+                seed=seed + 1000 + fold_index,
+            )
+            holdout_posts = [split.train[index] for index in holdout_indices]
+            holdout_rows = _inference_rows(
+                holdout_posts,
+                representation_config=representation_config,
+            )
+            inner_split = DatasetSplit(
+                train=inner_train,
+                calibration=inner_calibration,
+                test=[],
+                split_strategy="stacked_oof_inner_random",
+                split_seed=seed + 1000 + fold_index,
+                evaluation_subreddit=split.evaluation_subreddit,
+            )
+            fold_summary = {
+                "fold_index": fold_index,
+                "holdout_size": len(holdout_indices),
+                "inner_train_size": len(inner_train),
+                "inner_calibration_size": len(inner_calibration),
+                "holdout_positive_count": sum(split.train[index].label for index in holdout_indices),
+            }
+            for payload in component_payloads:
+                fold_dir = oof_root / payload["name"] / f"fold_{fold_index:02d}"
+                kwargs = _stacked_transformer_fold_training_kwargs(
+                    payload,
+                    representation_config=representation_config,
+                )
+                fold_component_summary = _train_transformer_bundle_for_split(
+                    split=inner_split,
+                    output_dir=fold_dir,
+                    prepared_data_summary=None,
+                    evaluate_on_test=False,
+                    **kwargs,
+                )
+                fold_bundle = load_model(fold_component_summary["artifact_path"])
+                holdout_scores = score_rows(fold_bundle, holdout_rows)
+                for index, score in zip(holdout_indices, holdout_scores, strict=True):
+                    component_scores_by_name[payload["name"]][index] = float(score)
+                shutil.rmtree(fold_dir, ignore_errors=True)
+            fold_summaries.append(fold_summary)
+    finally:
+        shutil.rmtree(oof_root, ignore_errors=True)
+
+    for name, scores in component_scores_by_name.items():
+        if np.isnan(np.asarray(scores, dtype=np.float32)).any():
+            raise RuntimeError(f"stacked transformer OOF generation left unscored rows for {name}")
+    return (
+        component_scores_by_name,
+        {
+            "meta_training_source": "oof_component_scores",
+            "requested_fold_count": STACKED_TRANSFORMER_OOF_FOLD_COUNT,
+            "actual_fold_count": len(holdout_folds),
+            "inner_calibration_size": STACKED_TRANSFORMER_OOF_CALIBRATION_SIZE,
+            "folds": fold_summaries,
+            "component_training_mode": "locked_from_full_component_summary",
+        },
+    )
+
+
+def _train_stacked_transformer_decider_for_split(
+    *,
+    split: DatasetSplit,
+    output_dir: str | Path,
+    component_summaries: dict[str, dict[str, Any]],
+    component_names: tuple[str, ...] = STACKED_TRANSFORMER_COMPONENT_NAMES,
+    display_name: str = STACKED_TRANSFORMER_DECIDER_DISPLAY_NAME,
+    config_version: str = STACKED_TRANSFORMER_DECIDER_CONFIG_VERSION,
+    prepared_data_summary: dict[str, int] | None = None,
+    evaluate_on_test: bool = True,
+) -> dict[str, Any]:
+    artifact_dir = Path(output_dir)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    ordered_component_names = [str(name) for name in component_names]
+    component_payloads = _stacked_transformer_component_payloads(
+        component_summaries=component_summaries,
+        component_names=ordered_component_names,
+        base_dir=artifact_dir,
+    )
+    representation_config = _stacked_transformer_representation_config(
+        split=split,
+        component_payloads=component_payloads,
+    )
+    train_rows = _inference_rows(split.train, representation_config=representation_config)
+    calibration_rows = _inference_rows(split.calibration, representation_config=representation_config)
+    test_rows = _inference_rows(split.test, representation_config=representation_config)
+    y_train = [post.label for post in split.train]
+    y_calibration = [post.label for post in split.calibration]
+    y_test = [post.label for post in split.test]
+    train_scores_by_name, oof_training = _stacked_transformer_oof_train_scores(
+        split=split,
+        artifact_dir=artifact_dir,
+        component_payloads=component_payloads,
+        representation_config=representation_config,
+    )
+    calibration_scores_by_name = {
+        payload["name"]: score_rows(payload["bundle"], calibration_rows)
+        for payload in component_payloads
+    }
+    classifier = LogisticRegression(
+        max_iter=2000,
+        class_weight="balanced",
+        random_state=split.split_seed or DEFAULT_SPLIT_SEED,
+    )
+    feature_names = stacked_transformer_feature_names(ordered_component_names)
+    train_features = stacked_transformer_feature_matrix(
+        train_rows,
+        train_scores_by_name,
+        component_names=ordered_component_names,
+    )
+    calibration_features = stacked_transformer_feature_matrix(
+        calibration_rows,
+        calibration_scores_by_name,
+        component_names=ordered_component_names,
+    )
+    classifier.fit(train_features, y_train)
+    raw_calibration_scores = [float(row[1]) for row in classifier.predict_proba(calibration_features)]
+    calibrator, calibration = fit_sigmoid_calibrator(y_calibration, raw_calibration_scores)
+    thresholds = _select_thresholds_or_default(
+        y_calibration,
+        apply_probability_calibrator(calibrator, raw_calibration_scores),
+        high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
+        review_precision_target=DEFAULT_REVIEW_PRECISION_TARGET,
+        calibration=calibration,
+    )
+    threshold_policy = _decision_policy(
+        split=split,
+        calibration=calibration,
+        thresholds=thresholds,
+        review_precision_target=DEFAULT_REVIEW_PRECISION_TARGET,
+        high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
+    )
+    artifact_path = artifact_dir / f"{STACKED_TRANSFORMER_DECIDER_NAME}.joblib"
+    component_records = [
+        {
+            "name": payload["name"],
+            "display_name": payload["display_name"],
+            "model_family": payload["bundle"].get("model_family"),
+            "model_id": payload["bundle"].get("model_id"),
+            "artifact_path": str(payload["artifact_path"]),
+        }
+        for payload in component_payloads
+    ]
+    joblib.dump(
+        {
+            "model": classifier,
+            "model_family": STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY,
+            "model_name": STACKED_TRANSFORMER_DECIDER_NAME,
+            "display_name": display_name,
+            "component_models": component_records,
+            "component_score_source": "calibrated_probability_oof_train",
+            "feature_names": feature_names,
+            "feature_count": len(feature_names),
+            "config_version": config_version,
+            "calibrator": calibrator,
+            "threshold_policy": threshold_policy,
+            "representation_config": representation_config,
+            "meta_training_source": oof_training["meta_training_source"],
+            "oof_training": oof_training,
+            "version": __version__,
+        },
+        artifact_path,
+    )
+    summary = {
+        "version": __version__,
+        "model_name": STACKED_TRANSFORMER_DECIDER_NAME,
+        "model_family": STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY,
+        "runtime_environment": _runtime_environment_metadata(),
+        "display_name": display_name,
+        "model_id": None,
+        "artifact_path": str(artifact_path),
+        "representation_config": representation_config,
+        "high_precision_target": DEFAULT_HIGH_PRECISION_TARGET,
+        "production_gate": _production_gate_summary(),
+        "split": _split_summary(split),
+        "calibration": asdict(calibration),
+        "threshold_selection": _threshold_summary(
+            thresholds,
+            review_precision_target=DEFAULT_REVIEW_PRECISION_TARGET,
+            high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
+        ),
+        "threshold_policy": threshold_policy,
+        "config_version": config_version,
+        "training_args": {
+            "classifier": "logistic_regression",
+            "classifier_class_weight": "balanced",
+            "classifier_max_iter": 2000,
+            "component_score_source": "calibrated_probability_oof_train",
+            "component_model_names": ordered_component_names,
+            "component_model_ids": {
+                payload["name"]: payload["bundle"].get("model_id")
+                for payload in component_payloads
+            },
+            "component_model_families": {
+                payload["name"]: payload["bundle"].get("model_family")
+                for payload in component_payloads
+            },
+            "feature_names": feature_names,
+            "feature_count": len(feature_names),
+            "representation_config": representation_config,
+            "meta_training_source": oof_training["meta_training_source"],
+            "oof_requested_fold_count": int(oof_training["requested_fold_count"]),
+            "oof_actual_fold_count": int(oof_training["actual_fold_count"]),
+            "oof_inner_calibration_size": float(oof_training["inner_calibration_size"]),
+        },
+        "component_models": component_records,
+        "oof_training": oof_training,
+        "benchmark_status": "not_run",
+        "production_ready": False,
+        "production_ready_blocked_reason": "benchmark_not_run",
+    }
+    if prepared_data_summary is not None:
+        summary["prepared_data"] = prepared_data_summary
+    if evaluate_on_test:
+        test_scores_by_name = {
+            payload["name"]: score_rows(payload["bundle"], test_rows)
+            for payload in component_payloads
+        }
+        test_features = stacked_transformer_feature_matrix(
+            test_rows,
+            test_scores_by_name,
+            component_names=ordered_component_names,
+        )
+        raw_test_scores = [float(row[1]) for row in classifier.predict_proba(test_features)]
+        calibrated_test_scores = apply_probability_calibrator(calibrator, raw_test_scores)
+        band_metrics = evaluate_decision_policy(
+            y_test,
+            calibrated_test_scores,
+            low_threshold=thresholds.low_threshold,
+            high_threshold=thresholds.high_threshold,
+            rows=test_rows,
+        )
+        operating_metrics = _operating_metrics_summary(
+            y_test,
+            calibrated_test_scores,
+            train_rows=train_rows,
+            train_labels=y_train,
+            rows=test_rows,
+            low_threshold=thresholds.low_threshold,
+            high_threshold=thresholds.high_threshold,
+        )
+        production_ready, blocked_reason = _production_ready_status(
+            calibration=calibration,
+            thresholds=thresholds,
+            high_confidence_precision=band_metrics.high_confidence_precision,
+            high_confidence_predictions=int(operating_metrics.auto_band["predicted_positive"]),
+        )
+        summary.update(
+            {
+                "ranking_metrics": _ranking_metrics_summary(y_test, calibrated_test_scores),
+                "constraint_metrics": _constraint_metrics_summary(y_test, calibrated_test_scores),
+                "metrics": {
+                    "high_confidence_precision": band_metrics.high_confidence_precision,
+                    "high_confidence_recall": band_metrics.high_confidence_recall,
+                    "high_confidence_f1": band_metrics.high_confidence_f1,
+                    "support": band_metrics.support,
+                    "confidence_band_counts": band_metrics.band_counts,
+                },
+                "operating_metrics": asdict(operating_metrics),
+                "production_ready": production_ready,
+                "production_ready_blocked_reason": blocked_reason,
+                "benchmark_status": "complete",
+            }
+        )
+    summary_path = artifact_dir / "training_summary.json"
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return summary
+
+
+def _stacked_transformer_component_payloads(
+    *,
+    component_summaries: dict[str, dict[str, Any]],
+    component_names: list[str],
+    base_dir: Path,
+) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    missing = [name for name in component_names if name not in component_summaries]
+    if missing:
+        raise OptionalModelDependencyError(
+            "stacked transformer decider requires component summaries for: " + ", ".join(sorted(missing))
+        )
+    for name in component_names:
+        summary = component_summaries[name]
+        artifact_path = _resolve_suite_artifact_path(summary, base_dir)
+        if artifact_path is None or not artifact_path.exists():
+            raise OptionalModelDependencyError(
+                f"stacked transformer decider is missing trained component artifact for {name}"
+            )
+        bundle = load_model(artifact_path)
+        if str(bundle.get("model_family") or "") != "transformer_sequence_classifier":
+            raise ValueError(f"stacked transformer decider component {name} must be a transformer bundle")
+        payloads.append(
+            {
+                "name": name,
+                "display_name": summary.get("display_name") or name,
+                "artifact_path": artifact_path,
+                "bundle": bundle,
+                "summary": summary,
+            }
+        )
+    return payloads
+
+
+def _stacked_transformer_representation_config(
+    *,
+    split: DatasetSplit,
+    component_payloads: list[dict[str, Any]],
+) -> dict[str, bool]:
+    configured = [
+        json.dumps(payload["bundle"].get("representation_config") or {}, sort_keys=True)
+        for payload in component_payloads
+    ]
+    if configured and len(set(configured)) == 1:
+        return dict(component_payloads[0]["bundle"].get("representation_config") or {})
+    return _representation_config_for_split(split)
 
 
 def _benchmark_hybrid_policy_entry(

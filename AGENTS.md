@@ -116,6 +116,21 @@ That means:
 
 If a new model family only works with CUDA-specific assumptions, it is not aligned with the current baseline.
 
+### Remote training preference
+
+The project still needs to make sense on the Mac-first baseline, but heavy retrain and benchmark work does not need to be slower than necessary.
+
+When materially expensive model training or benchmarking is required:
+
+- prefer RunPod when it is available
+- treat the Windows 4090 laptop as the fallback, not the first choice
+- when choosing a RunPod GPU in the same retained-volume or storage region, err slightly upward rather than downward:
+  - prefer something a bit more capable than a 4090 when available at a reasonable premium in that region
+  - in practice, that usually means preferring classes like `RTX A6000` or `RTX 6000 Ada` over a plain 4090-equivalent when the regional supply is there
+- prefer staying in the existing storage region over hopping to a different region for a marginally cheaper or weaker GPU, because volume locality and sync simplicity matter here too
+- do not turn this into a hard dependency:
+  - if RunPod is unavailable, unstable, or clearly not worth the setup for the task, use the 4090 fallback or stay local on the Mac as appropriate
+
 ### Split policy is configurable, but random is the default
 
 The current default training and benchmark policy is:

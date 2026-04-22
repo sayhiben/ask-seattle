@@ -15,6 +15,7 @@ from ask_seattle.model import (
     _tensor_to_float32_numpy,
     _move_token_batch_to_device,
     _install_xformers_swiglu_fallback,
+    _transformer_positive_probabilities,
     build_inference_row,
     build_pipeline,
     classify_post,
@@ -804,6 +805,224 @@ def test_bundle_runtime_device_keeps_transformer_sequence_classifier_off_mps() -
         )
         == "cpu"
     )
+
+
+def test_transformer_positive_probabilities_retries_on_cpu_after_mps_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeMPSBackend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeMPSModule:
+        calls = 0
+
+        @classmethod
+        def empty_cache(cls) -> None:
+            cls.calls += 1
+
+    class FakeBackends:
+        mps = FakeMPSBackend()
+
+    class FakeNoGrad:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        backends = FakeBackends()
+        mps = FakeMPSModule()
+        long = "long-dtype"
+
+        @staticmethod
+        def no_grad() -> FakeNoGrad:
+            return FakeNoGrad()
+
+    class FakeTensor:
+        def __init__(self, payload: object) -> None:
+            self.payload = payload
+            self.calls: list[tuple[str, object | None]] = []
+
+        def to(self, *, device: str, dtype: object | None = None) -> "FakeTensor":
+            self.calls.append((device, dtype))
+            return self
+
+    class FakeLogits:
+        def __init__(self, values: list[list[float]]) -> None:
+            self.values = values
+
+        def detach(self) -> "FakeLogits":
+            return self
+
+        def cpu(self) -> "FakeLogits":
+            return self
+
+        def numpy(self) -> object:
+            return self.values
+
+    class FakeOutput:
+        def __init__(self, logits: FakeLogits) -> None:
+            self.logits = logits
+
+    class FakeTokenizer:
+        def __call__(self, titles, bodies, **kwargs) -> dict[str, FakeTensor]:
+            return {
+                "input_ids": FakeTensor((titles, bodies)),
+                "attention_mask": FakeTensor((titles, bodies)),
+            }
+
+    class FakeModel:
+        def __init__(self) -> None:
+            self.devices: list[str] = []
+            self.current_device = "cpu"
+            self.calls = 0
+
+        def to(self, device: str) -> "FakeModel":
+            self.current_device = device
+            self.devices.append(device)
+            return self
+
+        def eval(self) -> None:
+            return None
+
+        def __call__(self, **kwargs) -> FakeOutput:
+            self.calls += 1
+            if self.current_device == "mps":
+                raise RuntimeError("MPS backend out of memory")
+            return FakeOutput(FakeLogits([[0.0, 2.0], [2.0, 0.0]]))
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch)
+    monkeypatch.setattr(model_module, "_bundle_runtime_device", lambda bundle, torch_module: "mps")
+
+    bundle = {
+        "model_family": "transformer_sequence_classifier",
+        "model_id": "answerdotai/ModernBERT-base",
+        "model": FakeModel(),
+        "tokenizer": FakeTokenizer(),
+        "per_device_eval_batch_size": 2,
+    }
+    rows = [
+        {"title": "Need a dentist", "body": "Looking for a recommendation"},
+        {"title": "Sunset photo", "body": ""},
+    ]
+
+    probabilities = _transformer_positive_probabilities(bundle, rows)
+
+    assert probabilities == pytest.approx([0.88079708, 0.11920292])
+    assert bundle["model"].devices == ["mps", "cpu"]
+    assert FakeMPSModule.calls == 1
+
+
+def test_transformer_positive_probabilities_uses_fixed_padding_on_mps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeMPSBackend:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeMPSModule:
+        @staticmethod
+        def empty_cache() -> None:
+            return None
+
+    class FakeBackends:
+        mps = FakeMPSBackend()
+
+    class FakeNoGrad:
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+    class FakeTorch:
+        cuda = FakeCuda()
+        backends = FakeBackends()
+        mps = FakeMPSModule()
+        long = "long-dtype"
+
+        @staticmethod
+        def no_grad() -> FakeNoGrad:
+            return FakeNoGrad()
+
+    class FakeTensor:
+        def to(self, *, device: str, dtype: object | None = None) -> "FakeTensor":
+            return self
+
+    class FakeLogits:
+        def detach(self) -> "FakeLogits":
+            return self
+
+        def cpu(self) -> "FakeLogits":
+            return self
+
+        def numpy(self) -> object:
+            return [[0.0, 2.0]]
+
+    class FakeOutput:
+        def __init__(self) -> None:
+            self.logits = FakeLogits()
+
+    class FakeTokenizer:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def __call__(self, titles, bodies, **kwargs) -> dict[str, FakeTensor]:
+            self.calls.append(kwargs)
+            return {
+                "input_ids": FakeTensor(),
+                "attention_mask": FakeTensor(),
+            }
+
+    class FakeModel:
+        def to(self, device: str) -> "FakeModel":
+            return self
+
+        def eval(self) -> None:
+            return None
+
+        def __call__(self, **kwargs) -> FakeOutput:
+            return FakeOutput()
+
+    tokenizer = FakeTokenizer()
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch)
+    monkeypatch.setattr(model_module, "_bundle_runtime_device", lambda bundle, torch_module: "mps")
+
+    probabilities = _transformer_positive_probabilities(
+        {
+            "model_family": "transformer_sequence_classifier",
+            "model_id": "answerdotai/ModernBERT-base",
+            "model": FakeModel(),
+            "tokenizer": tokenizer,
+            "max_length": 256,
+        },
+        [{"title": "Need help", "body": "Body"}],
+    )
+
+    assert probabilities == pytest.approx([0.88079708])
+    assert tokenizer.calls == [
+        {
+            "truncation": True,
+            "max_length": 256,
+            "padding": "max_length",
+            "return_tensors": "pt",
+        }
+    ]
 
 
 def test_safe_binary_completion_probability_handles_nonfinite_scores() -> None:

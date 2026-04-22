@@ -21,7 +21,7 @@ Returns bridge health and startup configuration.
 
 Example response:
 
-This example is illustrative. Real `comparison_models` arrays depend on which supported benchmark-suite artifacts currently exist and load successfully. The bridge only exposes the active suite set: `tfidf_recommended` plus the three transformer models.
+This example is illustrative. Real `comparison_models` arrays depend on which supported benchmark-suite artifacts currently exist and load successfully. The bridge only exposes the active side-by-side comparison set: the three transformer bundles. The primary TF-IDF bundle and the stacked decider are surfaced separately.
 
 ```json
 {
@@ -31,7 +31,7 @@ This example is illustrative. Real `comparison_models` arrays depend on which su
   "comparison_suite_path": "/abs/path/to/benchmark_suite_summary.json",
   "split_strategy": "random",
   "split_seed": 13,
-  "decider_policy": "hybrid_consensus",
+  "decider_policy": "stacked_transformer_decider",
   "comparison_models": [
     {
       "name": "transformer_modernbert_base",
@@ -55,6 +55,13 @@ This example is illustrative. Real `comparison_models` arrays depend on which su
       "artifact_path": "/abs/path/to/models/benchmark-suite/transformer_modernbert_large/transformer_bundle.joblib"
     }
   ],
+  "stacked_decider_model": {
+    "name": "stacked_transformer_decider",
+    "display_name": "Stacked transformer decider",
+    "model_family": "stacked_transformer_decider",
+    "model_id": null,
+    "artifact_path": "/abs/path/to/models/benchmark-suite/stacked_transformer_decider/stacked_transformer_decider.joblib"
+  },
   "hybrid_policy": {
     "policy_name": "hybrid_consensus_policy",
     "display_name": "Hybrid consensus policy",
@@ -122,9 +129,11 @@ Example request:
 
 If those optional metadata fields are present, the bridge includes them in the model input for scoring.
 
-`include_comparisons` defaults to `false`. That means the normal fast `/check` path returns the active bridge model result plus `comparison_models` metadata, without waiting for every benchmark-suite model to score the same post.
+`include_comparisons` defaults to `false`. That means the normal fast `/check` path returns the effective bridge verdict plus `comparison_models` metadata, without waiting for every benchmark-suite model to score the same post.
 
-The default bridge policy is `hybrid_consensus`. That keeps the primary bridge model result in `result`, but it can also compute a routed `decider_result` for borderline, low-text, image, link, or sparse-media posts when at least two comparison models are loaded successfully.
+The default bridge policy is `stacked_transformer_decider`. That returns the trained stacked transformer policy in `result` when the suite artifact is available, while keeping the primary TF-IDF bridge verdict under `decision_context.primary_result` for audit and fallback.
+
+If you start the bridge with `DECIDER_POLICY=hybrid_consensus`, it can also compute a routed `decider_result` for borderline, low-text, image, link, or sparse-media posts when at least two comparison models are loaded successfully.
 
 When the benchmark suite history exists, the routed hybrid score uses benchmark-informed weights derived from the active comparison set on comparable prior suite runs. The bridge prefers `benchmark_history.json`, falls back to the latest `benchmark_suite_summary.json`, and only falls back again to uniform weights if neither source is usable.
 
@@ -140,11 +149,11 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
   "result": {
     "post_id": "abc123",
     "permalink": "https://www.reddit.com/r/example/comments/abc123/example/",
-    "model_name": "tfidf_logreg",
-    "display_name": "tfidf_logreg",
+    "model_name": "stacked_transformer_decider",
+    "display_name": "Stacked transformer decider",
     "model_version": "<varies>",
-    "low_threshold": "<varies>",
-    "high_threshold": "<effective per-post threshold>",
+    "low_threshold": "<stacked low threshold>",
+    "high_threshold": "<stacked high threshold>",
     "score": "<varies>",
     "score_raw": "<varies>",
     "score_calibrated": "<varies>",
@@ -153,30 +162,42 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
     "time_source": "collected_at",
     "created_at": "<varies>"
   },
-  "decider_result": null,
+  "decider_result": {
+    "post_id": "abc123",
+    "permalink": "https://www.reddit.com/r/example/comments/abc123/example/",
+    "model_name": "stacked_transformer_decider",
+    "display_name": "Stacked transformer decider",
+    "model_version": "<varies>",
+    "low_threshold": "<stacked low threshold>",
+    "high_threshold": "<stacked high threshold>",
+    "score": "<varies>",
+    "score_raw": "<varies>",
+    "score_calibrated": "<varies>",
+    "label": "askseattle",
+    "confidence_band": "high",
+    "time_source": "collected_at",
+    "created_at": "<varies>"
+  },
   "decision_context": {
-    "policy": "hybrid_consensus",
-    "decision_source": "primary_model",
-    "routed": true,
-    "route_reasons": ["image_post"],
-    "review_priority": "priority",
-    "review_reasons": ["image_post", "insufficient_comparison_support"],
-    "effective_high_threshold": "<effective per-post threshold>",
-    "successful_comparison_count": 0,
-    "comparison_error_count": 0,
-    "positive_vote_count": 0,
-    "negative_vote_count": 0,
-    "high_positive_vote_count": 0,
-    "used_comparison_names": [],
-    "hybrid_policy": {
-      "policy_name": "hybrid_consensus_policy",
-      "source": "benchmark_history",
-      "weights": [
-        {"name": "tfidf_recommended", "weight": 0.06},
-        {"name": "transformer_modernbert_base", "weight": 0.45},
-        {"name": "transformer_neobert", "weight": 0.40},
-        {"name": "transformer_modernbert_large", "weight": 0.09}
-      ]
+    "policy": "stacked_transformer_decider",
+    "decision_source": "stacked_transformer_decider",
+    "routed": false,
+    "route_reasons": [],
+    "review_priority": "high",
+    "review_reasons": ["label_changed_by_stacked_decider"],
+    "effective_high_threshold": "<stacked high threshold>",
+    "primary_result": {
+      "model_name": "tfidf_logreg",
+      "display_name": "tfidf_logreg",
+      "label": "not_askseattle",
+      "confidence_band": "low",
+      "score": "<varies>"
+    },
+    "stacked_decider_model": {
+      "name": "stacked_transformer_decider",
+      "display_name": "Stacked transformer decider",
+      "model_family": "stacked_transformer_decider",
+      "artifact_path": "/abs/path/to/models/benchmark-suite/stacked_transformer_decider/stacked_transformer_decider.joblib"
     }
   },
   "comparison_models": [
@@ -209,19 +230,22 @@ This example is illustrative. Thresholds, scores, timestamps, and version string
 Response fields:
 
 - `result`
-  - always the primary bridge model verdict
+  - always the effective deployed bridge verdict for the active policy
 - `decider_result`
-  - optional routed verdict from the bridge decider policy
+  - optional verdict produced by the active decider policy
+  - under `stacked_transformer_decider`, this usually matches `result`
+  - under `hybrid_consensus`, this only appears when a post was actually routed
   - `null` when the bridge keeps the primary verdict only
 - `decision_context`
   - routing and review metadata for the current policy
   - includes `hybrid_policy` when the bridge has a resolved weight policy for the active comparison set
+  - includes `primary_result` so callers can audit the TF-IDF fallback result even when `result` came from the stacked or hybrid policy
 - `comparison_models`
   - loaded comparison-model metadata
 - `comparisons`
   - fully scored comparison entries
 
-When the full benchmark suite artifacts exist, the bridge includes all available supported comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. Under `hybrid_consensus`, the bridge may also populate `comparisons` even when `include_comparisons` is `false` if the post was routed through the hybrid decider. The current expected full set is four models total: TF-IDF plus three encoder transformers. When the active bridge model is TF-IDF, the comparison list normally contains the three transformer models.
+When the full benchmark suite artifacts exist, the bridge includes all available supported comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. Under `hybrid_consensus`, the bridge may also populate `comparisons` even when `include_comparisons` is `false` if the post was routed through the hybrid decider. The current expected full suite is five artifact-backed models total, but the side-by-side comparison list normally contains only the three transformer models because TF-IDF is the primary fallback model and the stacked decider is surfaced separately as the active policy artifact.
 
 If one comparison model fails during scoring, the bridge now keeps the main `result` and returns an `error` field for that comparison entry instead of failing the whole `/check` request.
 
@@ -230,7 +254,7 @@ On Apple Silicon, the bridge keeps all neural comparison models off MPS during `
 `decision_context.review_priority` can be:
 
 - `normal`
-- `priority`
+- `elevated`
 - `high`
 
 `decision_context.review_reasons` currently includes bridge-routing and comparison signals such as:
@@ -244,6 +268,11 @@ On Apple Silicon, the bridge keeps all neural comparison models off MPS during `
 - `label_changed_by_hybrid`
 - `confidence_changed_by_hybrid`
 - `insufficient_comparison_support`
+- `label_changed_by_stacked_decider`
+- `confidence_changed_by_stacked_decider`
+- `stacked_decider_unavailable`
+- `stacked_decider_failed`
+- `stacked_decider_missing_result`
 
 If the bridge produced a routed `decider_result`, `decision_context` can also include:
 

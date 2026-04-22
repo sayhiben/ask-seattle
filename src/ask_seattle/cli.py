@@ -43,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     retrain_all = subparsers.add_parser(
         "retrain-all",
-        help="Retrain the operational TF-IDF model and the four-model comparison suite without benchmarking",
+        help="Retrain the operational TF-IDF model and the five-model comparison suite without benchmarking",
     )
     retrain_all.add_argument("--data", required=True, type=Path, help="Path to reviewed .jsonl label data")
     retrain_all.add_argument(
@@ -95,7 +95,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     benchmark_suite = subparsers.add_parser(
         "benchmark-suite",
-        help="Compare TF-IDF and encoder-transformer models on the same held-out split",
+        help="Compare the five artifact-backed benchmark models on the same held-out split",
     )
     benchmark_suite.add_argument("--data", required=True, type=Path, help="Path to reviewed .jsonl label data")
     benchmark_suite.add_argument("--output-dir", required=True, type=Path, help="Where benchmark artifacts go")
@@ -184,7 +184,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--model",
         required=True,
         type=Path,
-        help="Path to a trained TF-IDF bundle",
+        help="Path to the primary bridge bundle used for fallback and audit decisions",
     )
     bridge.add_argument(
         "--labels",
@@ -202,7 +202,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--retrain-every",
         type=int,
         default=0,
-        help="Auto-retrain the TF-IDF model after every N new effective training rows",
+        help="Auto-retrain the primary bridge bundle after every N new effective training rows",
     )
     bridge.add_argument(
         "--comparison-suite",
@@ -215,11 +215,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bridge.add_argument(
         "--decider-policy",
-        choices=["primary_only", "hybrid_consensus"],
-        default="hybrid_consensus",
+        choices=["primary_only", "hybrid_consensus", "stacked_transformer_decider"],
+        default="stacked_transformer_decider",
         help=(
             "How `/check` should decide the main verdict. `primary_only` keeps the active bridge model, "
-            "while `hybrid_consensus` can route borderline and hard-slice posts through loaded comparison models"
+            "`hybrid_consensus` routes hard cases through benchmark-weighted comparisons, and "
+            "`stacked_transformer_decider` uses the trained stacked transformer policy when available"
         ),
     )
     bridge.add_argument(

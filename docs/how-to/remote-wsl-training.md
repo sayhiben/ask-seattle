@@ -156,7 +156,7 @@ The current repository targets are:
 - `make benchmark-seed-sweep`
 - `make benchmark-suite`
 
-`make retrain` now retrains the operational TF-IDF model plus the four-model suite without held-out benchmarking.
+`make retrain` now retrains the operational TF-IDF model plus the five-model suite without held-out benchmarking.
 
 `make benchmark` and `make benchmark-suite` are the same benchmark-only step.
 

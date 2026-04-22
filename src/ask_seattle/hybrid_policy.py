@@ -533,7 +533,7 @@ def _review_priority(review_reasons: list[str]) -> str:
         return "normal"
     if {"label_changed_by_hybrid", "comparison_disagreement"} & reason_set:
         return "high"
-    return "priority"
+    return "elevated"
 
 
 def _weighted_hybrid_score(

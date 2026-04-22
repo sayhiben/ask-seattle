@@ -65,8 +65,10 @@ Responsibilities:
 
 - load the current model bundle
 - optionally load comparison bundles from the benchmark-suite summary
+- optionally load the trained stacked transformer decider from the benchmark-suite summary
 - expose localhost-only HTTP endpoints
 - classify posts
+- return the stacked transformer decider as the default `/check` verdict when that artifact exists
 - optionally route hard cases through a bridge-side hybrid consensus decider
 - append reviewed labels
 - optionally auto-retrain and hot-reload the model
@@ -110,12 +112,13 @@ Responsibilities:
 
 - prepare reviewed labels for training
 - fit the operational TF-IDF model and calibrator
-- retrain the full four-model suite without held-out benchmarking
+- retrain the full five-model artifact-backed suite without held-out benchmarking
 - evaluate held-out slices later from the trained suite artifacts
 - write `tfidf_logreg.joblib`
 - write `training_summary.json`
 - build one persisted benchmark-suite split manifest
-- benchmark the five comparison models against that shared manifest
+- train the stacked transformer decider from the calibrated transformer component bundles plus shared post-shape features
+- benchmark the five artifact-backed suite models plus the derived hybrid-policy row against that shared manifest
 
 ### CLI
 
@@ -133,13 +136,15 @@ Responsibilities:
 
 The bridge accepts title and body text that is already visible in the browser. This avoids server-side Reddit fetching and keeps the supported workflow narrow and auditable.
 
-### One cheap operational model path
+### One cheap operational retrain path
 
 The operational retrain path is TF-IDF + logistic regression because it is fast, easy to inspect, cheap to retrain, and strong enough for repeated wording patterns.
 
-That does not mean the repository only supports one model family. The benchmark suite now compares five local model paths on the same split so the project can make evidence-based promotion decisions without changing the default retrain path prematurely.
+That does not mean the repository only supports one model family. The benchmark suite now compares five local model paths on the same split so the project can make evidence-based promotion decisions without turning every retrain into a heavyweight transformer job.
 
-The bridge can now optionally use those loaded comparison models at inference time on hard slices. That is still a bridge-layer decision policy, not a second operational training path.
+The bridge now promotes one of those benchmarked artifacts into the deployed `/check` path: a stacked transformer decider trained from the three transformer comparison models. TF-IDF remains the cheap retrain path, the browser-visible fallback, and the audit baseline in `decision_context.primary_result`.
+
+The optional `hybrid_consensus` policy still exists, but it is now an alternate routed bridge-layer decision policy rather than the default deployed verdict.
 
 ### One shared benchmark manifest
 

@@ -5,9 +5,10 @@ Ask Seattle is a local, bridge-only classifier for Reddit submissions. It helps 
 The current stack is intentionally small:
 
 - browser-captured text only
-- one TF-IDF + logistic regression operational model
-- one optional bridge-side hybrid decider for hard slices when comparison models are loaded
-- one local four-model benchmark suite for comparison work
+- one TF-IDF + logistic regression operational retrain path
+- one default stacked transformer bridge decider when suite artifacts exist
+- one optional bridge-side hybrid decider for routed comparison work
+- one local five-model benchmark suite for comparison work
 - local JSONL training data
 - optional remote RunPod Pod execution for the existing train and benchmark targets
 - optional remote Windows WSL execution for the existing train and benchmark targets
@@ -37,9 +38,11 @@ flowchart LR
     B -->|"POST /check"| C["Local bridge"]
     B -->|"POST /train"| C
     C --> D["TF-IDF model bundle"]
+    C --> G["Stacked decider + comparison bundles"]
     C --> E["Reviewed labels JSONL"]
     E --> F["ask-seattle retrain-all / make retrain"]
     F --> D
+    F --> G
 ```
 
 ## Requirements
@@ -82,7 +85,7 @@ make retrain
 That retrains:
 
 - the operational TF-IDF model under `models/real-labels-precision-refresh/`
-- the four-model comparison suite under `models/benchmark-suite/`
+- the five-model comparison suite under `models/benchmark-suite/`
 
 It does not run held-out benchmarks.
 
@@ -184,14 +187,17 @@ Each benchmark run now also archives:
 - an append-only `benchmark_history.json` index
 - one immutable history snapshot under `models/benchmark-suite/history/<run_id>/`
 
-The suite currently compares four models on one shared split:
+The suite currently compares five artifact-backed models on one shared split:
 
 - `tfidf_recommended`
 - `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
+- `stacked_transformer_decider`
 
-When TF-IDF plus at least two comparison models benchmark successfully for the current manifest, the suite summary also adds one derived `hybrid_consensus_policy` row. That row reports the effective deployed hybrid policy using the same held-out split, not a separately trained artifact.
+When TF-IDF plus at least two comparison models benchmark successfully for the current manifest, the suite summary also adds one derived `hybrid_consensus_policy` row. That row reports the optional routed hybrid bridge policy on the same held-out split, not a separately trained artifact.
+
+The stacked transformer decider is now trained from out-of-fold component scores, not in-sample transformer predictions. That means the second-stage logistic model learns from honest held-out transformer probabilities on the suite train split, then calibrates and thresholds itself on the normal suite calibration split.
 
 If the benchmark suite artifacts exist, `make bridge` also loads those comparison models for side-by-side `/check` comparisons in the userscript UI.
 
@@ -273,12 +279,13 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the userscript can auto-check, re-check, skip through a seeded queue, and save binary labels
 - when benchmark-suite artifacts exist, the userscript also shows one side-by-side result card per comparison transformer in a `Transformer checks` section, with the loaded comparison-model count in the section title
 - the userscript now gets the main bridge verdict first, then fills in each comparison card as that model finishes instead of waiting for the whole suite before updating the panel
-- the default bridge policy is `hybrid_consensus`, which keeps the primary TF-IDF `result` but can also return a routed `decider_result` for borderline or hard-slice posts when at least two comparison models are loaded
-- when benchmark-suite history exists, the hybrid policy uses benchmark-informed per-model weights and surfaces the active policy metadata under `decision_context.hybrid_policy`; if no comparable history is available, it falls back to the latest suite summary and then to uniform weights
-- the userscript now shows a review-priority banner when the bridge routes a post through the hybrid decider, detects model disagreement, or flags a hard slice without enough comparison support
+- the default bridge policy is `stacked_transformer_decider`, which returns the stacked transformer verdict in `result` when the suite artifact is available and keeps the primary TF-IDF verdict under `decision_context.primary_result` for audit and fallback
+- if the stacked decider artifact is missing or fails, the bridge falls back cleanly to the primary TF-IDF result and records the reason in `decision_context.review_reasons`
+- `DECIDER_POLICY=hybrid_consensus` remains available for routed hard-slice comparison work; when benchmark-suite history exists, that policy uses benchmark-informed per-model weights and surfaces them under `decision_context.hybrid_policy`
+- the userscript now shows a review-priority banner when the bridge changes the label or confidence band, detects model disagreement, or flags a hard slice without enough comparison support
 - the bridge only accepts browser-originated text and local file paths
 - `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs a deterministic random train, calibration, and test split by default
-- `ask-seattle retrain-all` retrains the operational TF-IDF model plus the four-model suite without running held-out benchmarks
+- `ask-seattle retrain-all` retrains the operational TF-IDF model plus the five artifact-backed suite models without running held-out benchmarks
 - `ask-seattle benchmark-suite` reads those trained suite artifacts later and computes held-out metrics only for models that are already trained for the current manifest, plus a derived hybrid-policy row when the routed policy can be evaluated on that same split
 - the same split object is reused across all five benchmark evaluators so comparisons are apples-to-apples
 - if you later want future-facing evaluation on a longer collection window, you can opt into `SPLIT_STRATEGY=time`

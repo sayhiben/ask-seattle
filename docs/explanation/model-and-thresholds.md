@@ -4,7 +4,7 @@ Use this page when you want the model behavior explained in plain language rathe
 
 ## Why This Model
 
-The current model is TF-IDF plus logistic regression.
+The current operational retrain path is TF-IDF plus logistic regression.
 
 That choice is deliberate:
 
@@ -14,16 +14,17 @@ That choice is deliberate:
 - fast enough for immediate browser feedback
 - good at repeated wording patterns, which is common in moderation-style text buckets
 
-This project does not currently need a larger or more complex stack to prove the workflow.
+This project does not currently need a larger or more expensive retrain loop to prove the workflow.
 
-That said, the repository now also includes a four-model benchmark suite so you can compare whether encoder-transformer families improve the fuzzy edge of the decision boundary without changing the operational TF-IDF retrain path.
+That said, the repository now also includes a five-model benchmark suite so you can compare whether encoder-transformer families improve the fuzzy edge of the decision boundary without turning every local retrain into a transformer job.
 
-The comparison stack currently includes:
+The artifact-backed comparison stack currently includes:
 
 - TF-IDF baseline
 - ModernBERT-base encoder classifier
 - NeoBERT encoder classifier
 - ModernBERT-large encoder classifier
+- a stacked transformer decider trained from the three encoder scores plus shared post-shape features
 
 The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by calibrated strict-threshold readiness before using recall and PR-AUC as tie breakers. ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection. The current grid adds a CUDA-only 512-token precision NeoBERT candidate and 48 GB CUDA-only ModernBERT-large long-context and precision-long-context candidates.
 
@@ -156,7 +157,7 @@ Training now chooses it by maximizing recall subject to a minimum review-queue p
 
 The TF-IDF review-threshold policy now uses a looser review precision target of `0.70`. That keeps the review queue recall-oriented without letting the threshold collapse into a pure catch-everything setting.
 
-The broader four-model suite still reports fixed-constraint comparison metrics at stricter common bars:
+The broader benchmark suite still reports fixed-constraint comparison metrics at stricter common bars:
 
 - `auto_recall_at_precision_95`
 - `review_recall_at_precision_75`
@@ -183,15 +184,34 @@ That means the bridge can expose more structure than a single yes/no answer with
 
 The operational retrain path is still TF-IDF. That part did not change.
 
-What changed is the default bridge policy. `make bridge` now starts with `DECIDER_POLICY=hybrid_consensus`, which means:
+What changed is the default bridge policy. `make bridge` now starts with `DECIDER_POLICY=stacked_transformer_decider`, which means:
 
-- `/check` always returns the primary TF-IDF verdict in `result`
-- hard cases can also get a routed `decider_result` when at least two comparison models are loaded
-- the bridge surfaces `decision_context` so the userscript can show review priority and disagreement signals
+- `/check` returns the stacked transformer decider verdict in `result` when that suite artifact exists
+- the primary TF-IDF verdict stays available in `decision_context.primary_result` for audit and fallback
+- the stacked decider owns its own calibrator plus `low_threshold` and `high_threshold`
+- the bridge falls back cleanly to TF-IDF if the stacked artifact is missing or fails
 
-The hybrid score is now benchmark-informed. The bridge still uses a simple weighted average of the primary bridge score plus the successfully scored comparison-model outputs, but the weights come from the local benchmark artifacts instead of a fixed primary-model boost.
+The stacked transformer decider is not a hand-tuned average. It is a separate logistic model trained on:
 
-Current weighting policy:
+- calibrated `transformer_modernbert_base` score
+- calibrated `transformer_neobert` score
+- calibrated `transformer_modernbert_large` score
+- simple post-shape features such as post type, low-text, sparse-media, and crosspost flags
+- a few summary features over the component scores such as mean, max, spread, and top-gap
+
+Those training scores are now generated out-of-fold on the suite train split. Each transformer component is retrained on inner train/calibration slices, only scores the held-out outer fold, and the meta-model is fit on that stitched-together held-out score table. That avoids the old leakage pattern where the stacker learned from component scores on rows those components had already seen during training.
+
+That matters because the stacked decider can now learn when one transformer should dominate and when agreement across the three carries more signal than any one raw score without over-crediting in-sample consensus.
+
+It is also less arbitrary than the older TF-IDF-anchored hybrid: the stacked policy is trained and calibrated on its own score distribution instead of borrowing TF-IDF thresholds for a different mixed score.
+
+The older routed bridge-side hybrid still exists as an alternate policy:
+
+- `DECIDER_POLICY=hybrid_consensus`
+
+That policy is still benchmark-informed. It uses a weighted average of the primary bridge score plus the successfully scored comparison-model outputs, and the weights come from local benchmark artifacts instead of a fixed primary-model boost.
+
+Current hybrid weighting policy:
 
 - prefer comparable runs from `models/benchmark-suite/benchmark_history.json`
 - fall back to the latest `benchmark_suite_summary.json` when there is not enough comparable history
@@ -203,8 +223,6 @@ The weight formula is precision-first:
 - `auto_recall_at_precision_95` is the primary driver
 - `review_recall_at_precision_75` is the secondary driver
 - `pr_auc` is only a tie-breaker
-
-That means the two production-ready neural models can now carry most of the hybrid mass, while TF-IDF becomes a stabilizer instead of the fixed anchor and non-ready models keep some influence without dominating the routed decision.
 
 If you want to inspect only the primary TF-IDF behavior, run:
 
@@ -287,7 +305,7 @@ The time-based split still exists, but it is now an explicit option for the poin
 
 ## What The Benchmark Suite Is Actually Comparing
 
-The benchmark suite keeps the evaluation contract aligned across all four models:
+The benchmark suite keeps the evaluation contract aligned across all five artifact-backed models:
 
 - one persisted `suite_input.json` manifest
 - one split assignment reused by every family
@@ -301,6 +319,7 @@ The implementation details differ by family:
 
 - TF-IDF uses sparse lexical features and a calibrated logistic-regression head
 - encoder transformers use sequence classification heads
+- the stacked transformer decider uses calibrated transformer outputs plus lightweight post-shape features
 
 But all of them still end in the same bridge-facing concepts:
 
@@ -312,7 +331,7 @@ But all of them still end in the same bridge-facing concepts:
 
 Operationally, retraining and benchmarking are now separate steps:
 
-- `make retrain` retrains the operational TF-IDF model plus all four suite models and writes training-only summaries
+- `make retrain` retrains the operational TF-IDF model plus all five suite models and writes training-only summaries
 - `make benchmark` reads those trained suite artifacts later and computes held-out metrics only for the compatible models already on disk
 
 That split is deliberate. It keeps training failures, resumability, and held-out evaluation easier to reason about than one giant command that mixes all three concerns.
