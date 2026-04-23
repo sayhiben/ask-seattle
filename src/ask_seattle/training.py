@@ -4577,7 +4577,7 @@ def _stacked_transformer_fold_training_kwargs(
         "model_id": str(model_id),
         "display_name": str(summary.get("display_name") or payload.get("display_name") or payload["name"]),
         "config_version": str(summary.get("config_version") or "oof_locked_component"),
-        "runtime_profile": "cpu_fallback",
+        "runtime_profile": _resolve_stacked_transformer_oof_runtime_profile(),
         "representation_config_override": dict(representation_config),
         "num_train_epochs_override": STACKED_TRANSFORMER_OOF_COMPONENT_NUM_TRAIN_EPOCHS,
     }
@@ -5643,6 +5643,17 @@ def _resolve_causal_lm_runtime_profile(
     del model_id
     if requested_runtime_profile is not None:
         return requested_runtime_profile
+    if detected_runtime == "mps":
+        return "cpu_fallback"
+    return detected_runtime
+
+
+def _resolve_stacked_transformer_oof_runtime_profile() -> str:
+    try:
+        import torch
+    except ImportError:
+        return "cpu"
+    detected_runtime = _torch_runtime_device(torch)
     if detected_runtime == "mps":
         return "cpu_fallback"
     return detected_runtime

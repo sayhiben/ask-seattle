@@ -117,6 +117,7 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
                     "Visiting Seattle soon and need help comparing neighborhoods, hotels, "
                     "transit access, and easy food options for a weekend trip."
                 ),
+                "crosspost_body": "Original poster asked for allergy relief recommendations after moving to Redmond.",
                 "post_type": "image",
                 "content_domain": "reddit.com",
                 "is_crosspost": True,
@@ -130,6 +131,8 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
                 "id": "abc",
                 "title": "Where should I stay?",
                 "selftext": "Visiting",
+                "crosspost_body": "Original poster body from the source community.",
+                "crosspost_title": "Source community title",
                 "label": "ask",
                 "post_type": "text",
                 "content_domain": "reddit.com",
@@ -152,11 +155,15 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
     assert "POST_TYPE:image" in fake_model.last_rows[0]["body"]
     assert "CONTENT_DOMAIN:reddit_com" in fake_model.last_rows[0]["body"]
     assert "CROSSPOST:yes" in fake_model.last_rows[0]["body"]
+    assert "Original poster asked for allergy relief recommendations after moving to Redmond." in fake_model.last_rows[0]["body_raw"]
     assert train["ok"] is True
     assert train["saved"]["label"] == "askseattle"
     assert train["saved"]["post_type"] == "text"
     assert train["saved"]["content_domain"] == "reddit.com"
     assert train["saved"]["is_crosspost"] is False
+    assert train["saved"]["selftext"] == "Visiting\n\nOriginal poster body from the source community."
+    assert train["saved"]["crosspost_body"] == "Original poster body from the source community."
+    assert train["saved"]["crosspost_title"] == "Source community title"
     assert train["saved"]["collected_at"] == "2026-04-10T20:00:00+00:00"
     assert load_jsonl_records(labels)[0]["id"] == "abc"
 

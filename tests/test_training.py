@@ -1307,6 +1307,24 @@ def test_resolve_causal_lm_runtime_profile_prefers_cpu_on_mps_by_default() -> No
     )
 
 
+def test_resolve_stacked_transformer_oof_runtime_profile_prefers_cpu_on_mps() -> None:
+    original_resolver = training._torch_runtime_device
+    training._torch_runtime_device = lambda _torch: "mps"
+    try:
+        assert training._resolve_stacked_transformer_oof_runtime_profile() == "cpu_fallback"
+    finally:
+        training._torch_runtime_device = original_resolver
+
+
+def test_resolve_stacked_transformer_oof_runtime_profile_uses_cuda_when_available() -> None:
+    original_resolver = training._torch_runtime_device
+    training._torch_runtime_device = lambda _torch: "cuda"
+    try:
+        assert training._resolve_stacked_transformer_oof_runtime_profile() == "cuda"
+    finally:
+        training._torch_runtime_device = original_resolver
+
+
 def test_resolve_semantic_encoder_device_prefers_cpu_for_hf_embedding_on_mps() -> None:
     class FakeCuda:
         @staticmethod

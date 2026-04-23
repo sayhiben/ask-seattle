@@ -32,6 +32,12 @@ If you want to train on mixed reviewed labels but calibrate and test only on one
 make retrain EVAL_SUBREDDIT=seattle
 ```
 
+If the reviewed corpus contains paired crosspost rows plus the original source rows, repair the local JSONL first:
+
+```bash
+make repair-crossposts
+```
+
 ## Run Benchmarks On Trained Models
 
 ```bash
@@ -199,6 +205,7 @@ Important implementation details:
 - `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
 - the stacked transformer decider is trained after the three transformer bundles and owns its own calibrator plus low/high thresholds
 - the stacked transformer decider now fits its meta-model on out-of-fold transformer probabilities from the suite train split, then calibrates that stacked score on the normal suite calibration split
+- on CUDA hosts, those OOF component refits now stay on the GPU; only MPS hosts still fall back to CPU for that leg
 - the bridge hybrid policy weights now come from comparable benchmark history when available, then fall back to the latest suite summary, then to uniform weights
 - `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
 - the encoder transformer family uses title/body pair encoding, fits a sigmoid calibrator for every candidate, keeps the better candidate by calibrated strict-threshold readiness first, restores the best epoch checkpoint, and runs a small config grid for ModernBERT-base, NeoBERT, and ModernBERT-large
@@ -210,13 +217,14 @@ Important implementation details:
 The training command:
 
 1. reads the reviewed label JSONL file
-2. normalizes labels
-3. dedupes by identity and exact text hash
-4. derives `time_key` and `time_source`
-5. performs a deterministic random train/calibration/test split by default
-6. fits the TF-IDF + logistic regression model
-7. fits a sigmoid probability calibrator
-8. selects low and high thresholds
+2. repairs crosspost rows by backfilling `crosspost_body` from paired originals when `content_href` points at another captured permalink
+3. normalizes labels
+4. dedupes by identity and exact text hash
+5. derives `time_key` and `time_source`
+6. performs a deterministic random train/calibration/test split by default
+7. fits the TF-IDF + logistic regression model
+8. fits a sigmoid probability calibrator
+9. selects low and high thresholds
 9. writes trained artifacts and training summaries
 
 That retrain step does not compute held-out test metrics. Benchmarking is a separate later step.

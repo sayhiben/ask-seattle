@@ -61,6 +61,8 @@ When available, the shared representation also carries normalized content metada
 
 That is especially useful for link, image, and crosspost submissions where the title alone often underspecifies the moderation intent.
 
+Crossposts now also have a dedicated repair/hydration path. When the browser helper can see or hydrate the original linked Reddit post body, that text is preserved as `crosspost_body` and appended to the effective body used for scoring. Training applies the same repair rule to older reviewed JSONL rows by backfilling crossposts from paired original rows when `content_href` matches another captured permalink.
+
 `SPARSE_MEDIA` is intentionally more conservative than the other markers. The system still reports sparse-media slice metrics at all times, but it only feeds that token into model inputs once the shared split has enough positive support to trust it.
 
 For the operational TF-IDF model, those metadata tokens now live in a dedicated metadata feature channel rather than being mixed into the natural-language word and character channels. That keeps the feature audit cleaner and prevents the `char_wb` branch from overfitting our own synthetic marker syntax.
@@ -199,7 +201,7 @@ The stacked transformer decider is not a hand-tuned average. It is a separate lo
 - simple post-shape features such as post type, low-text, sparse-media, and crosspost flags
 - a few summary features over the component scores such as mean, max, spread, and top-gap
 
-Those training scores are now generated out-of-fold on the suite train split. Each transformer component is retrained on inner train/calibration slices, only scores the held-out outer fold, and the meta-model is fit on that stitched-together held-out score table. That avoids the old leakage pattern where the stacker learned from component scores on rows those components had already seen during training.
+Those training scores are now generated out-of-fold on the suite train split. Each transformer component is retrained on inner train/calibration slices, only scores the held-out outer fold, and the meta-model is fit on that stitched-together held-out score table. That avoids the old leakage pattern where the stacker learned from component scores on rows those components had already seen during training. On CUDA hosts, those fold-local component retrains use the GPU; on MPS hosts they still force `cpu_fallback` because that path is not stable enough yet.
 
 That matters because the stacked decider can now learn when one transformer should dominate and when agreement across the three carries more signal than any one raw score without over-crediting in-sample consensus.
 

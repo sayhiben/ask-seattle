@@ -5,10 +5,12 @@ import pytest
 from ask_seattle.data import (
     exact_text_hash,
     load_labeled_posts,
+    merge_crosspost_body,
     normalize_label,
     prepare_training_posts,
     post_metadata_text,
     post_text,
+    repair_crosspost_records,
     write_jsonl_records,
 )
 
@@ -187,3 +189,110 @@ def test_prepare_training_posts_rejects_ambiguous_label(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         prepare_training_posts(source)
+
+
+def test_merge_crosspost_body_prefers_nonempty_and_dedupes_identical_text() -> None:
+    assert merge_crosspost_body("", "Original body") == "Original body"
+    assert merge_crosspost_body("Original body", "Original body") == "Original body"
+    assert merge_crosspost_body("Crosspost note", "Original body") == "Crosspost note\n\nOriginal body"
+
+
+def test_repair_crosspost_records_backfills_body_and_drops_safe_duplicate_original() -> None:
+    records = [
+        {
+            "id": "cross",
+            "permalink": "https://www.reddit.com/r/Seattle/comments/cross/example/",
+            "title": "Need apartment advice",
+            "selftext": "",
+            "label": "askseattle",
+            "post_type": "crosspost",
+            "is_crosspost": True,
+            "content_href": "/r/AskSeattle/comments/original/example/",
+        },
+        {
+            "id": "original",
+            "permalink": "https://www.reddit.com/r/AskSeattle/comments/original/example/",
+            "title": "Need apartment advice",
+            "selftext": "Looking for neighborhoods with easy transit access.",
+            "label": "askseattle",
+            "post_type": "text",
+            "is_crosspost": False,
+        },
+    ]
+
+    repaired, summary = repair_crosspost_records(records)
+
+    assert len(repaired) == 1
+    assert repaired[0]["id"] == "cross"
+    assert repaired[0]["crosspost_body"] == "Looking for neighborhoods with easy transit access."
+    assert repaired[0]["selftext"] == "Looking for neighborhoods with easy transit access."
+    assert summary["crosspost_rows_hydrated"] == 1
+    assert summary["crosspost_duplicates_removed"] == 1
+
+
+def test_prepare_training_posts_uses_crosspost_body_and_collapses_original_duplicate(tmp_path: Path) -> None:
+    source = tmp_path / "captured.jsonl"
+    write_jsonl_records(
+        source,
+        [
+            {
+                "id": "cross",
+                "permalink": "https://www.reddit.com/r/Seattle/comments/cross/example/",
+                "title": "Need apartment advice",
+                "selftext": "",
+                "label": "askseattle",
+                "post_type": "crosspost",
+                "is_crosspost": True,
+                "content_href": "/r/AskSeattle/comments/original/example/",
+                "collected_at": "2026-04-10T20:00:00+00:00",
+            },
+            {
+                "id": "original",
+                "permalink": "https://www.reddit.com/r/AskSeattle/comments/original/example/",
+                "title": "Need apartment advice",
+                "selftext": "Looking for neighborhoods with easy transit access.",
+                "label": "askseattle",
+                "post_type": "text",
+                "is_crosspost": False,
+                "collected_at": "2026-04-10T20:01:00+00:00",
+            },
+        ],
+    )
+
+    posts, summary = prepare_training_posts(source)
+
+    assert len(posts) == 1
+    assert posts[0].post_id == "cross"
+    assert posts[0].selftext == "Looking for neighborhoods with easy transit access."
+    assert summary["crosspost_rows_hydrated"] == 1
+    assert summary["crosspost_duplicates_removed"] == 1
+
+
+def test_repair_crosspost_records_ignores_distinct_reframed_crosspost_label_difference() -> None:
+    records = [
+        {
+            "id": "cross",
+            "permalink": "https://www.reddit.com/r/Seattle/comments/cross/example/",
+            "title": "Does anyone in Seattle remember what this accident was like locally?",
+            "selftext": "",
+            "label": "askseattle",
+            "post_type": "crosspost",
+            "is_crosspost": True,
+            "content_href": "/r/todayilearned/comments/original/example/",
+        },
+        {
+            "id": "original",
+            "permalink": "https://www.reddit.com/r/todayilearned/comments/original/example/",
+            "title": "TIL that a maintenance decision contributed to Alaska Airlines Flight 261 crashing",
+            "selftext": "",
+            "label": "not_askseattle",
+            "post_type": "link",
+            "is_crosspost": False,
+        },
+    ]
+
+    repaired, summary = repair_crosspost_records(records)
+
+    assert len(repaired) == 2
+    assert summary["crosspost_duplicates_removed"] == 0
+    assert summary["crosspost_label_conflicts"] == 0

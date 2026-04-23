@@ -131,11 +131,18 @@ The userscript sends the text already visible in the browser, plus available pag
 - `content_href`
 - `content_domain`
 - `is_crosspost`
+- `crosspost_title`
+- `crosspost_body`
 - `capture_context`
 
 The bridge does not fetch Reddit content separately.
 
-When available, the bridge also uses `post_type`, `content_domain`, and `is_crosspost` during `/check`, so browser-captured metadata now helps both training and inference.
+For crossposts, the helper now tries two browser-side hydration paths before sending the payload:
+
+- extract the embedded crosspost preview text already visible in the DOM
+- if that still leaves the crosspost body empty, fetch the linked Reddit post page from the browser and parse the original title/body there
+
+When available, the bridge also uses `post_type`, `content_domain`, `is_crosspost`, and `crosspost_body` during `/check`, so browser-captured metadata now helps both training and inference.
 
 ## Notes
 

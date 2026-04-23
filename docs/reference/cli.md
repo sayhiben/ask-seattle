@@ -21,6 +21,7 @@ The normal operator entry points are still the repository make targets:
 - `make runpod-prune-volumes`
 - `make install-git-hooks`
 - `make secret-scan`
+- `make repair-crossposts`
 - `make retrain`
 - `make benchmark`
 - `make benchmark-variants`
@@ -45,6 +46,7 @@ Examples:
 ```bash
 make install-git-hooks
 make secret-scan
+make repair-crossposts
 make retrain REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark REMOTE=runpod EVAL_SUBREDDIT=seattle
 make benchmark-variants REMOTE=runpod EVAL_SUBREDDIT=seattle
@@ -118,6 +120,45 @@ The scanner:
 If you need to suppress a false positive on a specific line, add:
 
 - `secret-scan: allow`
+
+## `make repair-crossposts`
+
+Repair the local reviewed corpus by hydrating crosspost rows from their paired originals and dropping safe duplicate original rows.
+
+```bash
+make repair-crossposts
+```
+
+This rewrites:
+
+- `data/processed/tampermonkey_labels.jsonl`
+
+using the same crosspost-repair logic that training now applies automatically before split and dedupe.
+
+## `ask-seattle repair-crossposts`
+
+Backfill crosspost bodies from paired original rows and optionally rewrite the reviewed JSONL file in place.
+
+```bash
+ask-seattle repair-crossposts --data PATH [--output PATH]
+```
+
+Arguments:
+
+- `--data`
+  - required
+  - path to reviewed `.jsonl` label data
+- `--output`
+  - optional
+  - output path for the repaired JSONL
+  - defaults to rewriting `--data` in place
+
+The command prints a JSON summary including:
+
+- input and output record counts
+- hydrated crosspost-row count
+- duplicate-original rows removed
+- unmatched or conflicting crosspost rows left untouched
 
 ## `ask-seattle train`
 

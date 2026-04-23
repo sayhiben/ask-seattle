@@ -3,10 +3,12 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 
 POSITIVE_LABELS = {"1", "true", "yes", "ask", "askseattle", "ask_seattle"}
@@ -17,6 +19,7 @@ LOW_TEXT_BODY_CHAR_THRESHOLD = 80
 URL_PLACEHOLDER = "URL"
 DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN = True
 DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS = True
+REDDIT_POST_HOSTS = frozenset({"www.reddit.com", "reddit.com", "new.reddit.com", "old.reddit.com"})
 URL_PATTERN = re.compile(
     r"(?i)\b(?:https?://|www\.)\S+|\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/\S*)?"
 )
@@ -205,6 +208,102 @@ def exact_text_hash(title: str, selftext: str | None = None) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def merge_crosspost_body(selftext: str | None = None, crosspost_body: str | None = None) -> str:
+    body = normalize_body(selftext).strip()
+    hydrated_crosspost_body = normalize_body(crosspost_body).strip()
+    if not hydrated_crosspost_body:
+        return body
+    if not body:
+        return hydrated_crosspost_body
+    if _collapse_text_for_match(body) == _collapse_text_for_match(hydrated_crosspost_body):
+        return body
+    return "\n\n".join(part for part in (body, hydrated_crosspost_body) if part).strip()
+
+
+def effective_review_body(record: dict[str, Any]) -> str:
+    return merge_crosspost_body(
+        record.get("selftext") or record.get("body") or "",
+        record.get("crosspost_body") or "",
+    )
+
+
+def normalize_reddit_post_url(value: str | None) -> str:
+    if value in ("", None):
+        return ""
+    try:
+        resolved = urljoin("https://www.reddit.com", str(value).strip())
+        parsed = urlparse(resolved)
+    except ValueError:
+        return ""
+    host = parsed.netloc.lower()
+    if host not in REDDIT_POST_HOSTS:
+        return ""
+    path = re.sub(r"/+", "/", parsed.path or "").rstrip("/")
+    if "/comments/" not in path:
+        return ""
+    return f"https://www.reddit.com{path}/"
+
+
+def repair_crosspost_records(records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    output = [dict(record) for record in records]
+    permalink_to_indices: dict[str, list[int]] = {}
+    for index, record in enumerate(output):
+        normalized_permalink = normalize_reddit_post_url(str(record.get("permalink") or "").strip())
+        if normalized_permalink:
+            permalink_to_indices.setdefault(normalized_permalink, []).append(index)
+
+    dropped_indices: set[int] = set()
+    stats = {
+        "crosspost_rows": 0,
+        "crosspost_rows_hydrated": 0,
+        "crosspost_duplicates_removed": 0,
+        "crosspost_label_conflicts": 0,
+        "crosspost_rows_without_target": 0,
+        "crosspost_rows_without_content_href": 0,
+    }
+
+    for index, record in enumerate(output):
+        if index in dropped_indices or not _is_crosspost_record(record):
+            continue
+        stats["crosspost_rows"] += 1
+        target_permalink = normalize_reddit_post_url(str(record.get("content_href") or "").strip())
+        if not target_permalink:
+            stats["crosspost_rows_without_content_href"] += 1
+            continue
+        candidate_indices = [
+            candidate
+            for candidate in permalink_to_indices.get(target_permalink, [])
+            if candidate != index and candidate not in dropped_indices
+        ]
+        if not candidate_indices:
+            stats["crosspost_rows_without_target"] += 1
+            continue
+        source_index = _choose_crosspost_source_index(output, index, candidate_indices)
+        source_record = output[source_index]
+        source_body = effective_review_body(source_record)
+        source_title = str(source_record.get("title") or "").strip()
+        existing_crosspost_body = normalize_body(record.get("crosspost_body") or "").strip()
+        previous_selftext = normalize_body(record.get("selftext") or record.get("body") or "").strip()
+        merged_selftext = merge_crosspost_body(previous_selftext, source_body)
+        if source_body:
+            record["crosspost_body"] = source_body
+            if merged_selftext != previous_selftext or not existing_crosspost_body:
+                stats["crosspost_rows_hydrated"] += 1
+            record["selftext"] = merged_selftext
+        if source_title and str(record.get("crosspost_title") or "").strip() != source_title:
+            record["crosspost_title"] = source_title
+        if _normalized_label_or_none(record) == _normalized_label_or_none(source_record):
+            if not _is_crosspost_record(source_record):
+                dropped_indices.add(source_index)
+                stats["crosspost_duplicates_removed"] += 1
+        else:
+            if _crosspost_label_conflict_is_actionable(record, source_record):
+                stats["crosspost_label_conflicts"] += 1
+
+    repaired_records = [record for index, record in enumerate(output) if index not in dropped_indices]
+    return repaired_records, stats
+
+
 def derive_time_key(row: dict[str, Any]) -> tuple[float | None, str | None]:
     explicit = _float_or_none(row.get("time_key"))
     if explicit is not None:
@@ -312,9 +411,10 @@ def write_jsonl_records(path: str | Path, records: list[dict[str, Any]]) -> None
 
 
 def prepare_training_records(input_path: str | Path) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    repaired_records, crosspost_summary = repair_crosspost_records(_load_review_records(input_path))
     normalized_records = [
         _normalized_review_record(record)
-        for record in _load_review_records(input_path)
+        for record in repaired_records
         if str(record.get("label") or "").strip()
     ]
 
@@ -342,6 +442,7 @@ def prepare_training_records(input_path: str | Path) -> tuple[list[dict[str, Any
         "text_hash_replaced": text_hash_replaced,
         "training_records": len(ordered_training_records),
         "missing_time_key": missing_time_key,
+        **crosspost_summary,
     }
     return ordered_training_records, summary
 
@@ -367,7 +468,8 @@ def _normalized_review_record(row: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("Reviewed label record is missing title")
 
     normalized_label = normalize_review_label(row.get("label"))
-    selftext = normalize_body(row.get("selftext") or row.get("body") or "")
+    crosspost_body = normalize_body(row.get("crosspost_body") or "")
+    selftext = merge_crosspost_body(row.get("selftext") or row.get("body") or "", crosspost_body)
     record = {
         "id": str(row.get("id") or "").strip(),
         "created_utc": row.get("created_utc") or "",
@@ -388,6 +490,8 @@ def _normalized_review_record(row: dict[str, Any]) -> dict[str, Any]:
         "capture_context",
         "source",
         "is_crosspost",
+        "crosspost_title",
+        "crosspost_body",
         "time_source",
         "time_key",
     ):
@@ -406,10 +510,7 @@ def _normalized_review_record(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_text_for_hash(title: str, selftext: str | None = None) -> str:
-    def collapse(value: str) -> str:
-        return re.sub(r"\s+", " ", value.strip().lower())
-
-    return f"title:{collapse(str(title))}\nbody:{collapse(normalize_body(selftext))}"
+    return f"title:{_collapse_text_for_match(str(title))}\nbody:{_collapse_text_for_match(normalize_body(selftext))}"
 
 
 def _normalized_text_length(value: str | None) -> int:
@@ -495,6 +596,51 @@ def _normalize_metadata_token(value: Any) -> str | None:
     normalized = re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower())
     normalized = re.sub(r"_+", "_", normalized).strip("_")
     return normalized or None
+
+
+def _collapse_text_for_match(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+
+def _is_crosspost_record(record: dict[str, Any]) -> bool:
+    return bool(
+        _bool_or_none(record.get("is_crosspost")) is True
+        or _normalize_metadata_token(record.get("post_type")) == "crosspost"
+    )
+
+
+def _normalized_label_or_none(record: dict[str, Any]) -> str | None:
+    if str(record.get("label") or "").strip() == "":
+        return None
+    return normalize_review_label(record.get("label"))
+
+
+def _choose_crosspost_source_index(
+    records: list[dict[str, Any]],
+    crosspost_index: int,
+    candidate_indices: list[int],
+) -> int:
+    def source_sort_key(candidate_index: int) -> tuple[int, int, int, int]:
+        record = records[candidate_index]
+        non_crosspost_penalty = 1 if _is_crosspost_record(record) else 0
+        empty_body_penalty = 1 if not effective_review_body(record) else 0
+        next_row_penalty = 0 if candidate_index == crosspost_index + 1 else 1
+        distance = abs(candidate_index - crosspost_index)
+        return (next_row_penalty, non_crosspost_penalty, empty_body_penalty, distance)
+
+    return min(candidate_indices, key=source_sort_key)
+
+
+def _crosspost_label_conflict_is_actionable(
+    crosspost_record: dict[str, Any],
+    source_record: dict[str, Any],
+) -> bool:
+    cross_title = str(crosspost_record.get("title") or "").strip().lower()
+    source_title = str(source_record.get("title") or "").strip().lower()
+    if not cross_title or not source_title:
+        return True
+    similarity = SequenceMatcher(None, cross_title, source_title).ratio()
+    return similarity >= 0.35
 
 
 def _parse_timestamp(value: Any) -> float | None:

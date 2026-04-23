@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ask Seattle Local Classifier Helper
 // @namespace    https://github.com/local/ask-seattle
-// @version      0.1.17
+// @version      0.1.18
 // @description  Adds auto-checking, skip, re-check, binary labeling, and transformer comparison cards for the local Ask Seattle classifier bridge.
 // @match        https://www.reddit.com/r/*
 // @match        https://new.reddit.com/r/*
@@ -18,7 +18,7 @@
 (function () {
   'use strict';
 
-  const SCRIPT_VERSION = '0.1.17';
+  const SCRIPT_VERSION = '0.1.18';
   const BRIDGE_URL_CANDIDATES = ['http://localhost:8765', 'http://127.0.0.1:8765'];
   const PANEL_ID = 'ask-seattle-local-helper';
   const QUEUE_KEY = 'askSeattlePostQueue';
@@ -30,6 +30,8 @@
   const AUTO_CHECK_DELAY_MS = 400;
   const CHECK_TIMEOUT_MS = 10000;
   const COMPARISON_TIMEOUT_MS = 120000;
+  const CROSSPOST_FETCH_TIMEOUT_MS = 8000;
+  const REDDIT_POST_HOSTS = new Set(['www.reddit.com', 'reddit.com', 'new.reddit.com', 'old.reddit.com']);
   const MODEL_DISPLAY_NAMES = {
     tfidf_recommended: 'TF-IDF',
     transformer_modernbert_base: 'ModernBERT-base',
@@ -58,8 +60,147 @@
     return '';
   }
 
-  function postRoot() {
-    return document.querySelector('shreddit-post') || document.querySelector('[data-testid="post-container"]') || document;
+  function postRoot(rootDocument = document) {
+    return rootDocument.querySelector('shreddit-post') || rootDocument.querySelector('[data-testid="post-container"]') || rootDocument;
+  }
+
+  function collapseText(value) {
+    return String(value || '').trim().replace(/\s+/g, ' ').toLowerCase();
+  }
+
+  function mergeBodies(primaryBody, extraBody) {
+    const primary = String(primaryBody || '').trim();
+    const extra = String(extraBody || '').trim();
+    if (!extra) return primary;
+    if (!primary) return extra;
+    if (collapseText(primary) === collapseText(extra)) return primary;
+    return `${primary}\n\n${extra}`;
+  }
+
+  function normalizeRedditPostUrl(url) {
+    try {
+      const parsed = new URL(url, window.location.origin);
+      if (!REDDIT_POST_HOSTS.has(parsed.hostname.toLowerCase())) return '';
+      if (!/\/comments\/[^/]+/.test(parsed.pathname)) return '';
+      return `https://www.reddit.com${parsed.pathname.replace(/\/+$/, '')}/`;
+    } catch (_error) {
+      return '';
+    }
+  }
+
+  function extractPostContent(root, rootDocument = document) {
+    const title =
+      attrFrom(root, ['post-title']) ||
+      textFrom('[slot="title"]', root) ||
+      textFrom('h1', root) ||
+      textFrom('[data-testid="post-container"] h1', root) ||
+      textFrom('[data-test-id="post-content"] h1', root) ||
+      textFrom('h1', rootDocument) ||
+      String(rootDocument.title || '')
+        .replace(/ : r\/.*$/, '')
+        .replace(/ - Reddit$/, '')
+        .trim();
+    const selftext =
+      textFrom('[slot="text-body"]', root) ||
+      textFrom('[slot="body"]', root) ||
+      textFrom('[data-click-id="text"]', root) ||
+      textFrom('[data-test-id="post-content"] [data-click-id="text"]', root) ||
+      '';
+    return { title, selftext };
+  }
+
+  function uniqueElements(elements) {
+    const seen = new Set();
+    const output = [];
+    for (const element of elements) {
+      if (!element || seen.has(element) || element === document || element === document.body || element === document.documentElement) {
+        continue;
+      }
+      seen.add(element);
+      output.push(element);
+    }
+    return output;
+  }
+
+  function collectCrosspostCandidateRoots(root, contentHref) {
+    const candidates = [];
+    for (const selector of [
+      'crosspost-root',
+      '[crosspost]',
+      '[is-crosspost]',
+      '[slot="crosspost"]',
+      '[slot*="crosspost"]',
+      '[data-testid*="crosspost"]',
+      '[data-test-id*="crosspost"]',
+      'shreddit-post',
+    ]) {
+      candidates.push(...root.querySelectorAll(selector));
+    }
+
+    const targetUrl = normalizeRedditPostUrl(contentHref);
+    if (targetUrl) {
+      for (const anchor of root.querySelectorAll('a[href*="/comments/"]')) {
+        if (normalizeRedditPostUrl(anchor.href) !== targetUrl) continue;
+        for (const candidate of [
+          anchor.closest('shreddit-post'),
+          anchor.closest('crosspost-root'),
+          anchor.closest('[crosspost]'),
+          anchor.closest('[is-crosspost]'),
+          anchor.closest('[slot="crosspost"]'),
+          anchor.closest('article'),
+          anchor.closest('div'),
+        ]) {
+          if (candidate) candidates.push(candidate);
+        }
+      }
+    }
+
+    return uniqueElements(candidates).filter((candidate) => candidate !== root);
+  }
+
+  function extractVisibleCrosspostContent(root, contentHref) {
+    for (const candidate of collectCrosspostCandidateRoots(root, contentHref)) {
+      const extracted = extractPostContent(candidate);
+      const title = String(extracted.title || '').trim();
+      const selftext = String(extracted.selftext || '').trim();
+      if (title || selftext) {
+        return { title, selftext, source: 'visible_preview' };
+      }
+    }
+    return null;
+  }
+
+  async function fetchCrosspostContent(contentHref) {
+    const targetUrl = normalizeRedditPostUrl(contentHref);
+    if (!targetUrl) return null;
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), CROSSPOST_FETCH_TIMEOUT_MS);
+    try {
+      const response = await fetch(targetUrl, {
+        credentials: 'include',
+        signal: controller.signal,
+      });
+      if (!response.ok) return null;
+      const html = await response.text();
+      if (
+        !html ||
+        /prove your humanity/i.test(html) ||
+        /whoa there, pardner/i.test(html) ||
+        /<title>blocked<\/title>/i.test(html)
+      ) {
+        return null;
+      }
+      const parsed = new DOMParser().parseFromString(html, 'text/html');
+      const extracted = extractPostContent(postRoot(parsed), parsed);
+      const title = String(extracted.title || '').trim();
+      const selftext = String(extracted.selftext || '').trim();
+      if (!title && !selftext) return null;
+      return { title, selftext, source: 'same_origin_fetch' };
+    } catch (_error) {
+      return null;
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
   }
 
   function parseCreatedUtc(value) {
@@ -113,20 +254,7 @@
     const permalink = window.location.href.split('?')[0].split('#')[0];
     const idMatch = permalink.match(/\/comments\/([^/]+)/);
     const root = postRoot();
-    const title =
-      attrFrom(root, ['post-title']) ||
-      textFrom('[slot="title"]', root) ||
-      textFrom('h1', root) ||
-      textFrom('[data-testid="post-container"] h1') ||
-      textFrom('[data-test-id="post-content"] h1') ||
-      (isCommentPage() ? textFrom('h1') : '') ||
-      document.title.replace(/ : r\/.*$/, '').replace(/ - Reddit$/, '').trim();
-    const selftext =
-      textFrom('[slot="text-body"]', root) ||
-      textFrom('[slot="body"]', root) ||
-      textFrom('[data-click-id="text"]', root) ||
-      textFrom('[data-test-id="post-content"] [data-click-id="text"]') ||
-      '';
+    const { title, selftext } = extractPostContent(root, document);
 
     return {
       id: idMatch ? idMatch[1] : '',
@@ -136,6 +264,31 @@
       collected_at: new Date().toISOString(),
       ...postMetadata(root),
     };
+  }
+
+  async function resolvePost(post) {
+    const resolved = { ...post };
+    const isCrosspost =
+      resolved.is_crosspost === true || String(resolved.post_type || '').trim().toLowerCase() === 'crosspost';
+    if (!isCrosspost) return resolved;
+
+    const root = postRoot();
+    const visibleCrosspost = extractVisibleCrosspostContent(root, resolved.content_href);
+    let crosspostTitle = String(visibleCrosspost?.title || '').trim();
+    let crosspostBody = String(visibleCrosspost?.selftext || '').trim();
+    if (!crosspostBody) {
+      const fetchedCrosspost = await fetchCrosspostContent(resolved.content_href);
+      if (fetchedCrosspost) {
+        crosspostTitle = crosspostTitle || String(fetchedCrosspost.title || '').trim();
+        crosspostBody = String(fetchedCrosspost.selftext || '').trim();
+      }
+    }
+    if (!crosspostBody) return resolved;
+
+    resolved.crosspost_title = crosspostTitle;
+    resolved.crosspost_body = crosspostBody;
+    resolved.selftext = mergeBodies(resolved.selftext, crosspostBody);
+    return resolved;
   }
 
   function postIdentity(post) {
@@ -712,7 +865,7 @@
       setStatus('Open a post page before checking or training.', true);
       return;
     }
-    const post = providedPost || currentPost();
+    const post = await resolvePost(providedPost || currentPost());
     if (!post.title) {
       if (!auto) {
         setStatus('Could not find a post title on this page.', true);
@@ -811,7 +964,7 @@
       setStatus('Open a post page before checking or training.', true);
       return;
     }
-    const post = currentPost();
+    const post = await resolvePost(currentPost());
     if (!post.title) {
       setStatus('Could not find a post title on this page.', true);
       return;

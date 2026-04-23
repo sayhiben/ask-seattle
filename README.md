@@ -70,6 +70,12 @@ python -m pip install -e ".[dev,models]"
 
 Then choose the path that matches your current state.
 
+If your reviewed corpus contains paired crosspost rows plus the original source rows, repair that local JSONL first:
+
+```bash
+make repair-crossposts
+```
+
 ### Start The Bridge With An Existing Model
 
 ```bash
@@ -197,7 +203,7 @@ The suite currently compares five artifact-backed models on one shared split:
 
 When TF-IDF plus at least two comparison models benchmark successfully for the current manifest, the suite summary also adds one derived `hybrid_consensus_policy` row. That row reports the optional routed hybrid bridge policy on the same held-out split, not a separately trained artifact.
 
-The stacked transformer decider is now trained from out-of-fold component scores, not in-sample transformer predictions. That means the second-stage logistic model learns from honest held-out transformer probabilities on the suite train split, then calibrates and thresholds itself on the normal suite calibration split.
+The stacked transformer decider is now trained from out-of-fold component scores, not in-sample transformer predictions. That means the second-stage logistic model learns from honest held-out transformer probabilities on the suite train split, then calibrates and thresholds itself on the normal suite calibration split. On CUDA hosts such as RunPod, those fold-local component retrains now use the GPU too; only MPS hosts still force the OOF leg through `cpu_fallback` for stability.
 
 If the benchmark suite artifacts exist, `make bridge` also loads those comparison models for side-by-side `/check` comparisons in the userscript UI.
 

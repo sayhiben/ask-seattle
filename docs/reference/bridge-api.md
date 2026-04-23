@@ -110,6 +110,8 @@ Optional request fields:
 - `post_type`
 - `content_domain`
 - `is_crosspost`
+- `crosspost_title`
+- `crosspost_body`
 - `include_comparisons`
 
 Example request:
@@ -120,6 +122,7 @@ Example request:
   "permalink": "https://www.reddit.com/r/example/comments/abc123/example/",
   "title": "Where should I stay for a weekend trip?",
   "selftext": "Looking for hotel and food recommendations.",
+  "crosspost_body": "Original ask-style body from the linked source subreddit.",
   "collected_at": "2026-04-10T20:00:00+00:00",
   "post_type": "image",
   "content_domain": "instagram.com",
@@ -128,6 +131,8 @@ Example request:
 ```
 
 If those optional metadata fields are present, the bridge includes them in the model input for scoring.
+
+When `crosspost_body` is present, the bridge appends it to `selftext` before scoring. That lets crossposts carry the original embedded post body through the normal `/check` path even when the outer crosspost shell has little or no body text of its own.
 
 `include_comparisons` defaults to `false`. That means the normal fast `/check` path returns the effective bridge verdict plus `comparison_models` metadata, without waiting for every benchmark-suite model to score the same post.
 
@@ -351,6 +356,8 @@ Optional request fields:
 - `content_href`
 - `content_domain`
 - `is_crosspost`
+- `crosspost_title`
+- `crosspost_body`
 - `capture_context`
 
 Response fields:
@@ -361,6 +368,8 @@ Response fields:
 - `auto_retrain`
 
 `replaced` is `true` when an existing record with the same identity was overwritten.
+
+When `crosspost_body` is present, the bridge appends it to `selftext` before saving the reviewed label row, and also preserves the raw `crosspost_body` field in the JSONL record.
 
 ## `POST /recorded`
 

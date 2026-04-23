@@ -6,6 +6,7 @@ import logging
 from dataclasses import asdict
 from pathlib import Path
 
+from ask_seattle.data import load_jsonl_records, repair_crosspost_records, write_jsonl_records
 from ask_seattle.model import classify_post, load_model
 from ask_seattle.training import (
     DEFAULT_BENCHMARK_SEED_MODELS,
@@ -230,6 +231,18 @@ def build_parser() -> argparse.ArgumentParser:
     add_split_args(bridge)
     bridge.set_defaults(func=serve_bridge_command)
 
+    repair_crossposts = subparsers.add_parser(
+        "repair-crossposts",
+        help="Backfill crosspost bodies from paired original rows and drop safe duplicate originals",
+    )
+    repair_crossposts.add_argument("--data", required=True, type=Path, help="Path to reviewed .jsonl label data")
+    repair_crossposts.add_argument(
+        "--output",
+        type=Path,
+        help="Optional output path. Defaults to rewriting --data in place",
+    )
+    repair_crossposts.set_defaults(func=repair_crossposts_command)
+
     return parser
 
 
@@ -367,6 +380,27 @@ def serve_bridge_command(args: argparse.Namespace) -> int:
         split_seed=args.split_seed,
         evaluation_subreddit=args.eval_subreddit,
         decider_policy=args.decider_policy,
+    )
+    return 0
+
+
+def repair_crossposts_command(args: argparse.Namespace) -> int:
+    records = load_jsonl_records(args.data)
+    repaired_records, summary = repair_crosspost_records(records)
+    output_path = args.output or args.data
+    write_jsonl_records(output_path, repaired_records)
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "data_path": str(args.data),
+                "output_path": str(output_path),
+                "input_records": len(records),
+                "output_records": len(repaired_records),
+                **summary,
+            },
+            indent=2,
+        )
     )
     return 0
 

@@ -381,16 +381,22 @@ def test_stacked_transformer_fold_training_kwargs_reuses_selected_component_prof
         },
     }
 
-    kwargs = training._stacked_transformer_fold_training_kwargs(
-        payload,
-        representation_config={
-            "include_sparse_media_token": False,
-            "include_image_low_text_tokens": True,
-        },
-    )
+    original_runtime_resolver = training._resolve_stacked_transformer_oof_runtime_profile
+    training._resolve_stacked_transformer_oof_runtime_profile = lambda: "cuda"
+    try:
+        kwargs = training._stacked_transformer_fold_training_kwargs(
+            payload,
+            representation_config={
+                "include_sparse_media_token": False,
+                "include_image_low_text_tokens": True,
+            },
+        )
+    finally:
+        training._resolve_stacked_transformer_oof_runtime_profile = original_runtime_resolver
 
     assert kwargs["model_id"] == "chandar-lab/NeoBERT"
     assert kwargs["display_name"] == "Transformer NeoBERT"
     assert kwargs["config_version"] == "v7_bootstrap_precision_grid"
+    assert kwargs["runtime_profile"] == "cuda"
     assert kwargs["locked_candidate_profile"]["max_length"] == 256
     assert kwargs["locked_loss_mode"] == "balanced_cross_entropy"

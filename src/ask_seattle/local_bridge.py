@@ -12,6 +12,7 @@ from typing import Any
 
 from ask_seattle.data import (
     load_jsonl_records,
+    merge_crosspost_body,
     normalize_review_label,
     prepare_training_records,
     utc_now_iso,
@@ -252,7 +253,7 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
 
     def _handle_check(self, payload: dict[str, Any]) -> None:
         title = _required_string(payload, "title")
-        selftext = str(payload.get("selftext") or "")
+        selftext = _effective_request_selftext(payload)
         post_type = _optional_string(payload, "post_type")
         content_domain = _optional_string(payload, "content_domain")
         is_crosspost = _optional_bool(payload, "is_crosspost")
@@ -366,7 +367,7 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
     def _handle_check_comparison(self, payload: dict[str, Any]) -> None:
         comparison_name = _required_string(payload, "name")
         title = _required_string(payload, "title")
-        selftext = str(payload.get("selftext") or "")
+        selftext = _effective_request_selftext(payload)
         post_type = _optional_string(payload, "post_type")
         content_domain = _optional_string(payload, "content_domain")
         is_crosspost = _optional_bool(payload, "is_crosspost")
@@ -406,7 +407,7 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             "created_utc": payload.get("created_utc") or "",
             "permalink": payload.get("permalink") or "",
             "title": title,
-            "selftext": str(payload.get("selftext") or ""),
+            "selftext": _effective_request_selftext(payload),
             "label": normalized_label,
             "source": "tampermonkey",
             "notes": payload.get("notes") or "",
@@ -418,6 +419,8 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             "content_href",
             "content_domain",
             "is_crosspost",
+            "crosspost_title",
+            "crosspost_body",
             "capture_context",
         ):
             if optional_field in payload:
@@ -522,6 +525,13 @@ def _optional_bool(payload: dict[str, Any], key: str) -> bool | None:
     if normalized in {"0", "false", "no", "n"}:
         return False
     return bool(value)
+
+
+def _effective_request_selftext(payload: dict[str, Any]) -> str:
+    return merge_crosspost_body(
+        str(payload.get("selftext") or ""),
+        str(payload.get("crosspost_body") or ""),
+    )
 
 
 def _request_time_source(payload: dict[str, Any]) -> str | None:

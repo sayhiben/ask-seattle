@@ -1,4 +1,4 @@
-.PHONY: help runpod-bootstrap runpod-cleanup runpod-prune-volumes install-git-hooks secret-scan retrain benchmark benchmark-variants benchmark-seed-sweep benchmark-suite bridge
+.PHONY: help runpod-bootstrap runpod-cleanup runpod-prune-volumes install-git-hooks secret-scan repair-crossposts retrain benchmark benchmark-variants benchmark-seed-sweep benchmark-suite bridge
 
 ASK_SEATTLE ?= PYTHONPATH=src python3 -m ask_seattle.cli
 RUNPOD_TRAIN ?= PYTHONPATH=src python3 scripts/runpod_train.py
@@ -113,6 +113,7 @@ help:
 		'make runpod-prune-volumes Delete expired retained RunPod cache volumes recorded in local metadata' \
 		'make install-git-hooks  Install the repo pre-commit hook that runs the secret scan on staged files' \
 		'make secret-scan        Scan tracked repo files for likely secrets before commit or push' \
+		'make repair-crossposts Backfill crosspost bodies from paired originals and rewrite the local reviewed corpus' \
 		'make retrain           Retrain the operational TF-IDF model and all suite models without benchmarking' \
 		'make benchmark         Benchmark trained suite models only; warn and skip any untrained models' \
 		'make benchmark-variants Compare lightweight TF-IDF variants on the same split' \
@@ -149,6 +150,9 @@ install-git-hooks:
 
 secret-scan:
 	PYTHONPATH=src python3 -m ask_seattle.secret_scan --repo-root .
+
+repair-crossposts:
+	$(ASK_SEATTLE) repair-crossposts --data $(LABELS)
 
 ifeq ($(REMOTE),runpod)
 retrain:

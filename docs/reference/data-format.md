@@ -49,6 +49,8 @@ The browser helper may also send:
 - `content_href`
 - `content_domain`
 - `is_crosspost`
+- `crosspost_title`
+- `crosspost_body`
 - `capture_context`
 - `notes`
 
@@ -57,6 +59,14 @@ Training and bridge inference reuse the content-facing subset of those fields wh
 - `post_type`
 - `content_domain`
 - `is_crosspost`
+- `crosspost_body`
+
+For crossposts, `crosspost_body` is the embedded original-post body captured by the browser helper when it can see or hydrate that source post. During normalization, the effective training/inference body becomes:
+
+- visible outer `selftext` when present
+- plus `crosspost_body` appended when present
+
+That keeps normal text posts unchanged while letting crossposts behave more like the discovered post the reviewer actually labeled.
 
 Those fields are normalized into metadata tokens such as `POST_TYPE:image` and `CONTENT_DOMAIN:instagram_com`.
 
@@ -100,15 +110,18 @@ Negative labels normalize to `not_askseattle`:
 
 Before fitting the model, training applies these steps:
 
-1. normalize labels
-2. normalize body text
-3. compute an exact text hash from normalized title + body
-4. dedupe by identity:
+1. repair crosspost rows:
+   - backfill `crosspost_body` and effective `selftext` from paired originals when `content_href` matches another record permalink
+   - drop the paired original row when that match is safe and labels agree
+2. normalize labels
+3. normalize body text
+4. compute an exact text hash from normalized title + body
+5. dedupe by identity:
    - `id`
    - `permalink`
-5. dedupe again by exact text hash
-6. derive `time_key` and `time_source`
-7. build train, calibration, and test splits according to the requested split strategy
+6. dedupe again by exact text hash
+7. derive `time_key` and `time_source`
+8. build train, calibration, and test splits according to the requested split strategy
 
 The dedupe behavior is last-write-wins.
 
