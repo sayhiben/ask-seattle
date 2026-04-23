@@ -68,20 +68,25 @@ DEFAULT_RUNPOD_POD_CREATE_RETRY_DELAY_SECONDS = 20
 DEFAULT_RUNPOD_POD_CREATE_TIMEOUT_SECONDS = 300
 DEFAULT_RUNPOD_POD_RECONCILE_TIMEOUT_SECONDS = 90
 DEFAULT_RUNPOD_GPU_TYPES = (
-    "NVIDIA RTX A6000",
     "NVIDIA RTX 6000 Ada Generation",
     "NVIDIA L40S",
-    "NVIDIA GeForce RTX 4090",
+    "NVIDIA L40",
+    "NVIDIA GeForce RTX 5090",
 )
 DEFAULT_RUNPOD_FALLBACK_GPU_TYPES = (
+    "NVIDIA RTX A6000",
+    "NVIDIA GeForce RTX 4090",
     "NVIDIA A40",
-    "NVIDIA GeForce RTX 5090",
-    "NVIDIA L40",
     "NVIDIA RTX A5000",
     "NVIDIA RTX A4500",
     "NVIDIA L4",
     "NVIDIA RTX A4000",
     "NVIDIA RTX 4000 Ada Generation",
+)
+RUNPOD_IMAGE_FIRST_GPU_TYPES = frozenset(
+    {
+        "NVIDIA GeForce RTX 5090",
+    }
 )
 DEFAULT_RUNPOD_DATA_CENTER_IDS = (
     "EU-RO-1",
@@ -1190,7 +1195,7 @@ def build_create_pod_command(
         "--name",
         pod_name,
     ]
-    if config.template_id:
+    if _pod_runtime_uses_template(config, gpu_id=gpu_id):
         command.extend(("--template-id", config.template_id))
     else:
         command.extend(("--image", config.image))
@@ -1242,11 +1247,17 @@ def build_create_pod_payload(
         "ports": ["22/tcp"],
         "volumeMountPath": config.volume_mount_path,
     }
-    if config.template_id:
+    if _pod_runtime_uses_template(config, gpu_id=gpu_id):
         payload["templateId"] = config.template_id
     else:
         payload["imageName"] = config.image
     return payload
+
+
+def _pod_runtime_uses_template(config: RunPodConfig, *, gpu_id: str) -> bool:
+    if not config.template_id:
+        return False
+    return gpu_id not in RUNPOD_IMAGE_FIRST_GPU_TYPES
 
 
 def build_run_id(target: str) -> str:

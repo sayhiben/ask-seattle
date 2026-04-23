@@ -8,6 +8,7 @@ import pytest
 from ask_seattle.runpod import (
     DEFAULT_RUNPOD_FALLBACK_GPU_TYPES,
     DEFAULT_RUNPOD_GPU_TYPES,
+    RUNPOD_IMAGE_FIRST_GPU_TYPES,
     RunPodConfig,
     RunPodOrchestrationError,
     available_gpus_for_datacenter,
@@ -48,21 +49,22 @@ def test_artifact_dirs_for_target() -> None:
 
 def test_default_runpod_gpu_preferences_are_vram_first() -> None:
     assert DEFAULT_RUNPOD_GPU_TYPES == (
-        "NVIDIA RTX A6000",
         "NVIDIA RTX 6000 Ada Generation",
         "NVIDIA L40S",
-        "NVIDIA GeForce RTX 4090",
+        "NVIDIA L40",
+        "NVIDIA GeForce RTX 5090",
     )
     assert DEFAULT_RUNPOD_FALLBACK_GPU_TYPES == (
+        "NVIDIA RTX A6000",
+        "NVIDIA GeForce RTX 4090",
         "NVIDIA A40",
-        "NVIDIA GeForce RTX 5090",
-        "NVIDIA L40",
         "NVIDIA RTX A5000",
         "NVIDIA RTX A4500",
         "NVIDIA L4",
         "NVIDIA RTX A4000",
         "NVIDIA RTX 4000 Ada Generation",
     )
+    assert RUNPOD_IMAGE_FIRST_GPU_TYPES == {"NVIDIA GeForce RTX 5090"}
 
 
 def test_select_datacenter_prefers_candidate_order_and_gpu_priority() -> None:
@@ -381,6 +383,50 @@ def test_build_create_pod_command_prefers_template_id() -> None:
     assert "--image" not in command
 
 
+def test_build_create_pod_command_uses_image_for_5090_even_when_template_present() -> None:
+    config = RunPodConfig(
+        repo_root=Path("/tmp/repo"),
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=Path("/tmp/id.pub"),
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA GeForce RTX 5090",),
+        fallback_gpu_types=("NVIDIA RTX A6000",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=Path("/tmp/labels.jsonl"),
+        benchmark_meta_dir=Path("/tmp/meta"),
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
+    )
+
+    command = build_create_pod_command(
+        config,
+        pod_name="ask-seattle-test",
+        gpu_id="NVIDIA GeForce RTX 5090",
+        data_center_id="EU-RO-1",
+        network_volume_id="vol-123",
+    )
+
+    assert "--image" in command
+    assert "runpod/pytorch:test" in command
+    assert "--template-id" not in command
+
+
 def test_build_create_pod_command_falls_back_to_image_when_template_missing() -> None:
     config = RunPodConfig(
         repo_root=Path("/tmp/repo"),
@@ -469,6 +515,50 @@ def test_build_create_pod_payload_prefers_template_id() -> None:
     assert payload["gpuTypeIds"] == ["NVIDIA RTX A5000"]
     assert payload["dataCenterIds"] == ["EU-RO-1"]
     assert payload["networkVolumeId"] == "vol-123"
+
+
+def test_build_create_pod_payload_uses_image_for_5090_even_when_template_present() -> None:
+    config = RunPodConfig(
+        repo_root=Path("/tmp/repo"),
+        repo_slug="sayhiben/ask-seattle",
+        ssh_key_path=Path("/tmp/id.pub"),
+        volume_name="ask-seattle-train-sayhiben",
+        volume_size_gb=100,
+        volume_retention_seconds=300,
+        gpu_types=("NVIDIA GeForce RTX 5090",),
+        fallback_gpu_types=("NVIDIA RTX A6000",),
+        data_center_ids=("EU-RO-1",),
+        template_id="runpod-torch-v240",
+        image="runpod/pytorch:test",
+        remote_dir="/workspace/ask-seattle",
+        ssh_user="root",
+        container_disk_gb=50,
+        volume_mount_path="/workspace",
+        labels_path=Path("/tmp/labels.jsonl"),
+        benchmark_meta_dir=Path("/tmp/meta"),
+        split_strategy="random",
+        split_seed=13,
+        evaluation_subreddit=None,
+        benchmark_notes=None,
+        semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
+        semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
+        transformer_model_id="answerdotai/ModernBERT-base",
+        transformer_secondary_model_id="chandar-lab/NeoBERT",
+        causal_lm_model_id="Qwen/Qwen3-1.7B",
+        remote_run_timeout_seconds=21600,
+    )
+
+    payload = build_create_pod_payload(
+        config,
+        pod_name="ask-seattle-test",
+        gpu_id="NVIDIA GeForce RTX 5090",
+        data_center_id="EU-RO-1",
+        network_volume_id="vol-123",
+    )
+
+    assert payload["imageName"] == "runpod/pytorch:test"
+    assert "templateId" not in payload
+    assert payload["gpuTypeIds"] == ["NVIDIA GeForce RTX 5090"]
 
 
 def test_extract_ssh_endpoint_reads_runtime_port_mapping() -> None:

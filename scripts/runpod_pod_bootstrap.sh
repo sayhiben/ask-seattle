@@ -14,6 +14,8 @@ ENV_CACHE_KEY="${10:?missing env cache key}"
 shift 10
 MAKE_ARGS=("$@")
 ENV_STAMP_PATH="${REMOTE_VENV_DIR}/.ask-seattle-runpod-env.json"
+REMOTE_TORCH_INDEX_URL="https://download.pytorch.org/whl/cu128"
+REMOTE_TORCH_VERSION="2.9.1"
 
 mkdir -p "${REMOTE_LOG_DIR}"
 exec > >(tee -a "${REMOTE_LOG_DIR}/run.log") 2>&1
@@ -93,17 +95,28 @@ cached_env_is_healthy() {
     return 1
   fi
   "${REMOTE_VENV_DIR}/bin/python3" - <<'PY' >/dev/null 2>&1
+import re
 import sys
 from importlib import import_module
+
+
+def _parse_major_minor(version: str) -> tuple[int, int] | None:
+    match = re.match(r"^(\d+)\.(\d+)", version)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
 
 try:
     torch = import_module("torch")
 except Exception:
     sys.exit(1)
 
-version = torch.__version__.split("+", 1)[0]
-major, minor, *_ = [int(part) for part in version.split(".")]
-if (major, minor) < (2, 6):
+version = _parse_major_minor(torch.__version__.split("+", 1)[0] or "")
+if version is None or version < (2, 7):
+    sys.exit(1)
+cuda_version = _parse_major_minor(torch.version.cuda or "")
+if cuda_version is None or cuda_version < (12, 8):
     sys.exit(1)
 required = (
     "accelerate",
@@ -121,7 +134,20 @@ for module_name in required:
         import_module(module_name)
     except Exception:
         sys.exit(1)
-sys.exit(0 if torch.cuda.is_available() else 1)
+if not torch.cuda.is_available():
+    sys.exit(1)
+arch_list = set()
+get_arch_list = getattr(torch.cuda, "get_arch_list", None)
+if callable(get_arch_list):
+    try:
+        arch_list = set(get_arch_list())
+    except Exception:
+        arch_list = set()
+device_capability = torch.cuda.get_device_capability(0)
+required_arch = f"sm_{device_capability[0]}{device_capability[1]}"
+if arch_list and required_arch not in arch_list:
+    sys.exit(1)
+sys.exit(0)
 PY
 }
 
@@ -182,21 +208,30 @@ if [[ "${BOOTSTRAP_ENV}" -eq 1 ]]; then
   source "${REMOTE_VENV_DIR}/bin/activate"
   python -m pip install --upgrade pip
   if ! python - <<'PY'
+import re
 from importlib import import_module
+
+
+def _parse_major_minor(version: str) -> tuple[int, int] | None:
+    match = re.match(r"^(\d+)\.(\d+)", version)
+    if match is None:
+        return None
+    return int(match.group(1)), int(match.group(2))
+
 
 try:
     torch = import_module("torch")
 except Exception:
     raise SystemExit(1)
 
-version = torch.__version__.split("+", 1)[0]
-major, minor, *_ = [int(part) for part in version.split(".")]
-raise SystemExit(0 if (major, minor) >= (2, 6) else 1)
+version = _parse_major_minor(torch.__version__.split("+", 1)[0] or "")
+cuda_version = _parse_major_minor(torch.version.cuda or "")
+raise SystemExit(0 if version is not None and version >= (2, 7) and cuda_version is not None and cuda_version >= (12, 8) else 1)
 PY
   then
     python -m pip install --upgrade \
-      --index-url "https://download.pytorch.org/whl/cu124" \
-      "torch==2.6.0"
+      --index-url "${REMOTE_TORCH_INDEX_URL}" \
+      "torch==${REMOTE_TORCH_VERSION}"
   fi
   python -m pip install -e ".[dev]"
   python -m pip install \

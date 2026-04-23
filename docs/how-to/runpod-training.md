@@ -170,31 +170,31 @@ Defaults are controlled through Make variables:
 
 The default GPU preference order is:
 
-1. `NVIDIA RTX A6000`
-2. `NVIDIA RTX 6000 Ada Generation`
-3. `NVIDIA L40S`
-4. `NVIDIA GeForce RTX 4090`
+1. `NVIDIA RTX 6000 Ada Generation`
+2. `NVIDIA L40S`
+3. `NVIDIA L40`
+4. `NVIDIA GeForce RTX 5090`
 
 The default same-datacenter fallback order for retained volumes is:
 
-1. `NVIDIA A40`
-2. `NVIDIA GeForce RTX 5090`
-3. `NVIDIA L40`
+1. `NVIDIA RTX A6000`
+2. `NVIDIA GeForce RTX 4090`
+3. `NVIDIA A40`
 4. `NVIDIA RTX A5000`
 5. `NVIDIA RTX A4500`
 6. `NVIDIA L4`
 7. `NVIDIA RTX A4000`
 8. `NVIDIA RTX 4000 Ada Generation`
 
-This order is deliberately VRAM-first. The current RunPod market often puts `RTX A6000` in the same rough on-demand price band as a `4090`, while `RTX 6000 Ada` and `L40S` offer enough extra headroom to avoid the 24 GB pressure that shows up in longer transformer runs.
+This order stays VRAM-first on the primary path, but it now reflects the stronger cards that are commonly available in `EU-RO-1` at comparable prices. `RTX 6000 Ada`, `L40S`, and `L40` still get first shot because the extra VRAM materially reduces long transformer retrain pressure. `RTX 5090` now sits ahead of the `4090` fallback because it is the stronger 32 GB option when those 48 GB cards are unavailable.
 
 The default template is:
 
 - `runpod-torch-v240`
 
-The helper still accepts a raw image override, but the default is now template-first because that has been more reliable than direct image selection on RunPod.
+The helper still accepts a raw image override, and it now automatically bypasses the template for `RTX 5090` so Blackwell Pods come up on the newer CUDA 12.8 image directly. Non-Blackwell GPUs still use the default template first because that has been the more reliable general path on RunPod.
 
-The remote bootstrap also installs a pinned, known-good Python model stack instead of floating to the latest Hugging Face releases on every run. That keeps the remote training environment aligned with the versions already validated in this repository.
+The remote bootstrap also installs a pinned, known-good Python model stack instead of floating to the latest Hugging Face releases on every run. It now requires a CUDA 12.8-capable PyTorch stack in the cached venv as well, so old `cu124` environments are rebuilt automatically before training starts.
 
 The default cache retention is:
 
