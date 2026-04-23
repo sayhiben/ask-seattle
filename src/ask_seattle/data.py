@@ -15,6 +15,8 @@ POSITIVE_LABELS = {"1", "true", "yes", "ask", "askseattle", "ask_seattle"}
 NEGATIVE_LABELS = {"0", "false", "no", "not", "not_askseattle", "not_ask_seattle"}
 DELETED_TEXT_MARKERS = {"[deleted]", "[removed]", "[deleted by user]"}
 MEDIA_POST_TYPES = frozenset({"image", "link"})
+TEXT_POST_TYPES = frozenset({"text", "self"})
+IN_SCOPE_POST_TYPES = frozenset({"text", "crosspost"})
 LOW_TEXT_BODY_CHAR_THRESHOLD = 80
 URL_PLACEHOLDER = "URL"
 DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN = True
@@ -99,8 +101,8 @@ def post_metadata_text(
         f"LOW_TEXT:{'yes' if low_text else 'no'}",
     ]
 
-    normalized_post_type = _normalize_metadata_token(post_type)
-    if normalized_post_type:
+    normalized_post_type = canonical_post_type(post_type, is_crosspost=is_crosspost)
+    if post_type not in ("", None) or normalized_post_type == "crosspost":
         tokens.append(f"POST_TYPE:{normalized_post_type}")
 
     normalized_domain = _normalize_metadata_token(content_domain)
@@ -113,7 +115,7 @@ def post_metadata_text(
     if normalized_crosspost is not None:
         tokens.append(f"CROSSPOST:{normalized_crosspost}")
 
-    normalized_post_type = _normalize_metadata_token(post_type) or ""
+    normalized_post_type = canonical_post_type(post_type, is_crosspost=is_crosspost)
     sparse_media = is_sparse_media_post(post_type=post_type, selftext=normalized_body)
     if include_sparse_media_token and sparse_media:
         tokens.append("SPARSE_MEDIA:yes")
@@ -199,7 +201,7 @@ def has_question_mark(title: str | None, selftext: str | None = None) -> bool:
 
 
 def is_sparse_media_post(*, post_type: str | None = None, selftext: str | None = None) -> bool:
-    normalized_post_type = _normalize_metadata_token(post_type)
+    normalized_post_type = canonical_post_type(post_type)
     return bool(normalized_post_type in MEDIA_POST_TYPES and is_low_text_body(selftext))
 
 
@@ -417,10 +419,18 @@ def prepare_training_records(input_path: str | Path) -> tuple[list[dict[str, Any
         for record in repaired_records
         if str(record.get("label") or "").strip()
     ]
+    in_scope_records = [
+        record
+        for record in normalized_records
+        if is_in_scope_post_type(
+            record.get("post_type"),
+            is_crosspost=record.get("is_crosspost"),
+        )
+    ]
 
     identity_records: list[dict[str, Any]] = []
     identity_replaced = 0
-    for record in normalized_records:
+    for record in in_scope_records:
         before = len(identity_records)
         identity_records = _upsert_records(identity_records, record, _identity_keys)
         if len(identity_records) == before:
@@ -436,8 +446,18 @@ def prepare_training_records(input_path: str | Path) -> tuple[list[dict[str, Any
 
     ordered_training_records = _sorted_review_records(deduped_records)
     missing_time_key = sum(1 for record in deduped_records if "time_key" not in record)
+    in_scope_text_records = sum(
+        1 for record in ordered_training_records if str(record.get("post_type") or "") == "text"
+    )
+    in_scope_crosspost_records = sum(
+        1 for record in ordered_training_records if str(record.get("post_type") or "") == "crosspost"
+    )
     summary = {
         "loaded": len(normalized_records),
+        "scope_filtered_out_of_scope": len(normalized_records) - len(in_scope_records),
+        "scope_in_scope_records": len(in_scope_records),
+        "scope_in_scope_text_records": in_scope_text_records,
+        "scope_in_scope_crosspost_records": in_scope_crosspost_records,
         "identity_replaced": identity_replaced,
         "text_hash_replaced": text_hash_replaced,
         "training_records": len(ordered_training_records),
@@ -480,11 +500,14 @@ def _normalized_review_record(row: dict[str, Any]) -> dict[str, Any]:
         "notes": str(row.get("notes") or ""),
         "text_hash": exact_text_hash(title, selftext),
     }
+    canonical_type = canonical_post_type(
+        row.get("post_type"),
+        is_crosspost=row.get("is_crosspost"),
+    )
     for optional_field in (
         "collected_at",
         "retrieved_at",
         "subreddit",
-        "post_type",
         "content_domain",
         "content_href",
         "capture_context",
@@ -497,6 +520,8 @@ def _normalized_review_record(row: dict[str, Any]) -> dict[str, Any]:
     ):
         if optional_field in row and row.get(optional_field) not in ("", None):
             record[optional_field] = row.get(optional_field)
+    if row.get("post_type") not in ("", None) or canonical_type == "crosspost":
+        record["post_type"] = canonical_type
 
     time_key, time_source = derive_time_key(record)
     if time_key is not None:
@@ -596,6 +621,25 @@ def _normalize_metadata_token(value: Any) -> str | None:
     normalized = re.sub(r"[^a-z0-9]+", "_", str(value).strip().lower())
     normalized = re.sub(r"_+", "_", normalized).strip("_")
     return normalized or None
+
+
+def canonical_post_type(post_type: Any, *, is_crosspost: Any = None) -> str:
+    normalized = _normalize_metadata_token(post_type) or ""
+    if normalized == "crosspost":
+        return "crosspost"
+    if normalized in TEXT_POST_TYPES:
+        return "text"
+    if not normalized and _bool_or_none(is_crosspost) is True:
+        return "crosspost"
+    return normalized or "other_or_unknown"
+
+
+def is_in_scope_post_type(post_type: Any, *, is_crosspost: Any = None) -> bool:
+    if _normalize_metadata_token(post_type) is None:
+        return True
+    if _bool_or_none(is_crosspost) is True:
+        return True
+    return canonical_post_type(post_type, is_crosspost=is_crosspost) in IN_SCOPE_POST_TYPES
 
 
 def _collapse_text_for_match(value: str | None) -> str:

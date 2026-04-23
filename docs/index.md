@@ -74,6 +74,7 @@ These assumptions define the current project scope:
 - no Reddit API reads
 - no Reddit API writes
 - browser-originated post text only
+- explicit model scope is text posts plus crossposts
 - local files only
 - binary labels only: `askseattle` and `not_askseattle`
 - one TF-IDF + logistic regression operational model path

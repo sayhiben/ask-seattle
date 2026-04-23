@@ -68,6 +68,8 @@ For crossposts, `crosspost_body` is the embedded original-post body captured by 
 
 That keeps normal text posts unchanged while letting crossposts behave more like the discovered post the reviewer actually labeled.
 
+The modeled corpus is now scoped to text posts plus crossposts. Explicit `link`, `image`, `gallery`, `video`, `multi_media`, and `gif` rows are filtered out before train/calibration/test splitting. Legacy rows with no captured `post_type` are retained until they can be recaptured with full metadata.
+
 Those fields are normalized into metadata tokens such as `POST_TYPE:image` and `CONTENT_DOMAIN:instagram_com`.
 
 Neural model families still consume those tokens through their shared text or prompt inputs. The operational TF-IDF model now keeps them in a separate exact-token metadata channel so word and character n-grams stay focused on natural title/body text.
@@ -113,15 +115,16 @@ Before fitting the model, training applies these steps:
 1. repair crosspost rows:
    - backfill `crosspost_body` and effective `selftext` from paired originals when `content_href` matches another record permalink
    - drop the paired original row when that match is safe and labels agree
-2. normalize labels
-3. normalize body text
-4. compute an exact text hash from normalized title + body
-5. dedupe by identity:
+2. keep only in-scope text and crosspost rows for model training
+3. normalize labels
+4. normalize body text
+5. compute an exact text hash from normalized title + body
+6. dedupe by identity:
    - `id`
    - `permalink`
-6. dedupe again by exact text hash
-7. derive `time_key` and `time_source`
-8. build train, calibration, and test splits according to the requested split strategy
+7. dedupe again by exact text hash
+8. derive `time_key` and `time_source`
+9. build train, calibration, and test splits according to the requested split strategy
 
 The dedupe behavior is last-write-wins.
 

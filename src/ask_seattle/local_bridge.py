@@ -10,7 +10,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from ask_seattle import __version__
 from ask_seattle.data import (
+    canonical_post_type,
+    is_in_scope_post_type,
     load_jsonl_records,
     merge_crosspost_body,
     normalize_review_label,
@@ -260,6 +263,35 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
         post_id = _optional_string(payload, "id")
         permalink = _optional_string(payload, "permalink")
         time_source = _request_time_source(payload)
+        normalized_post_type = canonical_post_type(post_type, is_crosspost=is_crosspost)
+        if not is_in_scope_post_type(post_type, is_crosspost=is_crosspost):
+            result = _scope_filtered_result(
+                post_id=post_id,
+                permalink=permalink,
+                time_source=time_source,
+                post_type=normalized_post_type,
+            )
+            self._send_json(
+                {
+                    "ok": True,
+                    "result": result,
+                    "decider_result": None,
+                    "decision_context": {
+                        "policy": "scope_filter",
+                        "decision_source": "scope_filter",
+                        "routed": False,
+                        "scope_included": False,
+                        "scope_policy": "text_plus_crosspost",
+                        "post_type": normalized_post_type,
+                        "primary_result": result,
+                        "review_priority": "normal",
+                        "review_reasons": [],
+                    },
+                    "comparison_models": _comparison_model_summaries(self.bridge_config.comparison_models),
+                    "comparisons": [],
+                }
+            )
+            return
         result = classify_post(
             self.bridge_config.bundle,
             title=title,
@@ -374,6 +406,27 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
         post_id = _optional_string(payload, "id")
         permalink = _optional_string(payload, "permalink")
         time_source = _request_time_source(payload)
+        normalized_post_type = canonical_post_type(post_type, is_crosspost=is_crosspost)
+        if not is_in_scope_post_type(post_type, is_crosspost=is_crosspost):
+            self._send_json(
+                {
+                    "ok": True,
+                    "comparison": {
+                        "name": comparison_name,
+                        "model_family": "scope_filter",
+                        "display_name": "Scope filter",
+                        "model_id": None,
+                        "artifact_path": None,
+                        "result": _scope_filtered_result(
+                            post_id=post_id,
+                            permalink=permalink,
+                            time_source=time_source,
+                            post_type=normalized_post_type,
+                        ),
+                    },
+                }
+            )
+            return
         comparison = _find_comparison_model(self.bridge_config.comparison_models, comparison_name)
         if comparison is None:
             self._send_error(HTTPStatus.NOT_FOUND, f"unknown comparison model: {comparison_name}")
@@ -955,6 +1008,33 @@ def _policy_model_summary(model_entry: dict[str, Any] | None) -> dict[str, Any] 
         "model_family": model_entry.get("model_family"),
         "model_id": model_entry.get("model_id"),
         "artifact_path": model_entry.get("artifact_path"),
+    }
+
+
+def _scope_filtered_result(
+    *,
+    post_id: str | None,
+    permalink: str | None,
+    time_source: str | None,
+    post_type: str,
+) -> dict[str, Any]:
+    return {
+        "post_id": post_id,
+        "permalink": permalink,
+        "model_name": "scope_filter_text_plus_crosspost",
+        "display_name": "Scope filter",
+        "model_version": __version__,
+        "low_threshold": 1.0,
+        "high_threshold": 1.0,
+        "score": 0.0,
+        "score_raw": 0.0,
+        "score_calibrated": 0.0,
+        "label": "not_askseattle",
+        "confidence_band": "low",
+        "time_source": time_source,
+        "created_at": utc_now_iso(),
+        "scope_policy": "text_plus_crosspost",
+        "post_type": post_type,
     }
 
 

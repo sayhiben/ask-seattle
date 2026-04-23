@@ -27,6 +27,7 @@ from ask_seattle.data import (
     DEFAULT_INCLUDE_IMAGE_LOW_TEXT_TOKENS,
     DEFAULT_INCLUDE_SPARSE_MEDIA_TOKEN,
     LabeledPost,
+    canonical_post_type,
     is_sparse_media_post,
     post_text,
     prepare_training_posts,
@@ -1350,8 +1351,16 @@ def _benchmark_representation(*, split: DatasetSplit, prepared_data_summary: dic
         if split.evaluation_subreddit
         else "all-subreddit evaluation"
     )
+    scope_text = (
+        "text+crosspost scope"
+        if (
+            int(prepared_data_summary.get("scope_in_scope_text_records", 0)) > 0
+            or int(prepared_data_summary.get("scope_in_scope_crosspost_records", 0)) > 0
+        )
+        else "full post-type scope"
+    )
     return (
-        f"{split_text}, {eval_text}, "
+        f"{split_text}, {eval_text}, {scope_text}, "
         f"{int(prepared_data_summary.get('training_records', 0))} prepared records, "
         f"{len(split.train)}/{len(split.calibration)}/{len(split.test)} train/calibration/test"
     )
@@ -4185,9 +4194,7 @@ def _inference_rows(
 
 
 def _slice_bucket_values(row: dict[str, Any]) -> dict[str, str]:
-    post_type = str(row.get("post_type") or "").strip().lower()
-    if post_type not in {"self", "link", "image"}:
-        post_type = "other_or_unknown"
+    post_type = canonical_post_type(row.get("post_type"), is_crosspost=row.get("is_crosspost"))
     return {
         "post_type": post_type,
         "low_text": "yes" if row.get("body_length_bucket") in {"none", "short"} else "no",
@@ -5292,10 +5299,27 @@ def _slice_metrics_summary(
         probabilities=probabilities,
         rows=rows,
         buckets={
-            "self": lambda row: row.get("post_type") == "self",
+            "text": lambda row: canonical_post_type(
+                row.get("post_type"),
+                is_crosspost=row.get("is_crosspost"),
+            )
+            == "text",
+            "crosspost": lambda row: canonical_post_type(
+                row.get("post_type"),
+                is_crosspost=row.get("is_crosspost"),
+            )
+            == "crosspost",
             "link": lambda row: row.get("post_type") == "link",
             "image": lambda row: row.get("post_type") == "image",
-            "other_or_unknown": lambda row: row.get("post_type") not in {"self", "link", "image"},
+            "gallery": lambda row: row.get("post_type") == "gallery",
+            "video": lambda row: row.get("post_type") == "video",
+            "multi_media": lambda row: row.get("post_type") == "multi_media",
+            "gif": lambda row: row.get("post_type") == "gif",
+            "other_or_unknown": lambda row: canonical_post_type(
+                row.get("post_type"),
+                is_crosspost=row.get("is_crosspost"),
+            )
+            == "other_or_unknown",
         },
         low_threshold=low_threshold,
         high_threshold=high_threshold,
@@ -5410,8 +5434,7 @@ def _positive_bucket_counts(slice_name: str, rows: list[dict[str, Any]], labels:
 
 def _slice_bucket_value(slice_name: str, row: dict[str, Any]) -> str:
     if slice_name == "post_type":
-        post_type = str(row.get("post_type") or "").strip().lower()
-        return post_type if post_type in {"self", "link", "image"} else "other_or_unknown"
+        return canonical_post_type(row.get("post_type"), is_crosspost=row.get("is_crosspost"))
     if slice_name == "low_text":
         return "yes" if row.get("body_length_bucket") in {"none", "short"} else "no"
     if slice_name == "sparse_media":

@@ -168,6 +168,62 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
     assert load_jsonl_records(labels)[0]["id"] == "abc"
 
 
+def test_bridge_check_scope_filters_explicit_out_of_scope_post_type(tmp_path: Path) -> None:
+    from http.server import ThreadingHTTPServer
+
+    labels = tmp_path / "labels.jsonl"
+
+    class Handler(LocalBridgeRequestHandler):
+        bridge_config = FakeServer()
+
+    Handler.bridge_config = BridgeConfig.__new__(BridgeConfig)
+    Handler.bridge_config.model_path = tmp_path / "fake.joblib"
+    Handler.bridge_config.label_path = labels
+    Handler.bridge_config.comparison_suite_path = None
+    Handler.bridge_config.comparison_models = []
+    Handler.bridge_config.label_lock = threading.Lock()
+    Handler.bridge_config.auto_retrain = None
+    Handler.bridge_config.hybrid_policy = None
+    Handler.bridge_config.stacked_decider_model = None
+    Handler.bridge_config.bundle = {
+        "model": FakeModel(),
+        "model_name": "fake",
+        "model_version": "test",
+        "threshold": 0.7,
+    }
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    port = int(server.server_address[1])
+
+    try:
+        check = request_json(
+            port,
+            "POST",
+            "/check",
+            {
+                "id": "abc",
+                "title": "Seattle skyline",
+                "selftext": "",
+                "post_type": "image",
+                "is_crosspost": False,
+            },
+        )
+    finally:
+        server.shutdown()
+
+    assert check["ok"] is True
+    assert check["result"]["model_name"] == "scope_filter_text_plus_crosspost"
+    assert check["result"]["label"] == "not_askseattle"
+    assert check["decider_result"] is None
+    assert check["decision_context"]["decision_source"] == "scope_filter"
+    assert check["decision_context"]["scope_included"] is False
+    assert check["decision_context"]["scope_policy"] == "text_plus_crosspost"
+    assert check["decision_context"]["post_type"] == "image"
+    assert check["comparisons"] == []
+
+
 def test_bridge_recorded_and_train_uses_last_label(tmp_path: Path) -> None:
     from http.server import ThreadingHTTPServer
 

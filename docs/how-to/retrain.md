@@ -218,14 +218,17 @@ The training command:
 
 1. reads the reviewed label JSONL file
 2. repairs crosspost rows by backfilling `crosspost_body` from paired originals when `content_href` points at another captured permalink
-3. normalizes labels
-4. dedupes by identity and exact text hash
-5. derives `time_key` and `time_source`
-6. performs a deterministic random train/calibration/test split by default
-7. fits the TF-IDF + logistic regression model
-8. fits a sigmoid probability calibrator
-9. selects low and high thresholds
-9. writes trained artifacts and training summaries
+3. keeps the modeled scope to text posts plus crossposts, filtering explicit non-text post types before training
+4. normalizes labels
+5. dedupes by identity and exact text hash
+6. derives `time_key` and `time_source`
+7. performs a deterministic random train/calibration/test split by default
+8. fits the TF-IDF + logistic regression model
+9. fits a sigmoid probability calibrator
+10. selects low and high thresholds
+11. writes trained artifacts and training summaries
+
+Legacy reviewed rows with no captured `post_type` are still retained so older text-only captures do not disappear immediately. Explicit `link`, `image`, `gallery`, `video`, `multi_media`, and `gif` rows are excluded from the training and benchmark population.
 
 That retrain step does not compute held-out test metrics. Benchmarking is a separate later step.
 

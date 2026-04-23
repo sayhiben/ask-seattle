@@ -44,7 +44,7 @@ Use `not_askseattle` when the redirect category is not clearly the main point of
 - Judge the primary intent, not isolated keywords.
 - Use the title and body together.
 - A short or empty body does not make a post automatically negative.
-- A link or image post can still be `askseattle` if the title is clearly a recommendation request.
+- A link or image post can still be semantically `askseattle`, but the current classifier intentionally trains and scores only text posts plus crossposts.
 - If you change your mind on a post, re-label it. The local training file is last-write-wins by identity.
 
 ## Dataset Hygiene

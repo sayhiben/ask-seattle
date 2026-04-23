@@ -268,6 +268,60 @@ def test_prepare_training_posts_uses_crosspost_body_and_collapses_original_dupli
     assert summary["crosspost_duplicates_removed"] == 1
 
 
+def test_prepare_training_posts_filters_explicit_out_of_scope_post_types(tmp_path: Path) -> None:
+    source = tmp_path / "captured.jsonl"
+    write_jsonl_records(
+        source,
+        [
+            {
+                "id": "text",
+                "title": "Where should I stay?",
+                "selftext": "Visiting soon",
+                "label": "askseattle",
+                "post_type": "text",
+            },
+            {
+                "id": "cross",
+                "title": "Neighborhood question",
+                "selftext": "",
+                "crosspost_body": "Looking for walkable neighborhoods near transit.",
+                "label": "askseattle",
+                "post_type": "crosspost",
+                "is_crosspost": True,
+            },
+            {
+                "id": "link",
+                "title": "Local update",
+                "selftext": "",
+                "label": "not_askseattle",
+                "post_type": "link",
+            },
+            {
+                "id": "image",
+                "title": "Photo from downtown",
+                "selftext": "",
+                "label": "not_askseattle",
+                "post_type": "image",
+            },
+            {
+                "id": "legacy",
+                "title": "Old captured text row",
+                "selftext": "Missing post_type but still text-like.",
+                "label": "not_askseattle",
+            },
+        ],
+    )
+
+    posts, summary = prepare_training_posts(source)
+
+    assert [post.post_id for post in posts] == ["cross", "legacy", "text"]
+    assert summary["scope_filtered_out_of_scope"] == 2
+    assert summary["scope_in_scope_records"] == 3
+    assert summary["scope_in_scope_text_records"] == 1
+    assert summary["scope_in_scope_crosspost_records"] == 1
+    assert summary["training_records"] == 3
+
+
 def test_repair_crosspost_records_ignores_distinct_reframed_crosspost_label_difference() -> None:
     records = [
         {

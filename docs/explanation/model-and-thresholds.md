@@ -63,6 +63,8 @@ That is especially useful for link, image, and crosspost submissions where the t
 
 Crossposts now also have a dedicated repair/hydration path. When the browser helper can see or hydrate the original linked Reddit post body, that text is preserved as `crosspost_body` and appended to the effective body used for scoring. Training applies the same repair rule to older reviewed JSONL rows by backfilling crossposts from paired original rows when `content_href` matches another captured permalink.
 
+The modeled moderation scope is now narrower too: explicit non-text post types are filtered out before training, and `/check` short-circuits those posts with a scope-filter result. In practice, the learned decision policy is now optimized for text posts plus crossposts, not for image/link/gallery/video submissions.
+
 `SPARSE_MEDIA` is intentionally more conservative than the other markers. The system still reports sparse-media slice metrics at all times, but it only feeds that token into model inputs once the shared split has enough positive support to trust it.
 
 For the operational TF-IDF model, those metadata tokens now live in a dedicated metadata feature channel rather than being mixed into the natural-language word and character channels. That keeps the feature audit cleaner and prevents the `char_wb` branch from overfitting our own synthetic marker syntax.
@@ -262,7 +264,7 @@ Across model families, the most important metrics are:
 - `queue_rates.review_rate`
   - how much moderator volume the broader queue would create
 - `slice_metrics.post_type`
-  - how those metrics change for self, link, image, and unknown/other posts
+  - how those metrics change for text, crosspost, media, and legacy unknown posts
 - `slice_metrics.low_text`
   - whether sparse-text posts behave differently from richer-text posts
 - `slice_metrics.sparse_media`

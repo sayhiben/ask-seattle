@@ -9,6 +9,7 @@ The project is deliberately small.
 Inside scope:
 
 - browser-captured post text
+- text posts plus crossposts as the modeled moderation scope
 - local reviewed-label storage
 - local model training
 - local `/check` inference through a localhost bridge
@@ -68,6 +69,7 @@ Responsibilities:
 - optionally load the trained stacked transformer decider from the benchmark-suite summary
 - expose localhost-only HTTP endpoints
 - classify posts
+- short-circuit explicit non-text, non-crosspost `/check` requests with a scope-filter result
 - return the stacked transformer decider as the default `/check` verdict when that artifact exists
 - optionally route hard cases through a bridge-side hybrid consensus decider
 - append reviewed labels
@@ -83,6 +85,8 @@ Responsibilities:
 
 - normalize review labels
 - normalize body text
+- repair and hydrate crosspost bodies
+- filter explicit out-of-scope post types before training
 - derive exact text hashes
 - dedupe reviewed records by identity and text hash
 - derive `time_key` and `time_source`

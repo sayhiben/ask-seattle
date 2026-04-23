@@ -124,7 +124,7 @@ Example request:
   "selftext": "Looking for hotel and food recommendations.",
   "crosspost_body": "Original ask-style body from the linked source subreddit.",
   "collected_at": "2026-04-10T20:00:00+00:00",
-  "post_type": "image",
+  "post_type": "text",
   "content_domain": "instagram.com",
   "is_crosspost": false
 }
@@ -133,6 +133,8 @@ Example request:
 If those optional metadata fields are present, the bridge includes them in the model input for scoring.
 
 When `crosspost_body` is present, the bridge appends it to `selftext` before scoring. That lets crossposts carry the original embedded post body through the normal `/check` path even when the outer crosspost shell has little or no body text of its own.
+
+The bridge now models only text posts plus crossposts. If `post_type` is explicitly outside that scope, `/check` returns a `scope_filter_text_plus_crosspost` result immediately instead of scoring the request through the classifier stack. Legacy callers that omit `post_type` still go through normal scoring.
 
 `include_comparisons` defaults to `false`. That means the normal fast `/check` path returns the effective bridge verdict plus `comparison_models` metadata, without waiting for every benchmark-suite model to score the same post.
 
@@ -245,6 +247,7 @@ Response fields:
   - routing and review metadata for the current policy
   - includes `hybrid_policy` when the bridge has a resolved weight policy for the active comparison set
   - includes `primary_result` so callers can audit the TF-IDF fallback result even when `result` came from the stacked or hybrid policy
+  - for explicit out-of-scope post types, `decision_source` becomes `scope_filter` and `scope_included` is `false`
 - `comparison_models`
   - loaded comparison-model metadata
 - `comparisons`

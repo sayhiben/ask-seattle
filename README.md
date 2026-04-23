@@ -5,6 +5,7 @@ Ask Seattle is a local, bridge-only classifier for Reddit submissions. It helps 
 The current stack is intentionally small:
 
 - browser-captured text only
+- text + crosspost operational scope; explicit non-text post types are scope-filtered
 - one TF-IDF + logistic regression operational retrain path
 - one default stacked transformer bridge decider when suite artifacts exist
 - one optional bridge-side hybrid decider for routed comparison work
@@ -75,6 +76,8 @@ If your reviewed corpus contains paired crosspost rows plus the original source 
 ```bash
 make repair-crossposts
 ```
+
+The default retrain and benchmark path now scopes the corpus to text posts plus crossposts. Explicit `link`, `image`, `gallery`, `video`, `multi_media`, and `gif` rows are filtered out before training; legacy rows with no captured `post_type` are kept until they are recaptured.
 
 ### Start The Bridge With An Existing Model
 
@@ -288,6 +291,7 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the default bridge policy is `stacked_transformer_decider`, which returns the stacked transformer verdict in `result` when the suite artifact is available and keeps the primary TF-IDF verdict under `decision_context.primary_result` for audit and fallback
 - if the stacked decider artifact is missing or fails, the bridge falls back cleanly to the primary TF-IDF result and records the reason in `decision_context.review_reasons`
 - `DECIDER_POLICY=hybrid_consensus` remains available for routed hard-slice comparison work; when benchmark-suite history exists, that policy uses benchmark-informed per-model weights and surfaces them under `decision_context.hybrid_policy`
+- explicit non-text, non-crosspost `/check` requests now return a `scope_filter_text_plus_crosspost` result instead of scoring out-of-scope post types through the model stack
 - the userscript now shows a review-priority banner when the bridge changes the label or confidence band, detects model disagreement, or flags a hard slice without enough comparison support
 - the bridge only accepts browser-originated text and local file paths
 - `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs a deterministic random train, calibration, and test split by default

@@ -53,6 +53,8 @@ The verdict block shows the active `/check` verdict:
 
 The default bridge policy is `stacked_transformer_decider`. When the stacked suite artifact exists, the panel message is driven by that stacked verdict while the primary TF-IDF result stays available in `decision_context.primary_result` for audit and fallback.
 
+The bridge now treats explicit non-text, non-crosspost post types as out of scope. For those posts, `/check` returns a scope-filter result immediately instead of asking the model stack to score them.
+
 If you start the bridge with `DECIDER_POLICY=hybrid_consensus`, it can still route borderline, low-text, image, link, or sparse-media posts through the loaded comparison models and return that routed verdict as the main panel message.
 
 If the bridge thinks a post needs extra attention, the panel also shows a review-priority banner. That banner is driven by `decision_context.review_priority` and usually means one of these:
