@@ -37,8 +37,8 @@ RUNPOD_VOLUME_NAME ?= ask-seattle-train-$(shell gh api user -q .login 2>/dev/nul
 RUNPOD_VOLUME_SIZE_GB ?= 100
 RUNPOD_VOLUME_RETENTION_SECONDS ?= 259200
 RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE ?= 0
-RUNPOD_GPU_TYPES ?= NVIDIA RTX A6000,NVIDIA RTX 6000 Ada Generation,NVIDIA L40S,NVIDIA GeForce RTX 4090
-RUNPOD_FALLBACK_GPU_TYPES ?= NVIDIA A40,NVIDIA GeForce RTX 5090,NVIDIA L40,NVIDIA RTX A5000,NVIDIA RTX A4500,NVIDIA L4,NVIDIA RTX A4000,NVIDIA RTX 4000 Ada Generation
+RUNPOD_GPU_TYPES ?= NVIDIA RTX 6000 Ada Generation,NVIDIA L40S,NVIDIA L40,NVIDIA GeForce RTX 5090
+RUNPOD_FALLBACK_GPU_TYPES ?= NVIDIA RTX A6000,NVIDIA GeForce RTX 4090,NVIDIA A40,NVIDIA RTX A5000,NVIDIA RTX A4500,NVIDIA L4,NVIDIA RTX A4000,NVIDIA RTX 4000 Ada Generation
 RUNPOD_DATA_CENTER_IDS ?= EU-RO-1,US-NC-1,US-KS-2,US-IL-1,US-GA-2
 RUNPOD_SSH_KEY_PATH ?= ~/.ssh/id_ed25519.pub
 RUNPOD_TEMPLATE_ID ?= runpod-torch-v240
@@ -124,7 +124,7 @@ help:
 		'Useful overrides:' \
 		'  REMOTE=wsl              Run retrain or benchmark targets on a remote Windows WSL box over SSH' \
 		'  REMOTE=runpod           Run retrain or benchmark targets on an ephemeral RunPod Pod' \
-		'  RUNPOD_TEMPLATE_ID=runpod-torch-v240  Preferred official RunPod template for remote GPU runs' \
+		'  RUNPOD_TEMPLATE_ID=runpod-torch-v240  Preferred official RunPod template for non-Blackwell remote GPU runs' \
 		'  RUNPOD_VOLUME_RETENTION_SECONDS=259200  Keep the successful RunPod cache volume for 3 days by default' \
 		'  RUNPOD_EVICT_VOLUME_ON_CAPACITY_FAILURE=1  Allow the helper to relocate a retained cache volume when its region has no capacity' \
 		'  RUNPOD_FALLBACK_GPU_TYPES="..."  Extra same-datacenter fallback GPUs to try before giving up on a retained cache volume' \
