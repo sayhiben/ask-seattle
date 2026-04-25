@@ -201,11 +201,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     bridge.add_argument(
         "--decider-policy",
-        choices=["primary_only", "hybrid_consensus", "stacked_transformer_decider"],
+        choices=["primary_only", "stacked_transformer_decider"],
         default="stacked_transformer_decider",
         help=(
             "How `/check` should decide the main verdict. `primary_only` keeps the active bridge model, "
-            "`hybrid_consensus` routes hard cases through benchmark-weighted comparisons, and "
             "`stacked_transformer_decider` uses the trained stacked transformer policy when available"
         ),
     )

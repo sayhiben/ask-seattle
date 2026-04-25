@@ -205,28 +205,7 @@ Those training scores are now generated out-of-fold on the suite train split. Ea
 
 That matters because the stacked decider can now learn when `NeoBERT` should dominate and when `ModernBERT-large` or the post-shape features should pull the decision without over-crediting in-sample consensus.
 
-It is also less arbitrary than the older bridge-side hybrid used to be: the stacked policy is trained and calibrated on its own score distribution instead of borrowing TF-IDF thresholds for a different mixed score.
-
-The older routed bridge-side hybrid still exists as an alternate policy:
-
-- `DECIDER_POLICY=hybrid_consensus`
-
-That policy is still benchmark-informed, but it is no longer just a weighted score that borrows TF-IDF thresholds. Benchmarking now builds a real `hybrid_consensus_policy` artifact: it combines the primary bridge score with successfully scored comparison-model outputs when a post is routed, falls back to the primary score when it is not, fits a calibrator on that effective score distribution, and selects its own low/high thresholds on the shared calibration split.
-
-Current hybrid weighting policy:
-
-- prefer comparable runs from `models/benchmark-suite/benchmark_history.json`
-- fall back to the latest `benchmark_suite_summary.json` when there is not enough comparable history
-- fall back again to uniform weights only when neither benchmark source is usable
-
-The weight formula is precision-first:
-
-- `ready_rate` gates how much influence a model can carry across recent comparable runs
-- `auto_recall_at_precision_95` is the primary driver
-- `review_recall_at_precision_75` is the secondary driver
-- `pr_auc` is only a tie-breaker
-
-When the saved `hybrid_consensus_policy` artifact is available, the bridge loads its calibrator and threshold policy directly. If that artifact is missing or incompatible with the active comparison set, the bridge still falls back to an in-memory benchmark-weighted policy so `/check` can continue working.
+It is also less arbitrary than the older bridge experiments used to be: the stacked policy is trained and calibrated on its own score distribution instead of borrowing TF-IDF thresholds for a different mixed score.
 
 If you want to inspect only the primary TF-IDF behavior, run:
 
@@ -309,7 +288,7 @@ The time-based split still exists, but it is now an explicit option for the poin
 
 ## What The Benchmark Suite Is Actually Comparing
 
-The benchmark suite keeps the evaluation contract aligned across all five artifact-backed models:
+The benchmark suite keeps the evaluation contract aligned across all four artifact-backed models:
 
 - one persisted `suite_input.json` manifest
 - one split assignment reused by every family
@@ -335,7 +314,7 @@ But all of them still end in the same bridge-facing concepts:
 
 Operationally, retraining and benchmarking are now separate steps:
 
-- `make retrain` retrains the operational TF-IDF model plus all five suite models and writes training-only summaries
+- `make retrain` retrains the operational TF-IDF model plus all four suite models and writes training-only summaries
 - `make benchmark` reads those trained suite artifacts later and computes held-out metrics only for the compatible models already on disk
 
 That split is deliberate. It keeps training failures, resumability, and held-out evaluation easier to reason about than one giant command that mixes all three concerns.

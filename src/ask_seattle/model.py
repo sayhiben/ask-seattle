@@ -54,6 +54,7 @@ DEFAULT_LOW_TEXT_HIGH_THRESHOLD_DELTA = 0.03
 DEFAULT_IMAGE_HIGH_THRESHOLD_DELTA = 0.04
 DEFAULT_SPARSE_MEDIA_HIGH_THRESHOLD_DELTA = 0.05
 LOGGER = logging.getLogger("ask_seattle.model")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 WORD_STOPWORDS = frozenset(
     {
         "a",
@@ -889,8 +890,6 @@ def load_model(path: str | Path) -> dict[str, Any]:
     model_family = str(bundle.get("model_family") or bundle.get("model_type") or "")
     if model_family == STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY:
         return _load_stacked_transformer_bundle_from_joblib(bundle, source_path=model_path)
-    if model_family == "hybrid_decider_policy":
-        return _load_hybrid_policy_bundle_from_joblib(bundle)
     if model_family == "transformer_sequence_classifier":
         return _load_transformer_bundle_from_joblib(bundle, source_path=model_path)
     if model_family == "causal_lm_classifier":
@@ -2110,18 +2109,6 @@ def _load_stacked_transformer_bundle_from_joblib(bundle: dict[str, Any], *, sour
     _apply_representation_defaults(normalized)
     return normalized
 
-
-def _load_hybrid_policy_bundle_from_joblib(bundle: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(bundle)
-    normalized.setdefault("model_family", "hybrid_decider_policy")
-    normalized.setdefault("model_name", "hybrid_consensus_policy")
-    normalized.setdefault("display_name", "Hybrid consensus policy")
-    normalized.setdefault("model_version", str(normalized.get("version") or __version__))
-    _apply_threshold_policy_defaults(normalized)
-    _apply_representation_defaults(normalized)
-    return normalized
-
-
 def _resolve_bundle_model_dir(
     bundle: dict[str, Any],
     *,
@@ -2165,6 +2152,19 @@ def _resolve_bundle_reference_path(reference: Any, *, source_path: Path, label: 
         raise ValueError(f"{source_path} references missing {label} {resolved}")
     if candidate.exists():
         return candidate
+    candidate_parts = list(candidate.parts)
+    if "models" in candidate_parts:
+        models_index = candidate_parts.index("models")
+        rebased = (PROJECT_ROOT / Path(*candidate_parts[models_index:])).resolve()
+        if rebased.exists():
+            LOGGER.info(
+                "rebasing stale absolute %s path bundle=%s from=%s to=%s",
+                label,
+                str(source_path),
+                str(candidate),
+                str(rebased),
+            )
+            return rebased
     sibling = (source_path.parent / candidate.name).resolve()
     if sibling.exists():
         LOGGER.info(

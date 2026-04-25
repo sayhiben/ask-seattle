@@ -153,29 +153,17 @@ The benchmark suite writes:
 - `transformer_neobert/training_summary.json`
 - `transformer_modernbert_large/training_summary.json`
 - `stacked_transformer_decider/training_summary.json`
-- `hybrid_consensus_policy/training_summary.json`
 - `suite_input.json`
 - `benchmark_suite_summary.json`
 - `benchmark_history.json`
 - `history/<run_id>/benchmark_suite_summary.json`
-- `hybrid_consensus_policy/hybrid_consensus_policy.joblib`
 - `seed_sweeps/seed_sweep_summary.json`
 
 The optional RunPod remote wrapper also writes local pulled metadata and logs under:
 
 - `models/runpod-meta/<run_id>/`
 
-`benchmark_suite_summary.json` can now contain two kinds of rows under `models`:
-
-- artifact-backed model rows such as `tfidf_recommended`, the transformer bundles, or `stacked_transformer_decider`
-- a benchmark-built policy row named `hybrid_consensus_policy`
-
-That hybrid policy row is built during benchmarking, not during `retrain-all`:
-
-- `artifact_path` points at `hybrid_consensus_policy/hybrid_consensus_policy.joblib`
-- `result_source` is `benchmarked_policy`
-- `policy_metadata` records the active hybrid weighting source, routed-rate diagnostics, and review-reason counts
-- the paired `training_summary.json` records the hybrid calibrator, threshold policy, and production-readiness gate result
+`benchmark_suite_summary.json` now contains only artifact-backed model rows such as `tfidf_recommended`, the transformer bundles, and `stacked_transformer_decider`.
 
 ## `suite_input.json`
 

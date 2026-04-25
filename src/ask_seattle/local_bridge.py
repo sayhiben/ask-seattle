@@ -21,14 +21,7 @@ from ask_seattle.data import (
     utc_now_iso,
     write_jsonl_records,
 )
-from ask_seattle.hybrid_policy import (
-    HYBRID_POLICY_NAME,
-    build_benchmark_weighted_hybrid_policy,
-    hybrid_decider_response,
-    hybrid_policy_response,
-    hybrid_route_reasons,
-)
-from ask_seattle.model import build_inference_row, classify_post, load_model
+from ask_seattle.model import classify_post, load_model
 from ask_seattle.training import train_model_bundle_from_labels
 
 LOGGER = logging.getLogger("ask_seattle.local_bridge")
@@ -45,11 +38,9 @@ SUPPORTED_BRIDGE_COMPARISON_MODEL_FAMILIES = {
 }
 SUPPORTED_BRIDGE_DECIDER_POLICIES = {
     "primary_only",
-    "hybrid_consensus",
     "stacked_transformer_decider",
 }
 DEFAULT_BRIDGE_DECIDER_POLICY = "stacked_transformer_decider"
-HYBRID_DECIDER_MIN_COMPARISON_RESULTS = 2
 
 
 class BridgeConfig:
@@ -85,12 +76,6 @@ class BridgeConfig:
             primary_bundle=self.bundle,
             primary_model_path=self.model_path,
             comparison_suite_path=self.comparison_suite_path,
-        )
-        self.hybrid_policy = _load_hybrid_policy(
-            primary_bundle=self.bundle,
-            primary_model_path=self.model_path,
-            comparison_suite_path=self.comparison_suite_path,
-            comparison_models=self.comparison_models,
         )
         self.stacked_decider_model = _load_stacked_decider_model(
             comparison_suite_path=self.comparison_suite_path,
@@ -158,7 +143,6 @@ def run_bridge(
                     str(config.comparison_suite_path) if config.comparison_suite_path else None
                 ),
                 "comparison_models": _comparison_model_summaries(config.comparison_models),
-                "hybrid_policy": hybrid_policy_response(config.hybrid_policy),
                 "stacked_decider_model": _policy_model_summary(config.stacked_decider_model),
                 "split_strategy": config.split_strategy,
                 "split_seed": config.split_seed,
@@ -199,7 +183,6 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
                         else None
                     ),
                     "comparison_models": _comparison_model_summaries(self.bridge_config.comparison_models),
-                    "hybrid_policy": hybrid_policy_response(getattr(self.bridge_config, "hybrid_policy", None)),
                     "stacked_decider_model": _policy_model_summary(
                         getattr(self.bridge_config, "stacked_decider_model", None)
                     ),
@@ -312,23 +295,11 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             result.high_threshold,
         )
         primary_result = asdict(result)
-        row = build_inference_row(
-            title=title,
-            selftext=selftext,
-            post_type=post_type,
-            content_domain=content_domain,
-            is_crosspost=is_crosspost,
-        )
         include_comparisons = bool(payload.get("include_comparisons") is True)
         decider_policy = getattr(
             self.bridge_config,
             "decider_policy",
             DEFAULT_BRIDGE_DECIDER_POLICY,
-        )
-        route_reasons = (
-            hybrid_route_reasons(row=row, primary_result=primary_result)
-            if decider_policy == "hybrid_consensus"
-            else []
         )
         stacked_decider_result = None
         stacked_decider_error: str | None = None
@@ -354,13 +325,8 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
             except Exception as exc:  # pragma: no cover - defensive runtime fallback
                 LOGGER.exception("stacked transformer decider check failed")
                 stacked_decider_error = str(exc)
-        should_run_hybrid = (
-            decider_policy == "hybrid_consensus"
-            and bool(route_reasons)
-            and len(self.bridge_config.comparison_models) >= HYBRID_DECIDER_MIN_COMPARISON_RESULTS
-        )
         comparisons = []
-        if include_comparisons or should_run_hybrid:
+        if include_comparisons:
             comparisons = _comparison_result_entries(
                 self.bridge_config.comparison_models,
                 title=title,
@@ -375,11 +341,6 @@ class LocalBridgeRequestHandler(BaseHTTPRequestHandler):
         decider_result, decision_context = _decider_response(
             policy=decider_policy,
             primary_result=primary_result,
-            primary_model_name=(getattr(self.bridge_config, "hybrid_policy", {}) or {}).get("primary_model_name"),
-            row=row,
-            comparisons=comparisons,
-            route_reasons=route_reasons,
-            hybrid_policy=getattr(self.bridge_config, "hybrid_policy", None),
             stacked_decider_model=getattr(self.bridge_config, "stacked_decider_model", None),
             stacked_decider_result=stacked_decider_result,
             stacked_decider_error=stacked_decider_error,
@@ -906,11 +867,6 @@ def _decider_response(
     *,
     policy: str,
     primary_result: dict[str, Any],
-    primary_model_name: str | None,
-    row: dict[str, Any],
-    comparisons: list[dict[str, Any]],
-    route_reasons: list[str],
-    hybrid_policy: dict[str, Any] | None,
     stacked_decider_model: dict[str, Any] | None,
     stacked_decider_result: dict[str, Any] | None,
     stacked_decider_error: str | None,
@@ -923,16 +879,17 @@ def _decider_response(
             stacked_decider_result=stacked_decider_result,
             stacked_decider_error=stacked_decider_error,
         )
-    return hybrid_decider_response(
-        policy=policy,
-        primary_result=primary_result,
-        primary_model_name=primary_model_name,
-        row=row,
-        comparisons=comparisons,
-        route_reasons=route_reasons,
-        hybrid_policy=hybrid_policy,
-        min_comparison_results=HYBRID_DECIDER_MIN_COMPARISON_RESULTS,
-    )
+    return None, {
+        "policy": policy,
+        "decision_source": "primary_model",
+        "routed": False,
+        "route_reasons": [],
+        "review_priority": "normal",
+        "review_reasons": [],
+        "primary_result": primary_result,
+        "effective_high_threshold": float(primary_result.get("high_threshold") or 0.0),
+        "stacked_decider_model": _policy_model_summary(stacked_decider_model),
+    }
 
 
 def _stacked_decider_response(
@@ -1041,7 +998,6 @@ def _scope_filtered_result(
 def _review_priority(review_reasons: list[str]) -> str:
     high_priority_reasons = {
         "comparison_disagreement",
-        "label_changed_by_hybrid",
         "label_changed_by_stacked_decider",
     }
     if any(reason in high_priority_reasons for reason in review_reasons):
@@ -1206,105 +1162,6 @@ def _load_comparison_models(
             ",".join(comparison["name"] for comparison in loaded),
         )
     return loaded
-
-
-def _load_hybrid_policy(
-    *,
-    primary_bundle: dict[str, Any],
-    primary_model_path: Path,
-    comparison_suite_path: Path | None,
-    comparison_models: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    if comparison_suite_path is None or not comparison_suite_path.exists():
-        return None
-    suite_summary = _load_suite_summary_payload(comparison_suite_path)
-    if not isinstance(suite_summary, dict):
-        return None
-    primary_entry = _find_primary_suite_entry(
-        primary_bundle=primary_bundle,
-        primary_model_path=primary_model_path,
-        suite_summary=suite_summary,
-    )
-    if primary_entry is None:
-        return None
-    active_models = [
-        {
-            "name": str(primary_entry.get("name") or ""),
-            "display_name": primary_entry.get("display_name") or primary_entry.get("name"),
-        }
-    ] + [
-        {
-            "name": str(comparison.get("name") or ""),
-            "display_name": comparison.get("display_name") or comparison.get("name"),
-        }
-        for comparison in comparison_models
-    ]
-    expected_active_names = {str(model.get("name") or "") for model in active_models if str(model.get("name") or "")}
-    suite_hybrid_entry = next(
-        (
-            item
-            for item in suite_summary.get("models") or []
-            if isinstance(item, dict)
-            and str(item.get("status") or "") == "ok"
-            and str(item.get("name") or "") == HYBRID_POLICY_NAME
-            and item.get("artifact_path")
-        ),
-        None,
-    )
-    if suite_hybrid_entry is not None:
-        try:
-            resolved_artifact = resolve_bridge_path(str(suite_hybrid_entry["artifact_path"]), must_exist=True)
-            bundle = load_model(resolved_artifact)
-        except Exception as exc:  # pragma: no cover - defensive runtime fallback
-            LOGGER.warning(
-                "skipping hybrid policy artifact artifact_path=%s error=%s",
-                suite_hybrid_entry.get("artifact_path"),
-                exc,
-            )
-        else:
-            active_names = {
-                str(name)
-                for name in bundle.get("active_model_names") or []
-                if str(name or "")
-            }
-            if active_names == expected_active_names:
-                LOGGER.info(
-                    "loaded hybrid policy artifact comparison_suite_path=%s artifact_path=%s source=%s",
-                    comparison_suite_path,
-                    resolved_artifact,
-                    bundle.get("source"),
-                )
-                return bundle
-            LOGGER.info(
-                "ignoring hybrid policy artifact with mismatched active models comparison_suite_path=%s expected=%s actual=%s",
-                comparison_suite_path,
-                ",".join(sorted(expected_active_names)),
-                ",".join(sorted(active_names)),
-            )
-    benchmark_history_path = comparison_suite_path.parent / "benchmark_history.json"
-    hybrid_policy = build_benchmark_weighted_hybrid_policy(
-        active_models=active_models,
-        primary_model_name=str(primary_entry.get("name") or ""),
-        split_strategy=(suite_summary.get("split") or {}).get("split_strategy")
-        if isinstance(suite_summary.get("split"), dict)
-        else None,
-        evaluation_subreddit=(suite_summary.get("split") or {}).get("evaluation_subreddit")
-        if isinstance(suite_summary.get("split"), dict)
-        else suite_summary.get("evaluation_subreddit"),
-        benchmark_history_path=benchmark_history_path,
-        comparison_suite_path=comparison_suite_path,
-        benchmark_history=_load_suite_summary_payload(benchmark_history_path),
-        suite_summary=suite_summary,
-    )
-    LOGGER.info(
-        "loaded hybrid policy comparison_suite_path=%s source=%s matched_run_count=%s primary=%s active_models=%s",
-        comparison_suite_path,
-        hybrid_policy.get("source") if isinstance(hybrid_policy, dict) else "",
-        hybrid_policy.get("matched_run_count") if isinstance(hybrid_policy, dict) else 0,
-        str(primary_entry.get("name") or ""),
-        ",".join(str(model.get("name") or "") for model in active_models),
-    )
-    return hybrid_policy
 
 
 def _load_stacked_decider_model(

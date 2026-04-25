@@ -8,8 +8,6 @@ from threading import Thread
 import threading
 from typing import Any
 
-import pytest
-
 from ask_seattle.data import load_jsonl_records, write_jsonl_records
 import ask_seattle.local_bridge as local_bridge
 from ask_seattle.local_bridge import (
@@ -90,7 +88,6 @@ def test_bridge_check_and_train(tmp_path: Path) -> None:
     Handler.bridge_config.comparison_models = []
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = None
-    Handler.bridge_config.hybrid_policy = None
     Handler.bridge_config.stacked_decider_model = None
     fake_model = FakeModel()
     Handler.bridge_config.bundle = {
@@ -183,7 +180,6 @@ def test_bridge_check_scope_filters_explicit_out_of_scope_post_type(tmp_path: Pa
     Handler.bridge_config.comparison_models = []
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = None
-    Handler.bridge_config.hybrid_policy = None
     Handler.bridge_config.stacked_decider_model = None
     Handler.bridge_config.bundle = {
         "model": FakeModel(),
@@ -239,7 +235,6 @@ def test_bridge_recorded_and_train_uses_last_label(tmp_path: Path) -> None:
     Handler.bridge_config.comparison_models = []
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = None
-    Handler.bridge_config.hybrid_policy = None
     Handler.bridge_config.stacked_decider_model = None
     Handler.bridge_config.bundle = {
         "model": FakeModel(),
@@ -292,7 +287,6 @@ def test_bridge_train_reports_auto_retrain_status(tmp_path: Path) -> None:
     Handler.bridge_config.comparison_models = []
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = FakeAutoRetrain()
-    Handler.bridge_config.hybrid_policy = None
     Handler.bridge_config.stacked_decider_model = None
     Handler.bridge_config.bundle = {
         "model": FakeModel(),
@@ -345,7 +339,6 @@ def test_bridge_check_returns_comparison_results(tmp_path: Path) -> None:
     Handler.bridge_config.comparison_suite_path = tmp_path / "benchmark_suite_summary.json"
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = None
-    Handler.bridge_config.hybrid_policy = None
     Handler.bridge_config.stacked_decider_model = None
     Handler.bridge_config.bundle = {
         "model": primary_model,
@@ -417,92 +410,7 @@ def test_bridge_check_returns_comparison_results(tmp_path: Path) -> None:
     assert check["comparisons"][1]["result"]["model_name"] == "transformer_sequence_classifier"
 
 
-def test_bridge_check_can_return_hybrid_decider_result_when_routed(tmp_path: Path) -> None:
-    from http.server import ThreadingHTTPServer
-
-    labels = tmp_path / "labels.jsonl"
-
-    class Handler(LocalBridgeRequestHandler):
-        bridge_config = FakeServer()
-
-    Handler.bridge_config = BridgeConfig.__new__(BridgeConfig)
-    Handler.bridge_config.model_path = tmp_path / "fake.joblib"
-    Handler.bridge_config.label_path = labels
-    Handler.bridge_config.comparison_suite_path = tmp_path / "benchmark_suite_summary.json"
-    Handler.bridge_config.label_lock = threading.Lock()
-    Handler.bridge_config.auto_retrain = None
-    Handler.bridge_config.decider_policy = "hybrid_consensus"
-    Handler.bridge_config.hybrid_policy = None
-    Handler.bridge_config.stacked_decider_model = None
-    Handler.bridge_config.bundle = {
-        "model": ScoredFakeModel(0.7),
-        "model_family": "tfidf",
-        "model_name": "tfidf_logreg",
-        "model_version": "test",
-        "low_threshold": 0.75,
-        "high_threshold": 0.9,
-    }
-    Handler.bridge_config.comparison_models = [
-        {
-            "name": "semantic_embedding",
-            "model_family": "semantic_embedding",
-            "model_id": "sentence-transformers/all-MiniLM-L6-v2",
-            "artifact_path": str(tmp_path / "semantic.joblib"),
-            "bundle": {
-                "model": ScoredFakeModel(0.95),
-                "model_family": "tfidf",
-                "model_name": "semantic_embedding_logreg",
-                "model_version": "test",
-                "threshold": 0.7,
-            },
-        },
-        {
-            "name": "transformer_sequence_classifier",
-            "model_family": "transformer_sequence_classifier",
-            "model_id": "answerdotai/ModernBERT-base",
-            "artifact_path": str(tmp_path / "transformer_bundle.joblib"),
-            "bundle": {
-                "model": ScoredFakeModel(0.95),
-                "model_family": "tfidf",
-                "model_name": "transformer_sequence_classifier",
-                "model_version": "test",
-                "threshold": 0.7,
-            },
-        },
-    ]
-
-    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    thread = Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    port = int(server.server_address[1])
-
-    try:
-        check = request_json(
-            port,
-            "POST",
-            "/check",
-            {
-                "id": "abc",
-                "title": "Where should I stay?",
-                "selftext": "",
-            },
-        )
-    finally:
-        server.shutdown()
-
-    assert check["ok"] is True
-    assert check["result"]["label"] == "askseattle"
-    assert check["decider_result"]["label"] == "askseattle"
-    assert check["decider_result"]["confidence_band"] == "borderline"
-    assert check["decider_result"]["score"] == pytest.approx(0.825)
-    assert check["decision_context"]["decision_source"] == "hybrid_consensus"
-    assert check["decision_context"]["review_priority"] == "high"
-    assert "low_text" in check["decision_context"]["route_reasons"]
-    assert "label_changed_by_hybrid" in check["decision_context"]["review_reasons"]
-    assert len(check["comparisons"]) == 2
-
-
-def test_bridge_check_primary_only_skips_hybrid_decider(tmp_path: Path) -> None:
+def test_bridge_check_primary_only_returns_primary_result(tmp_path: Path) -> None:
     from http.server import ThreadingHTTPServer
 
     labels = tmp_path / "labels.jsonl"
@@ -517,7 +425,6 @@ def test_bridge_check_primary_only_skips_hybrid_decider(tmp_path: Path) -> None:
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = None
     Handler.bridge_config.decider_policy = "primary_only"
-    Handler.bridge_config.hybrid_policy = None
     Handler.bridge_config.stacked_decider_model = None
     Handler.bridge_config.bundle = {
         "model": ScoredFakeModel(0.7),
@@ -600,7 +507,6 @@ def test_bridge_check_comparison_returns_single_result(tmp_path: Path) -> None:
     Handler.bridge_config.comparison_suite_path = tmp_path / "benchmark_suite_summary.json"
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = None
-    Handler.bridge_config.hybrid_policy = None
     Handler.bridge_config.stacked_decider_model = None
     Handler.bridge_config.bundle = {
         "model": primary_model,
@@ -666,7 +572,6 @@ def test_bridge_check_can_return_stacked_decider_result(tmp_path: Path) -> None:
     Handler.bridge_config.label_lock = threading.Lock()
     Handler.bridge_config.auto_retrain = None
     Handler.bridge_config.decider_policy = "stacked_transformer_decider"
-    Handler.bridge_config.hybrid_policy = None
     Handler.bridge_config.bundle = {
         "model": ScoredFakeModel(0.7),
         "model_family": "tfidf",

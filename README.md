@@ -8,7 +8,6 @@ The current stack is intentionally small:
 - text + crosspost operational scope; explicit non-text post types are scope-filtered
 - one TF-IDF + logistic regression operational retrain path
 - one default stacked transformer bridge decider when suite artifacts exist
-- one optional bridge-side hybrid decider for routed comparison work
 - one local four-model benchmark suite for comparison work
 - local JSONL training data
 - optional remote RunPod Pod execution for the existing train and benchmark targets
@@ -202,8 +201,6 @@ The suite currently retrains four artifact-backed models on one shared split:
 - `transformer_modernbert_large`
 - `stacked_transformer_decider`
 
-When TF-IDF plus at least two comparison models benchmark successfully for the current manifest, the suite summary also adds one benchmark-built `hybrid_consensus_policy` row. Benchmarking calibrates that effective policy on the shared calibration split, selects its own low/high thresholds, and writes a real artifact under `models/benchmark-suite/hybrid_consensus_policy/`.
-
 The stacked transformer decider is now trained from out-of-fold component scores, not in-sample transformer predictions. The current stacker is intentionally pruned to the two transformer components that are adding the most unique value in recent benchmarks: `NeoBERT` and `ModernBERT-large`. The second-stage logistic model learns from honest held-out component probabilities on the suite train split, then calibrates and thresholds itself on the normal suite calibration split. On CUDA hosts such as RunPod, those fold-local component retrains now use the GPU too; only MPS hosts still force the OOF leg through `cpu_fallback` for stability.
 
 If the benchmark suite artifacts exist, `make bridge` also loads those comparison models for side-by-side `/check` comparisons in the userscript UI.
@@ -288,13 +285,12 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the userscript now gets the main bridge verdict first, then fills in each comparison card as that model finishes instead of waiting for the whole suite before updating the panel
 - the default bridge policy is `stacked_transformer_decider`, which returns the stacked transformer verdict in `result` when the suite artifact is available and keeps the primary TF-IDF verdict under `decision_context.primary_result` for audit and fallback
 - if the stacked decider artifact is missing or fails, the bridge falls back cleanly to the primary TF-IDF result and records the reason in `decision_context.review_reasons`
-- `DECIDER_POLICY=hybrid_consensus` remains available as an alternate calibrated policy; it uses benchmark-informed per-model weights when history exists, owns its own calibration and thresholds when the suite benchmark artifact is present, and surfaces the active policy metadata under `decision_context.hybrid_policy`
 - explicit non-text, non-crosspost `/check` requests now return a `scope_filter_text_plus_crosspost` result instead of scoring out-of-scope post types through the model stack
 - the userscript now shows a review-priority banner when the bridge changes the label or confidence band, detects model disagreement, or flags a hard slice without enough comparison support
 - the bridge only accepts browser-originated text and local file paths
 - `ask-seattle train` normalizes and dedupes the reviewed JSONL file, then performs a deterministic random train, calibration, and test split by default
 - `ask-seattle retrain-all` retrains the operational TF-IDF model plus the four artifact-backed suite models without running held-out benchmarks
-- `ask-seattle benchmark-suite` reads those trained suite artifacts later and computes held-out metrics only for models that are already trained for the current manifest, then builds and benchmarks a calibrated hybrid-policy artifact on that same split when enough comparison models are available
+- `ask-seattle benchmark-suite` reads those trained suite artifacts later and computes held-out metrics only for models that are already trained for the current manifest
 - the same split object is reused across all four artifact-backed benchmark evaluators so comparisons are apples-to-apples
 - if you later want future-facing evaluation on a longer collection window, you can opt into `SPLIT_STRATEGY=time`
 - the shared model text now includes normalized content metadata when available, such as post type, content domain, crosspost status, whether the post has body text, and explicit `IMAGE_NO_BODY` / `LOW_TEXT_IMAGE` markers for title-only image cases
@@ -306,7 +302,7 @@ The public GitHub repo is code and docs only. Reviewed labels and any other trai
 - the high-threshold selector now also requires a minimum calibration support count for the strict bucket and a bootstrap precision check on the calibration slice; if calibration cannot satisfy the stricter gate, the summary records an explicit fallback reason
 - the TF-IDF review threshold now uses a looser review-queue target than the strict auto bucket, so review recall does not collapse on the latest label snapshots
 - the training harness now reports cohort coverage and applies conservative slice-aware positive weighting; `image` and `low_text` are active immediately, while `sparse_media` and `low_text_image` stay support-gated until they have enough positive examples
-- `ask-seattle retrain-all` writes the shared `suite_input.json` manifest plus five training-only suite summaries, and `ask-seattle benchmark-suite` adds held-out metrics later
+- `ask-seattle retrain-all` writes the shared `suite_input.json` manifest plus four training-only suite summaries, and `ask-seattle benchmark-suite` adds held-out metrics later
 - rerunning `retrain-all` now resumes from compatible completed model artifacts for the same manifest, so a later failure does not force the whole suite to start over
 - benchmark summaries are written separately from training-only suite summaries, so retrain and benchmark are now two explicit steps
 - each benchmark run now records notes, a human-readable benchmark representation, and an immutable history snapshot so you can compare results over time

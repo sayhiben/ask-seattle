@@ -55,35 +55,6 @@ This example is illustrative. Real `comparison_models` arrays depend on which su
     "model_id": null,
     "artifact_path": "/abs/path/to/models/benchmark-suite/stacked_transformer_decider/stacked_transformer_decider.joblib"
   },
-  "hybrid_policy": {
-    "policy_name": "hybrid_consensus_policy",
-    "display_name": "Hybrid consensus policy",
-    "model_family": "hybrid_decider_policy",
-    "config_version": "v2_calibrated_effective_policy",
-    "weight_formula_version": "v1_benchmark_weighted_precision_first",
-    "source": "benchmark_history",
-    "source_path": "/abs/path/to/models/benchmark-suite/benchmark_history.json",
-    "matched_run_count": 3,
-    "fallback_used": false,
-    "primary_model_name": "tfidf_recommended",
-    "split_strategy": "random_eval_subreddit",
-    "evaluation_subreddit": "seattle",
-    "active_model_names": [
-      "tfidf_recommended",
-      "transformer_neobert",
-      "transformer_modernbert_large"
-    ],
-    "weights": [
-      {"name": "tfidf_recommended", "display_name": "TF-IDF", "weight": 0.06},
-      {"name": "transformer_neobert", "display_name": "Transformer NeoBERT", "weight": 0.52},
-      {"name": "transformer_modernbert_large", "display_name": "Transformer ModernBERT-large", "weight": 0.42}
-    ],
-    "threshold_policy": {
-      "low_threshold": 0.74,
-      "high_threshold": 0.90
-    },
-    "calibration_available": true
-  },
   "auto_retrain": null
 }
 ```
@@ -136,10 +107,6 @@ The bridge now models only text posts plus crossposts. If `post_type` is explici
 `include_comparisons` defaults to `false`. That means the normal fast `/check` path returns the effective bridge verdict plus `comparison_models` metadata, without waiting for every benchmark-suite model to score the same post.
 
 The default bridge policy is `stacked_transformer_decider`. That returns the trained stacked transformer policy in `result` when the suite artifact is available, while keeping the primary TF-IDF bridge verdict under `decision_context.primary_result` for audit and fallback.
-
-If you start the bridge with `DECIDER_POLICY=hybrid_consensus`, `/check` returns the calibrated hybrid-policy verdict in `result`. Borderline, low-text, image, link, or sparse-media posts can still route through comparison models when at least two comparison bundles load successfully, but unrouted posts also flow through the hybrid policy as `decision_source: "hybrid_primary_only"` so the hybrid calibrator and thresholds stay consistent.
-
-When the benchmark suite has already written a `hybrid_consensus_policy` artifact, the bridge prefers that saved calibrator and threshold policy. The underlying hybrid weighting still comes from benchmark-informed weights derived from the active comparison set on comparable prior suite runs. If the saved artifact is missing or incompatible with the currently loaded comparison set, the bridge falls back to an in-memory benchmark-weighted policy built from `benchmark_history.json`, then the latest `benchmark_suite_summary.json`, then uniform weights if neither source is usable.
 
 For low-text, image, and sparse-media posts, the bridge also applies a stricter effective high-confidence threshold. Those posts can still score positive, but they need a stronger score to return `confidence_band: "high"`.
 
@@ -231,20 +198,17 @@ Response fields:
 - `decider_result`
   - optional verdict produced by the active decider policy
   - under `stacked_transformer_decider`, this usually matches `result`
-  - under `hybrid_consensus`, this now also usually matches `result`
-  - `decision_context.decision_source` distinguishes routed hybrid decisions (`hybrid_consensus`) from unrouted hybrid-policy evaluations (`hybrid_primary_only`)
   - `null` when the bridge keeps the primary verdict only, such as `primary_only` or an unavailable stacked artifact
 - `decision_context`
   - routing and review metadata for the current policy
-  - includes `hybrid_policy` when the bridge has a resolved weight policy for the active comparison set
-  - includes `primary_result` so callers can audit the TF-IDF fallback result even when `result` came from the stacked or hybrid policy
+  - includes `primary_result` so callers can audit the TF-IDF fallback result even when `result` came from the stacked policy
   - for explicit out-of-scope post types, `decision_source` becomes `scope_filter` and `scope_included` is `false`
 - `comparison_models`
   - loaded comparison-model metadata
 - `comparisons`
   - fully scored comparison entries
 
-When the full benchmark suite artifacts exist, the bridge includes all available supported comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. Under `hybrid_consensus`, the bridge may also populate `comparisons` even when `include_comparisons` is `false` if the post was routed through the hybrid decider. The current suite also contains TF-IDF, the stacked decider, and the benchmark-built hybrid policy artifact, but the side-by-side comparison list still normally contains only the two active transformer models because TF-IDF is the primary fallback model and the stacked/hybrid policies are surfaced separately.
+When the full benchmark suite artifacts exist, the bridge includes all available supported comparison models from the suite summary in `comparison_models`. If you set `include_comparisons: true`, the bridge also includes fully scored comparison entries in `comparisons`. The current suite also contains TF-IDF and the stacked decider, but the side-by-side comparison list still normally contains only the two active transformer models because TF-IDF is the primary fallback model and the stacked policy is surfaced separately.
 
 If one comparison model fails during scoring, the bridge now keeps the main `result` and returns an `error` field for that comparison entry instead of failing the whole `/check` request.
 
@@ -264,21 +228,12 @@ On Apple Silicon, the bridge keeps all neural comparison models off MPS during `
 - `low_text`
 - `sparse_media`
 - `comparison_disagreement`
-- `label_changed_by_hybrid`
-- `confidence_changed_by_hybrid`
 - `insufficient_comparison_support`
 - `label_changed_by_stacked_decider`
 - `confidence_changed_by_stacked_decider`
 - `stacked_decider_unavailable`
 - `stacked_decider_failed`
 - `stacked_decider_missing_result`
-
-If the bridge produced a routed `decider_result`, `decision_context` can also include:
-
-- `hybrid_score`
-- `primary_weight`
-- `hybrid_weight_source`
-- `hybrid_policy.applied_weights`
 
 ## `POST /check-comparison`
 

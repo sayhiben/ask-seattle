@@ -559,8 +559,6 @@
       low_text: 'low-text post',
       sparse_media: 'sparse-media post',
       comparison_disagreement: 'models disagree',
-      label_changed_by_hybrid: 'hybrid changed the label',
-      confidence_changed_by_hybrid: 'hybrid changed the confidence band',
       label_changed_by_stacked_decider: 'stacked decider changed the label',
       confidence_changed_by_stacked_decider: 'stacked decider changed the confidence band',
       stacked_decider_unavailable: 'stacked decider unavailable',
@@ -885,9 +883,7 @@
       const bandLabel = String(result.confidence_band || '').toUpperCase();
       const decisionSource = String(decisionContext?.decision_source || 'primary_model');
       let verdictPrefix = result.label === 'askseattle' ? 'Looks like' : 'Does not look like';
-      if (decisionSource === 'hybrid_consensus') {
-        verdictPrefix = 'Hybrid says';
-      } else if (decisionSource === 'stacked_transformer_decider') {
+      if (decisionSource === 'stacked_transformer_decider') {
         verdictPrefix = 'Stacked decider says';
       }
       const verdictMessage =
@@ -895,11 +891,9 @@
           ? bandLabel === 'HIGH'
             ? `${verdictPrefix} askseattle (high confidence)`
             : `${verdictPrefix} askseattle (borderline)`
-          : decisionSource === 'hybrid_consensus'
-            ? 'Hybrid says not askseattle'
-            : decisionSource === 'stacked_transformer_decider'
-              ? 'Stacked decider says not askseattle'
-              : 'Does not look like askseattle';
+          : decisionSource === 'stacked_transformer_decider'
+            ? 'Stacked decider says not askseattle'
+            : 'Does not look like askseattle';
       setDecisionState(verdictMessage, resultTone(result));
       setReviewPriority(decisionContext);
       const baseStatusText = `${result.model_name} ${result.confidence_band} ${result.label} score=${result.score.toFixed(3)} low=${result.low_threshold} high=${result.high_threshold}`;

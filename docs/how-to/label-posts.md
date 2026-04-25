@@ -48,28 +48,22 @@ The verdict block shows the active `/check` verdict:
 - `Does not look like askseattle`
 - `Stacked decider says askseattle (...)`
 - `Stacked decider says not askseattle`
-- `Hybrid says askseattle (...)`
-- `Hybrid says not askseattle`
 
 The default bridge policy is `stacked_transformer_decider`. When the stacked suite artifact exists, the panel message is driven by that stacked verdict while the primary TF-IDF result stays available in `decision_context.primary_result` for audit and fallback.
 
 The bridge now treats explicit non-text, non-crosspost post types as out of scope. For those posts, `/check` returns a scope-filter result immediately instead of asking the model stack to score them.
-
-If you start the bridge with `DECIDER_POLICY=hybrid_consensus`, the panel message is driven by the calibrated hybrid-policy verdict. Borderline, low-text, image, link, or sparse-media posts can still route through the loaded comparison models, but even unrouted posts now go through the saved hybrid calibrator and thresholds when that artifact is available.
 
 If the bridge thinks a post needs extra attention, the panel also shows a review-priority banner. That banner is driven by `decision_context.review_priority` and usually means one of these:
 
 - the post landed in a hard slice such as `low_text`, `image_post`, `link_post`, or `sparse_media`
 - the primary result was borderline
 - the comparison models disagreed
-- the hybrid decider changed the label or confidence band
-- the post was routed, but there were not enough comparison results to support the hybrid policy
+- the stacked decider changed the label or confidence band
+- the stacked decider was unavailable or failed and the bridge had to fall back
 
 If benchmark-suite artifacts are available, the panel also shows a `Transformer checks` section with one card per loaded comparison transformer. The section title also shows the loaded comparison-model count.
 
 The panel now renders those comparison cards incrementally. The main bridge verdict appears first, then each transformer card updates as its own `/check-comparison` request finishes.
-
-If the bridge already routed the post through `hybrid_consensus`, some or all comparison cards may be filled immediately from that same `/check` response instead of starting from a loading state.
 
 On Apple Silicon, those neural comparison cards now run on CPU instead of MPS. That is slower, but it avoids current local MPS crashes in bridge inference.
 

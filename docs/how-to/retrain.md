@@ -185,10 +185,6 @@ Benchmarking writes:
 - `benchmark_suite_summary.json`
 - `benchmark_history.json`
 - `history/<run_id>/benchmark_suite_summary.json`
-- `hybrid_consensus_policy/hybrid_consensus_policy.joblib`
-- `hybrid_consensus_policy/training_summary.json`
-
-If TF-IDF plus at least two comparison models benchmark successfully for the current manifest, `benchmark_suite_summary.json` also includes one benchmark-built `hybrid_consensus_policy` row. Benchmarking calibrates that effective policy on the shared calibration split, selects its own low/high thresholds, and writes both a `training_summary.json` and a `hybrid_consensus_policy.joblib` artifact for later bridge use.
 
 The default four-model suite is:
 
@@ -205,8 +201,6 @@ Important implementation details:
 - the stacked transformer decider is trained after the two active transformer bundles and owns its own calibrator plus low/high thresholds
 - the stacked transformer decider now fits its meta-model on out-of-fold `NeoBERT` and `ModernBERT-large` probabilities from the suite train split, then calibrates that stacked score on the normal suite calibration split
 - on CUDA hosts, those OOF component refits now stay on the GPU; only MPS hosts still fall back to CPU for that leg
-- the benchmark-built hybrid policy now calibrates its own effective score, selects its own low/high thresholds, and writes a loadable artifact under `hybrid_consensus_policy/`
-- the bridge hybrid policy weights still come from comparable benchmark history when available, then fall back to the latest suite summary, then to uniform weights
 - `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
 - the active encoder transformer family uses title/body pair encoding, fits a sigmoid calibrator for every candidate, keeps the better candidate by calibrated strict-threshold readiness first, restores the best epoch checkpoint, and runs a small config grid for NeoBERT and ModernBERT-large
 - that grid now includes a CUDA-only 512-token precision NeoBERT candidate and 48 GB CUDA-only ModernBERT-large long-context and precision-long-context candidates
@@ -289,14 +283,6 @@ That does not change the operational retrain path. The TF-IDF bundle is still th
 - if the stacked artifact is missing or fails, the bridge falls back to the TF-IDF verdict and records the reason in `decision_context.review_reasons`
 
 The stacked decider is only refreshed when you rerun `make retrain` and then `make benchmark`. Bridge auto-retrain does not retrain the benchmark suite artifacts in the background.
-
-If you want the routed bridge-side hybrid instead, use:
-
-```bash
-make bridge DECIDER_POLICY=hybrid_consensus
-```
-
-That policy is benchmark-weighted and still useful for comparison work on routed hard slices, but it is no longer the default top-line verdict.
 
 If you want the bridge to expose the raw primary-model verdict only, use:
 

@@ -335,6 +335,55 @@ def test_load_model_prefers_stacked_loader_before_tfidf_normalization(
     assert loaded == {"loader": "stacked", "source_path": str(bundle_path)}
 
 
+def test_load_model_rebases_remote_stacked_component_paths_to_local_repo(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    component_path = tmp_path / "models" / "benchmark-suite" / "transformer_neobert" / "transformer_bundle.joblib"
+    component_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(
+        {
+            "model_family": "transformer_sequence_classifier",
+            "model_name": "transformer_neobert",
+            "artifact_path": str(component_path.parent),
+        },
+        component_path,
+    )
+    bundle_path = (
+        tmp_path / "models" / "benchmark-suite" / "stacked_transformer_decider" / "stacked_transformer_decider.joblib"
+    )
+    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(
+        {
+            "model_family": "stacked_transformer_decider",
+            "model_name": "stacked_transformer_decider",
+            "model": object(),
+            "component_models": [
+                {
+                    "name": "transformer_neobert",
+                    "artifact_path": "/workspace/ask-seattle/models/benchmark-suite/transformer_neobert/transformer_bundle.joblib",
+                }
+            ],
+        },
+        bundle_path,
+    )
+
+    def fake_transformer_loader(bundle, *, source_path):  # type: ignore[no-untyped-def]
+        return {
+            "model_family": "transformer_sequence_classifier",
+            "model_name": bundle.get("model_name"),
+            "artifact_path": str(source_path),
+        }
+
+    monkeypatch.setattr(model_module, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(model_module, "_load_transformer_bundle_from_joblib", fake_transformer_loader)
+
+    loaded = load_model(bundle_path)
+
+    assert loaded["component_models"][0]["artifact_path"] == str(component_path)
+    assert loaded["component_models"][0]["bundle"]["artifact_path"] == str(component_path)
+
+
 def test_stacked_transformer_outer_holdout_folds_are_stratified() -> None:
     posts = [
         LabeledPost(f"Positive {index}", "", 1, post_id=f"p{index}", post_type="text")

@@ -280,7 +280,7 @@ Current behavior:
 
 ## `ask-seattle benchmark-suite`
 
-Benchmark the active four-model artifact-backed suite on one shared held-out split, using already-trained suite artifacts, and build a calibrated `hybrid_consensus_policy` artifact when enough benchmarked models are available for the effective bridge policy.
+Benchmark the active four-model artifact-backed suite on one shared held-out split using already-trained suite artifacts.
 
 ```bash
 ask-seattle benchmark-suite --data PATH --output-dir PATH [--split-strategy random|time] [--split-seed 13] [--eval-subreddit seattle] [--transformer-model-id chandar-lab/NeoBERT] [--transformer-secondary-model-id answerdotai/ModernBERT-large] [--notes "free-form note"]
@@ -322,7 +322,6 @@ Current suite details:
 - the stacked transformer decider is trained from the `NeoBERT` and `ModernBERT-large` bundles using out-of-fold component probabilities on the suite train split, then benchmarked like any other artifact-backed suite model
 - the transformer family restores the best epoch checkpoint and ranks candidates with a precision-first calibration key
 - the shared model text includes normalized content metadata when available
-- when TF-IDF plus at least two comparison models benchmark successfully, the aggregate summary also includes `hybrid_consensus_policy`, a benchmark-built policy row with its own artifact path, calibrator, threshold policy, and `policy_metadata`
 
 Writes:
 
@@ -409,7 +408,7 @@ ask-seattle serve-bridge \
   --model PATH \
   [--labels PATH] \
   [--comparison-suite PATH] \
-  [--decider-policy primary_only|hybrid_consensus|stacked_transformer_decider] \
+  [--decider-policy primary_only|stacked_transformer_decider] \
   [--host 127.0.0.1] \
   [--port 8765] \
   [--log-level INFO] \
@@ -441,9 +440,6 @@ Arguments:
   - optional
   - defaults to `stacked_transformer_decider`
   - `primary_only` keeps `/check` anchored to the active bridge model only
-  - `hybrid_consensus` returns the calibrated hybrid-policy verdict in `result`, keeps the primary TF-IDF result under `decision_context.primary_result` for audit, and uses `decision_source: hybrid_primary_only` when a post was not routed through comparison models
-  - when the suite benchmark has already written a `hybrid_consensus_policy` artifact, `hybrid_consensus` loads that policy's calibrator and thresholds; otherwise it still falls back to benchmark-informed in-memory weights
-  - when benchmark-suite history exists, `hybrid_consensus` derives its per-model weights from comparable benchmark runs and exposes them in the bridge response metadata
   - `stacked_transformer_decider` returns the trained stacked transformer policy as the main `result` when its suite artifact exists and falls back to the primary model when it does not
 - `--log-level`
   - optional

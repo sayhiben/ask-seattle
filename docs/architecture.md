@@ -71,7 +71,6 @@ Responsibilities:
 - classify posts
 - short-circuit explicit non-text, non-crosspost `/check` requests with a scope-filter result
 - return the stacked transformer decider as the default `/check` verdict when that artifact exists
-- optionally route hard cases through a bridge-side hybrid consensus decider
 - append reviewed labels
 - optionally auto-retrain and hot-reload the model
 
@@ -122,7 +121,7 @@ Responsibilities:
 - write `training_summary.json`
 - build one persisted benchmark-suite split manifest
 - train the stacked transformer decider from the calibrated `NeoBERT` and `ModernBERT-large` component bundles plus shared post-shape features
-- benchmark the five trained suite models plus a benchmark-built hybrid-policy artifact against that shared manifest
+- benchmark the four trained suite models against that shared manifest
 
 ### CLI
 
@@ -144,11 +143,9 @@ The bridge accepts title and body text that is already visible in the browser. T
 
 The operational retrain path is TF-IDF + logistic regression because it is fast, easy to inspect, cheap to retrain, and strong enough for repeated wording patterns.
 
-That does not mean the repository only supports one model family. The benchmark suite now compares five local model paths on the same split so the project can make evidence-based promotion decisions without turning every retrain into a heavyweight transformer job.
+That does not mean the repository only supports one model family. The benchmark suite now compares four local model paths on the same split so the project can make evidence-based promotion decisions without turning every retrain into a heavyweight transformer job.
 
 The bridge now promotes one of those benchmarked artifacts into the deployed `/check` path: a stacked transformer decider trained from the `NeoBERT` and `ModernBERT-large` comparison models. TF-IDF remains the cheap retrain path, the browser-visible fallback, and the audit baseline in `decision_context.primary_result`.
-
-The optional `hybrid_consensus` policy still exists, but it is now an alternate routed bridge-layer decision policy rather than the default deployed verdict.
 
 ### One shared benchmark manifest
 
