@@ -142,8 +142,8 @@ Pass through additional make overrides:
 scripts/run_remote_training.sh \
   --host gpu-win \
   --target benchmark-suite \
-  --make-arg TRANSFORMER_MODEL_ID=distilroberta-base \
-  --make-arg TRANSFORMER_TERTIARY_MODEL_ID=answerdotai/ModernBERT-large
+  --make-arg TRANSFORMER_MODEL_ID=chandar-lab/NeoBERT \
+  --make-arg TRANSFORMER_SECONDARY_MODEL_ID=answerdotai/ModernBERT-large
 ```
 
 ## Which Targets Benefit From The GPU
@@ -156,7 +156,7 @@ The current repository targets are:
 - `make benchmark-seed-sweep`
 - `make benchmark-suite`
 
-`make retrain` now retrains the operational TF-IDF model plus the five-model suite without held-out benchmarking.
+`make retrain` now retrains the operational TF-IDF model plus the four-model suite without held-out benchmarking.
 
 `make benchmark` and `make benchmark-suite` are the same benchmark-only step.
 

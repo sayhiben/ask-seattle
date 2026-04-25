@@ -55,7 +55,7 @@ The default bridge policy is `stacked_transformer_decider`. When the stacked sui
 
 The bridge now treats explicit non-text, non-crosspost post types as out of scope. For those posts, `/check` returns a scope-filter result immediately instead of asking the model stack to score them.
 
-If you start the bridge with `DECIDER_POLICY=hybrid_consensus`, it can still route borderline, low-text, image, link, or sparse-media posts through the loaded comparison models and return that routed verdict as the main panel message.
+If you start the bridge with `DECIDER_POLICY=hybrid_consensus`, the panel message is driven by the calibrated hybrid-policy verdict. Borderline, low-text, image, link, or sparse-media posts can still route through the loaded comparison models, but even unrouted posts now go through the saved hybrid calibrator and thresholds when that artifact is available.
 
 If the bridge thinks a post needs extra attention, the panel also shows a review-priority banner. That banner is driven by `decision_context.review_priority` and usually means one of these:
 
@@ -76,11 +76,10 @@ On Apple Silicon, those neural comparison cards now run on CPU instead of MPS. T
 The current full suite is:
 
 - TF-IDF
-- Transformer ModernBERT-base
 - Transformer NeoBERT
 - Transformer ModernBERT-large
 
-Because the active bridge model is still TF-IDF, the comparison card area normally shows the three transformer models only. If an older benchmark summary still contains semantic or decoder rows, the bridge ignores them instead of surfacing stale cards.
+Because the active bridge model is still TF-IDF, the comparison card area normally shows the two active transformer models only. If an older benchmark summary still contains semantic, decoder, or retired transformer rows, the bridge ignores them instead of surfacing stale cards.
 The stacked transformer decider does not get its own comparison card because it is the deployed bridge policy, not a side-by-side comparison row.
 
 Each card shows:

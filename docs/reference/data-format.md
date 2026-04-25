@@ -150,14 +150,15 @@ The benchmark suite writes:
 
 - `suite_training_summary.json`
 - `tfidf_recommended/training_summary.json`
-- `transformer_modernbert_base/training_summary.json`
 - `transformer_neobert/training_summary.json`
 - `transformer_modernbert_large/training_summary.json`
 - `stacked_transformer_decider/training_summary.json`
+- `hybrid_consensus_policy/training_summary.json`
 - `suite_input.json`
 - `benchmark_suite_summary.json`
 - `benchmark_history.json`
 - `history/<run_id>/benchmark_suite_summary.json`
+- `hybrid_consensus_policy/hybrid_consensus_policy.joblib`
 - `seed_sweeps/seed_sweep_summary.json`
 
 The optional RunPod remote wrapper also writes local pulled metadata and logs under:
@@ -167,13 +168,14 @@ The optional RunPod remote wrapper also writes local pulled metadata and logs un
 `benchmark_suite_summary.json` can now contain two kinds of rows under `models`:
 
 - artifact-backed model rows such as `tfidf_recommended`, the transformer bundles, or `stacked_transformer_decider`
-- a derived policy row named `hybrid_consensus_policy`
+- a benchmark-built policy row named `hybrid_consensus_policy`
 
-That hybrid policy row is benchmark-only:
+That hybrid policy row is built during benchmarking, not during `retrain-all`:
 
-- `artifact_path` is `null`
+- `artifact_path` points at `hybrid_consensus_policy/hybrid_consensus_policy.joblib`
 - `result_source` is `benchmarked_policy`
 - `policy_metadata` records the active hybrid weighting source, routed-rate diagnostics, and review-reason counts
+- the paired `training_summary.json` records the hybrid calibrator, threshold policy, and production-readiness gate result
 
 ## `suite_input.json`
 
@@ -188,7 +190,7 @@ The manifest includes:
 - optional `evaluation_subreddit`
 - prepared-data summary counts
 
-Every benchmark-suite model family consumes that same manifest so the shared five-model comparison remains apples-to-apples.
+Every benchmark-suite model family consumes that same manifest so the shared four-model comparison remains apples-to-apples.
 
 `make retrain` writes or refreshes this manifest before training the suite models. `make benchmark` loads the same manifest later and only benchmarks compatible trained artifacts for that manifest.
 
@@ -275,7 +277,7 @@ Neural benchmark summaries replace `feature_audit` with model-specific metadata 
 
 Neural summaries now also record the active `representation_config`, so later benchmark or inference runs can reconstruct the same metadata-token policy that the model was trained with.
 
-For `stacked_transformer_decider`, `training_args` and `oof_training` also record how many out-of-fold component-training folds were used and whether the meta-model was fit from true OOF component probabilities or an explicit fallback path.
+For `stacked_transformer_decider`, `training_args` and `oof_training` also record how many out-of-fold component-training folds were used, whether the meta-model was fit from true OOF component probabilities or an explicit fallback path, and which transformer component models were included in the pruned stack.
 
 Training-only suite summaries intentionally omit `metrics` and `operating_metrics` until a later benchmark step writes them.
 

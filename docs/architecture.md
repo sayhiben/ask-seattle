@@ -116,13 +116,13 @@ Responsibilities:
 
 - prepare reviewed labels for training
 - fit the operational TF-IDF model and calibrator
-- retrain the full five-model artifact-backed suite without held-out benchmarking
+- retrain the full four-model artifact-backed suite without held-out benchmarking
 - evaluate held-out slices later from the trained suite artifacts
 - write `tfidf_logreg.joblib`
 - write `training_summary.json`
 - build one persisted benchmark-suite split manifest
-- train the stacked transformer decider from the calibrated transformer component bundles plus shared post-shape features
-- benchmark the five artifact-backed suite models plus the derived hybrid-policy row against that shared manifest
+- train the stacked transformer decider from the calibrated `NeoBERT` and `ModernBERT-large` component bundles plus shared post-shape features
+- benchmark the five trained suite models plus a benchmark-built hybrid-policy artifact against that shared manifest
 
 ### CLI
 
@@ -146,7 +146,7 @@ The operational retrain path is TF-IDF + logistic regression because it is fast,
 
 That does not mean the repository only supports one model family. The benchmark suite now compares five local model paths on the same split so the project can make evidence-based promotion decisions without turning every retrain into a heavyweight transformer job.
 
-The bridge now promotes one of those benchmarked artifacts into the deployed `/check` path: a stacked transformer decider trained from the three transformer comparison models. TF-IDF remains the cheap retrain path, the browser-visible fallback, and the audit baseline in `decision_context.primary_result`.
+The bridge now promotes one of those benchmarked artifacts into the deployed `/check` path: a stacked transformer decider trained from the `NeoBERT` and `ModernBERT-large` comparison models. TF-IDF remains the cheap retrain path, the browser-visible fallback, and the audit baseline in `decision_context.primary_result`.
 
 The optional `hybrid_consensus` policy still exists, but it is now an alternate routed bridge-layer decision policy rather than the default deployed verdict.
 

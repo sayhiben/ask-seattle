@@ -34,11 +34,13 @@ from ask_seattle.data import (
 )
 from ask_seattle.hybrid_policy import (
     HYBRID_MIN_COMPARISON_RESULTS,
+    HYBRID_POLICY_CONFIG_VERSION,
     HYBRID_POLICY_DISPLAY_NAME,
     HYBRID_POLICY_MODEL_FAMILY,
     HYBRID_POLICY_NAME,
     build_benchmark_weighted_hybrid_policy,
     hybrid_decider_response,
+    hybrid_policy_response,
     hybrid_route_reasons,
 )
 from ask_seattle.model import (
@@ -87,24 +89,21 @@ DEFAULT_TEST_SIZE = 0.2
 DEFAULT_SEMANTIC_MODEL_ID = "sentence-transformers/all-MiniLM-L6-v2"
 DEFAULT_SEMANTIC_SECONDARY_MODEL_ID = "Qwen/Qwen3-Embedding-0.6B"
 DEFAULT_SEMANTIC_TERTIARY_MODEL_ID = "jinaai/jina-embeddings-v5-text-small-classification"
-DEFAULT_TRANSFORMER_MODEL_ID = "answerdotai/ModernBERT-base"
-DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID = "chandar-lab/NeoBERT"
-DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID = "answerdotai/ModernBERT-large"
+DEFAULT_TRANSFORMER_MODEL_ID = "chandar-lab/NeoBERT"
+DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID = "answerdotai/ModernBERT-large"
 DEFAULT_CAUSAL_LM_MODEL_ID = "Qwen/Qwen3-1.7B"
 DEFAULT_MAX_SLICE_POSITIVE_WEIGHT = 2.0
 DEFAULT_TFIDF_REVIEW_PRECISION_TARGET = 0.70
 DEFAULT_BENCHMARK_SEED_SWEEP = (13, 21, 34)
 DEFAULT_BENCHMARK_SEED_MODELS = (
-    "transformer_modernbert_base",
     "transformer_neobert",
     "transformer_modernbert_large",
 )
 STACKED_TRANSFORMER_DECIDER_NAME = "stacked_transformer_decider"
 STACKED_TRANSFORMER_DECIDER_DISPLAY_NAME = "Stacked transformer decider"
 STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY = "stacked_transformer_decider"
-STACKED_TRANSFORMER_DECIDER_CONFIG_VERSION = "v2_oof_meta_logreg_probability_stack"
+STACKED_TRANSFORMER_DECIDER_CONFIG_VERSION = "v3_oof_meta_logreg_probability_stack_pruned"
 STACKED_TRANSFORMER_COMPONENT_NAMES = (
-    "transformer_modernbert_base",
     "transformer_neobert",
     "transformer_modernbert_large",
 )
@@ -573,7 +572,6 @@ def retrain_model_suite_from_labels(
     semantic_tertiary_model_id: str = DEFAULT_SEMANTIC_TERTIARY_MODEL_ID,
     transformer_model_id: str = DEFAULT_TRANSFORMER_MODEL_ID,
     transformer_secondary_model_id: str = DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID,
-    transformer_tertiary_model_id: str = DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID,
     causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
@@ -600,7 +598,6 @@ def retrain_model_suite_from_labels(
         semantic_tertiary_model_id=semantic_tertiary_model_id,
         transformer_model_id=transformer_model_id,
         transformer_secondary_model_id=transformer_secondary_model_id,
-        transformer_tertiary_model_id=transformer_tertiary_model_id,
         causal_lm_model_id=causal_lm_model_id,
     )
     results: list[dict[str, Any]] = []
@@ -718,7 +715,6 @@ def retrain_all_from_labels(
     semantic_tertiary_model_id: str = DEFAULT_SEMANTIC_TERTIARY_MODEL_ID,
     transformer_model_id: str = DEFAULT_TRANSFORMER_MODEL_ID,
     transformer_secondary_model_id: str = DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID,
-    transformer_tertiary_model_id: str = DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID,
     causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
@@ -751,7 +747,6 @@ def retrain_all_from_labels(
         semantic_tertiary_model_id=semantic_tertiary_model_id,
         transformer_model_id=transformer_model_id,
         transformer_secondary_model_id=transformer_secondary_model_id,
-        transformer_tertiary_model_id=transformer_tertiary_model_id,
         causal_lm_model_id=causal_lm_model_id,
     )
     summary = {
@@ -783,7 +778,6 @@ def benchmark_model_suite_from_labels(
     semantic_tertiary_model_id: str = DEFAULT_SEMANTIC_TERTIARY_MODEL_ID,
     transformer_model_id: str = DEFAULT_TRANSFORMER_MODEL_ID,
     transformer_secondary_model_id: str = DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID,
-    transformer_tertiary_model_id: str = DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID,
     causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
     notes: str | None = None,
 ) -> dict[str, Any]:
@@ -821,7 +815,6 @@ def benchmark_model_suite_from_labels(
         semantic_tertiary_model_id=semantic_tertiary_model_id,
         transformer_model_id=transformer_model_id,
         transformer_secondary_model_id=transformer_secondary_model_id,
-        transformer_tertiary_model_id=transformer_tertiary_model_id,
         causal_lm_model_id=causal_lm_model_id,
     )
     for index, spec in enumerate(specs, start=1):
@@ -953,7 +946,6 @@ def benchmark_seed_sweep_from_labels(
     semantic_tertiary_model_id: str = DEFAULT_SEMANTIC_TERTIARY_MODEL_ID,
     transformer_model_id: str = DEFAULT_TRANSFORMER_MODEL_ID,
     transformer_secondary_model_id: str = DEFAULT_TRANSFORMER_SECONDARY_MODEL_ID,
-    transformer_tertiary_model_id: str = DEFAULT_TRANSFORMER_TERTIARY_MODEL_ID,
     causal_lm_model_id: str = DEFAULT_CAUSAL_LM_MODEL_ID,
 ) -> dict[str, Any]:
     started_at = time.perf_counter()
@@ -970,7 +962,6 @@ def benchmark_seed_sweep_from_labels(
         semantic_tertiary_model_id=semantic_tertiary_model_id,
         transformer_model_id=transformer_model_id,
         transformer_secondary_model_id=transformer_secondary_model_id,
-        transformer_tertiary_model_id=transformer_tertiary_model_id,
         causal_lm_model_id=causal_lm_model_id,
     )
     selected_specs = _select_seed_sweep_specs(specs, model_names=selected_model_names)
@@ -1130,7 +1121,6 @@ def _suite_model_specs(
     semantic_tertiary_model_id: str,
     transformer_model_id: str,
     transformer_secondary_model_id: str,
-    transformer_tertiary_model_id: str,
     causal_lm_model_id: str,
 ) -> list[SuiteModelSpec]:
     return [
@@ -1153,23 +1143,12 @@ def _suite_model_specs(
             },
         ),
         SuiteModelSpec(
-            name="transformer_modernbert_base",
-            display_name="Transformer ModernBERT-base",
-            family="transformer_sequence_classifier",
-            runner=_train_transformer_bundle_for_split,
-            kwargs={
-                "model_id": transformer_model_id,
-                "display_name": "Transformer ModernBERT-base",
-                "config_version": "v5_bootstrap_precision_grid",
-            },
-        ),
-        SuiteModelSpec(
             name="transformer_neobert",
             display_name="Transformer NeoBERT",
             family="transformer_sequence_classifier",
             runner=_train_transformer_bundle_for_split,
             kwargs={
-                "model_id": transformer_secondary_model_id,
+                "model_id": transformer_model_id,
                 "display_name": "Transformer NeoBERT",
                 "config_version": "v7_bootstrap_precision_grid",
             },
@@ -1180,7 +1159,7 @@ def _suite_model_specs(
             family="transformer_sequence_classifier",
             runner=_train_transformer_bundle_for_split,
             kwargs={
-                "model_id": transformer_tertiary_model_id,
+                "model_id": transformer_secondary_model_id,
                 "display_name": "Transformer ModernBERT-large",
                 "config_version": "v6_bootstrap_precision_grid",
             },
@@ -4976,7 +4955,6 @@ def _benchmark_hybrid_policy_entry(
     comparison_names = [
         name
         for name in (
-            "transformer_modernbert_base",
             "transformer_neobert",
             "transformer_modernbert_large",
         )
@@ -5007,6 +4985,8 @@ def _benchmark_hybrid_policy_entry(
         benchmark_history=_load_json_payload_if_exists(benchmark_history_path),
         suite_summary=_load_json_payload_if_exists(comparison_suite_path),
     )
+    hybrid_dir = benchmark_dir / HYBRID_POLICY_NAME
+    hybrid_dir.mkdir(parents=True, exist_ok=True)
 
     model_payloads = {
         name: _hybrid_policy_model_payload(
@@ -5022,14 +5002,100 @@ def _benchmark_hybrid_policy_entry(
         return None
 
     primary_payload = model_payloads["tfidf_recommended"]
+    y_calibration = [post.label for post in split.calibration]
     primary_rows = primary_payload["test_rows"]
     y_test = [post.label for post in split.test]
+
+    calibration_effective_scores: list[float] = []
+    for index, row in enumerate(primary_payload["calibration_rows"]):
+        primary_result = asdict(
+            check_result_from_score(
+                primary_payload["bundle"],
+                row=row,
+                score=primary_payload["calibration_scores"][index],
+            )
+        )
+        comparisons = [
+            {
+                "name": name,
+                "display_name": model_payloads[name]["display_name"],
+                "model_family": model_payloads[name]["bundle"].get("model_family"),
+                "model_id": model_payloads[name]["bundle"].get("model_id"),
+                "result": asdict(
+                    check_result_from_score(
+                        model_payloads[name]["bundle"],
+                        row=model_payloads[name]["calibration_rows"][index],
+                        score=model_payloads[name]["calibration_scores"][index],
+                    )
+                ),
+            }
+            for name in comparison_names
+        ]
+        route_reasons = hybrid_route_reasons(row=row, primary_result=primary_result)
+        decider_result, _decision_context = hybrid_decider_response(
+            policy="hybrid_consensus",
+            primary_result=primary_result,
+            primary_model_name="tfidf_recommended",
+            row=row,
+            comparisons=comparisons,
+            route_reasons=route_reasons,
+            hybrid_policy=hybrid_policy,
+            min_comparison_results=HYBRID_MIN_COMPARISON_RESULTS,
+        )
+        effective_result = decider_result or primary_result
+        calibration_effective_scores.append(float(effective_result.get("score_raw") or 0.0))
+
+    calibrator, calibration = fit_sigmoid_calibrator(y_calibration, calibration_effective_scores)
+    calibrated_calibration_scores = apply_probability_calibrator(calibrator, calibration_effective_scores)
+    thresholds = _select_thresholds_or_default(
+        y_calibration,
+        calibrated_calibration_scores,
+        high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
+        review_precision_target=DEFAULT_REVIEW_PRECISION_TARGET,
+        calibration=calibration,
+    )
+    threshold_policy = _decision_policy(
+        split=split,
+        calibration=calibration,
+        thresholds=thresholds,
+        review_precision_target=DEFAULT_REVIEW_PRECISION_TARGET,
+        high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
+    )
+    artifact_path = hybrid_dir / f"{HYBRID_POLICY_NAME}.joblib"
+    joblib.dump(
+        {
+            **hybrid_policy,
+            "config_version": HYBRID_POLICY_CONFIG_VERSION,
+            "model_family": HYBRID_POLICY_MODEL_FAMILY,
+            "model_name": HYBRID_POLICY_NAME,
+            "display_name": HYBRID_POLICY_DISPLAY_NAME,
+            "model_version": __version__,
+            "artifact_path": str(artifact_path),
+            "calibrator": calibrator,
+            "calibration": asdict(calibration),
+            "threshold_policy": threshold_policy,
+            "active_model_names": [model["name"] for model in active_models],
+            "comparison_model_names": comparison_names,
+        },
+        artifact_path,
+    )
+
     effective_scores: list[float] = []
     routed_count = 0
     label_changed_count = 0
     disagreement_count = 0
     policy_review_reasons: Counter[str] = Counter()
     decision_source_counts: Counter[str] = Counter()
+    full_hybrid_policy = {
+        **hybrid_policy,
+        "config_version": HYBRID_POLICY_CONFIG_VERSION,
+        "artifact_path": str(artifact_path),
+        "calibrator": calibrator,
+        "calibration": asdict(calibration),
+        "threshold_policy": threshold_policy,
+        "active_model_names": [model["name"] for model in active_models],
+        "comparison_model_names": comparison_names,
+    }
 
     for index, row in enumerate(primary_rows):
         primary_result = asdict(
@@ -5063,7 +5129,7 @@ def _benchmark_hybrid_policy_entry(
             row=row,
             comparisons=comparisons,
             route_reasons=route_reasons,
-            hybrid_policy=hybrid_policy,
+            hybrid_policy=full_hybrid_policy,
             min_comparison_results=HYBRID_MIN_COMPARISON_RESULTS,
         )
         effective_result = decider_result or primary_result
@@ -5078,13 +5144,11 @@ def _benchmark_hybrid_policy_entry(
         for reason in decision_context.get("review_reasons") or []:
             policy_review_reasons[str(reason)] += 1
 
-    primary_low_threshold = float(primary_summary["threshold_policy"]["low_threshold"])
-    primary_high_threshold = float(primary_summary["threshold_policy"]["high_threshold"])
     band_metrics = evaluate_decision_policy(
         y_test,
         effective_scores,
-        low_threshold=primary_low_threshold,
-        high_threshold=primary_high_threshold,
+        low_threshold=threshold_policy["low_threshold"],
+        high_threshold=threshold_policy["high_threshold"],
         rows=primary_rows,
     )
     operating_metrics = _operating_metrics_summary(
@@ -5093,30 +5157,46 @@ def _benchmark_hybrid_policy_entry(
         train_rows=primary_payload["train_rows"],
         train_labels=[post.label for post in split.train],
         rows=primary_rows,
-        low_threshold=primary_low_threshold,
-        high_threshold=primary_high_threshold,
+        low_threshold=threshold_policy["low_threshold"],
+        high_threshold=threshold_policy["high_threshold"],
     )
-    production_ready, blocked_reason = _production_ready_status_from_trained_summary(
-        calibration=_calibration_result_from_summary(primary_summary.get("calibration")),
-        calibration_high_threshold_ready=_threshold_selection_ready_from_summary(
-            primary_summary.get("threshold_selection")
-        ),
+    production_ready, blocked_reason = _production_ready_status(
+        calibration=calibration,
+        thresholds=thresholds,
         high_confidence_precision=band_metrics.high_confidence_precision,
         high_confidence_predictions=int(operating_metrics.auto_band["predicted_positive"]),
     )
-    return {
-        "name": HYBRID_POLICY_NAME,
-        "display_name": HYBRID_POLICY_DISPLAY_NAME,
-        "status": "ok",
-        "result_source": "benchmarked_policy",
+    summary = {
+        "version": __version__,
         "model_name": HYBRID_POLICY_NAME,
         "model_family": HYBRID_POLICY_MODEL_FAMILY,
-        "model_id": None,
-        "artifact_path": None,
-        "summary_path": str((benchmark_dir / "benchmark_suite_summary.json").resolve()),
+        "display_name": HYBRID_POLICY_DISPLAY_NAME,
+        "runtime_environment": _runtime_environment_metadata(),
+        "artifact_path": str(artifact_path),
+        "config_version": HYBRID_POLICY_CONFIG_VERSION,
+        "prepared_data": prepared_data_summary,
+        "split": _split_summary(split),
+        "calibration": asdict(calibration),
+        "threshold_selection": _threshold_summary(
+            thresholds,
+            review_precision_target=DEFAULT_REVIEW_PRECISION_TARGET,
+            high_precision_target=DEFAULT_HIGH_PRECISION_TARGET,
+        ),
+        "threshold_policy": threshold_policy,
+        "training_args": {
+            "policy_name": HYBRID_POLICY_NAME,
+            "weight_formula_version": hybrid_policy.get("weight_formula_version"),
+            "weight_source": hybrid_policy.get("source"),
+            "matched_run_count": int(hybrid_policy.get("matched_run_count") or 0),
+            "primary_model_name": "tfidf_recommended",
+            "comparison_model_names": comparison_names,
+            "active_model_names": [model["name"] for model in active_models],
+            "calibration_score_source": "effective_policy_score",
+        },
+        "benchmark_status": "complete",
+        "production_gate": _production_gate_summary(),
         "production_ready": production_ready,
         "production_ready_blocked_reason": blocked_reason,
-        "production_gate": _production_gate_summary(),
         "metrics": {
             "high_confidence_precision": band_metrics.high_confidence_precision,
             "high_confidence_recall": band_metrics.high_confidence_recall,
@@ -5127,17 +5207,8 @@ def _benchmark_hybrid_policy_entry(
         "operating_metrics": asdict(operating_metrics),
         "ranking_metrics": _ranking_metrics_summary(y_test, effective_scores),
         "constraint_metrics": _constraint_metrics_summary(y_test, effective_scores),
-        "threshold_policy": {
-            "low_threshold": primary_low_threshold,
-            "high_threshold": primary_high_threshold,
-            "evaluation_subreddit": split.evaluation_subreddit,
-            "split_strategy": split.split_strategy,
-            "split_seed": split.split_seed,
-            "source_model": "tfidf_recommended",
-            "policy": "hybrid_consensus",
-        },
         "policy_metadata": {
-            "hybrid_policy": hybrid_policy,
+            "hybrid_policy": hybrid_policy_response(full_hybrid_policy),
             "routed_count": routed_count,
             "routed_rate": _safe_rate(routed_count, len(y_test)),
             "label_changed_count": label_changed_count,
@@ -5147,6 +5218,31 @@ def _benchmark_hybrid_policy_entry(
             "decision_source_counts": dict(decision_source_counts),
             "review_reason_counts": dict(policy_review_reasons),
         },
+    }
+    summary_path = hybrid_dir / "training_summary.json"
+    summary_path.write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "name": HYBRID_POLICY_NAME,
+        "display_name": HYBRID_POLICY_DISPLAY_NAME,
+        "status": "ok",
+        "result_source": "benchmarked_policy",
+        "model_name": HYBRID_POLICY_NAME,
+        "model_family": HYBRID_POLICY_MODEL_FAMILY,
+        "model_id": None,
+        "artifact_path": str(artifact_path),
+        "summary_path": str(summary_path.resolve()),
+        "production_ready": production_ready,
+        "production_ready_blocked_reason": blocked_reason,
+        "production_gate": _production_gate_summary(),
+        "metrics": summary["metrics"],
+        "operating_metrics": summary["operating_metrics"],
+        "ranking_metrics": summary["ranking_metrics"],
+        "constraint_metrics": summary["constraint_metrics"],
+        "threshold_policy": threshold_policy,
+        "policy_metadata": summary["policy_metadata"],
     }
 
 
@@ -5169,13 +5265,16 @@ def _hybrid_policy_model_payload(
         else None
     ) or _representation_config_for_split(split)
     train_rows = _inference_rows(split.train, representation_config=representation_config)
+    calibration_rows = _inference_rows(split.calibration, representation_config=representation_config)
     test_rows = _inference_rows(split.test, representation_config=representation_config)
     return {
         "name": name,
         "display_name": summary.get("display_name") or name,
         "bundle": bundle,
         "train_rows": train_rows,
+        "calibration_rows": calibration_rows,
         "test_rows": test_rows,
+        "calibration_scores": score_rows(bundle, calibration_rows),
         "scores": score_rows(bundle, test_rows),
     }
 

@@ -889,6 +889,8 @@ def load_model(path: str | Path) -> dict[str, Any]:
     model_family = str(bundle.get("model_family") or bundle.get("model_type") or "")
     if model_family == STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY:
         return _load_stacked_transformer_bundle_from_joblib(bundle, source_path=model_path)
+    if model_family == "hybrid_decider_policy":
+        return _load_hybrid_policy_bundle_from_joblib(bundle)
     if model_family == "transformer_sequence_classifier":
         return _load_transformer_bundle_from_joblib(bundle, source_path=model_path)
     if model_family == "causal_lm_classifier":
@@ -2103,6 +2105,17 @@ def _load_stacked_transformer_bundle_from_joblib(bundle: dict[str, Any], *, sour
     normalized["component_models"] = components
     normalized.setdefault("model_family", STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY)
     normalized.setdefault("model_name", STACKED_TRANSFORMER_DECIDER_MODEL_FAMILY)
+    normalized.setdefault("model_version", str(normalized.get("version") or __version__))
+    _apply_threshold_policy_defaults(normalized)
+    _apply_representation_defaults(normalized)
+    return normalized
+
+
+def _load_hybrid_policy_bundle_from_joblib(bundle: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(bundle)
+    normalized.setdefault("model_family", "hybrid_decider_policy")
+    normalized.setdefault("model_name", "hybrid_consensus_policy")
+    normalized.setdefault("display_name", "Hybrid consensus policy")
     normalized.setdefault("model_version", str(normalized.get("version") or __version__))
     _apply_threshold_policy_defaults(normalized)
     _apply_representation_defaults(normalized)

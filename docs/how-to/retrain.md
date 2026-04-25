@@ -22,7 +22,7 @@ PYTHONPATH=src python3 -m ask_seattle.cli retrain-all \
 This retrains:
 
 - the operational TF-IDF model under `models/real-labels-precision-refresh/`
-- the five-model comparison suite under `models/benchmark-suite/`
+- the four-model comparison suite under `models/benchmark-suite/`
 
 It does not run held-out benchmarks.
 
@@ -123,7 +123,6 @@ This is the stability pass for the top neural candidates. It retrains and benchm
 
 By default it evaluates:
 
-- `transformer_modernbert_base`
 - `transformer_neobert`
 - `transformer_modernbert_large`
 
@@ -176,7 +175,6 @@ The suite uses one shared split across all model families. Retraining writes:
 
 - `suite_input.json`
 - `tfidf_recommended/training_summary.json`
-- `transformer_modernbert_base/training_summary.json`
 - `transformer_neobert/training_summary.json`
 - `transformer_modernbert_large/training_summary.json`
 - `stacked_transformer_decider/training_summary.json`
@@ -187,28 +185,30 @@ Benchmarking writes:
 - `benchmark_suite_summary.json`
 - `benchmark_history.json`
 - `history/<run_id>/benchmark_suite_summary.json`
+- `hybrid_consensus_policy/hybrid_consensus_policy.joblib`
+- `hybrid_consensus_policy/training_summary.json`
 
-If TF-IDF plus at least two comparison models benchmark successfully for the current manifest, `benchmark_suite_summary.json` also includes one derived `hybrid_consensus_policy` row. That row reports the optional routed bridge policy on the same held-out split and does not correspond to a separately trained artifact.
+If TF-IDF plus at least two comparison models benchmark successfully for the current manifest, `benchmark_suite_summary.json` also includes one benchmark-built `hybrid_consensus_policy` row. Benchmarking calibrates that effective policy on the shared calibration split, selects its own low/high thresholds, and writes both a `training_summary.json` and a `hybrid_consensus_policy.joblib` artifact for later bridge use.
 
-The default five-model suite is:
+The default four-model suite is:
 
 - TF-IDF baseline
-- ModernBERT-base sequence classifier
 - NeoBERT sequence classifier
 - ModernBERT-large sequence classifier
-- stacked transformer decider trained from the three transformer scores plus shared post-shape features
+- stacked transformer decider trained from the `NeoBERT` and `ModernBERT-large` scores plus shared post-shape features
 
 Important implementation details:
 
 - every family consumes the same persisted `suite_input.json` manifest
 - rerunning `make retrain` resumes from any compatible completed per-model artifact already on disk for that manifest
 - `make benchmark` never retrains missing models; it only benchmarks the compatible trained artifacts already present
-- the stacked transformer decider is trained after the three transformer bundles and owns its own calibrator plus low/high thresholds
-- the stacked transformer decider now fits its meta-model on out-of-fold transformer probabilities from the suite train split, then calibrates that stacked score on the normal suite calibration split
+- the stacked transformer decider is trained after the two active transformer bundles and owns its own calibrator plus low/high thresholds
+- the stacked transformer decider now fits its meta-model on out-of-fold `NeoBERT` and `ModernBERT-large` probabilities from the suite train split, then calibrates that stacked score on the normal suite calibration split
 - on CUDA hosts, those OOF component refits now stay on the GPU; only MPS hosts still fall back to CPU for that leg
-- the bridge hybrid policy weights now come from comparable benchmark history when available, then fall back to the latest suite summary, then to uniform weights
+- the benchmark-built hybrid policy now calibrates its own effective score, selects its own low/high thresholds, and writes a loadable artifact under `hybrid_consensus_policy/`
+- the bridge hybrid policy weights still come from comparable benchmark history when available, then fall back to the latest suite summary, then to uniform weights
 - `make benchmark-seed-sweep` is intentionally separate from `make benchmark`; it retrains only the selected comparison models across multiple seeds so the default retrain/benchmark contract stays simple
-- the encoder transformer family uses title/body pair encoding, fits a sigmoid calibrator for every candidate, keeps the better candidate by calibrated strict-threshold readiness first, restores the best epoch checkpoint, and runs a small config grid for ModernBERT-base, NeoBERT, and ModernBERT-large
+- the active encoder transformer family uses title/body pair encoding, fits a sigmoid calibrator for every candidate, keeps the better candidate by calibrated strict-threshold readiness first, restores the best epoch checkpoint, and runs a small config grid for NeoBERT and ModernBERT-large
 - that grid now includes a CUDA-only 512-token precision NeoBERT candidate and 48 GB CUDA-only ModernBERT-large long-context and precision-long-context candidates
 - CUDA neural training now enables TF32 matmul when available to reduce remote runtime cost
 

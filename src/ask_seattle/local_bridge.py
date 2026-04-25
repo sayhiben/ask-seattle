@@ -22,6 +22,7 @@ from ask_seattle.data import (
     write_jsonl_records,
 )
 from ask_seattle.hybrid_policy import (
+    HYBRID_POLICY_NAME,
     build_benchmark_weighted_hybrid_policy,
     hybrid_decider_response,
     hybrid_policy_response,
@@ -35,7 +36,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 STACKED_TRANSFORMER_DECIDER_NAME = "stacked_transformer_decider"
 SUPPORTED_BRIDGE_COMPARISON_MODELS = (
     "tfidf_recommended",
-    "transformer_modernbert_base",
     "transformer_neobert",
     "transformer_modernbert_large",
 )
@@ -1239,6 +1239,48 @@ def _load_hybrid_policy(
         }
         for comparison in comparison_models
     ]
+    expected_active_names = {str(model.get("name") or "") for model in active_models if str(model.get("name") or "")}
+    suite_hybrid_entry = next(
+        (
+            item
+            for item in suite_summary.get("models") or []
+            if isinstance(item, dict)
+            and str(item.get("status") or "") == "ok"
+            and str(item.get("name") or "") == HYBRID_POLICY_NAME
+            and item.get("artifact_path")
+        ),
+        None,
+    )
+    if suite_hybrid_entry is not None:
+        try:
+            resolved_artifact = resolve_bridge_path(str(suite_hybrid_entry["artifact_path"]), must_exist=True)
+            bundle = load_model(resolved_artifact)
+        except Exception as exc:  # pragma: no cover - defensive runtime fallback
+            LOGGER.warning(
+                "skipping hybrid policy artifact artifact_path=%s error=%s",
+                suite_hybrid_entry.get("artifact_path"),
+                exc,
+            )
+        else:
+            active_names = {
+                str(name)
+                for name in bundle.get("active_model_names") or []
+                if str(name or "")
+            }
+            if active_names == expected_active_names:
+                LOGGER.info(
+                    "loaded hybrid policy artifact comparison_suite_path=%s artifact_path=%s source=%s",
+                    comparison_suite_path,
+                    resolved_artifact,
+                    bundle.get("source"),
+                )
+                return bundle
+            LOGGER.info(
+                "ignoring hybrid policy artifact with mismatched active models comparison_suite_path=%s expected=%s actual=%s",
+                comparison_suite_path,
+                ",".join(sorted(expected_active_names)),
+                ",".join(sorted(active_names)),
+            )
     benchmark_history_path = comparison_suite_path.parent / "benchmark_history.json"
     hybrid_policy = build_benchmark_weighted_hybrid_policy(
         active_models=active_models,

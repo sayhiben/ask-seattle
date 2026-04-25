@@ -660,9 +660,8 @@ def test_suite_model_specs_include_operational_and_stacked_transformer_candidate
         semantic_model_id="sentence-transformers/all-MiniLM-L6-v2",
         semantic_secondary_model_id="Qwen/Qwen3-Embedding-0.6B",
         semantic_tertiary_model_id="jinaai/jina-embeddings-v5-text-small-classification",
-        transformer_model_id="answerdotai/ModernBERT-base",
-        transformer_secondary_model_id="chandar-lab/NeoBERT",
-        transformer_tertiary_model_id="answerdotai/ModernBERT-large",
+        transformer_model_id="chandar-lab/NeoBERT",
+        transformer_secondary_model_id="answerdotai/ModernBERT-large",
         causal_lm_model_id="Qwen/Qwen3-1.7B",
     )
 
@@ -670,7 +669,6 @@ def test_suite_model_specs_include_operational_and_stacked_transformer_candidate
 
     assert names == [
         "tfidf_recommended",
-        "transformer_modernbert_base",
         "transformer_neobert",
         "transformer_modernbert_large",
         "stacked_transformer_decider",
@@ -947,18 +945,18 @@ def test_benchmark_seed_sweep_writes_aggregate_summary(tmp_path: Path, monkeypat
     def fake_suite_specs(**kwargs):
         return [
             SuiteModelSpec(
-                name="transformer_modernbert_base",
-                display_name="Transformer ModernBERT-base",
-                family="transformer_sequence_classifier",
-                runner=make_runner("transformer_modernbert_base", "transformer_sequence_classifier", kwargs["transformer_secondary_model_id"]),
-                kwargs={"model_id": kwargs["transformer_secondary_model_id"], "display_name": "Transformer ModernBERT-base"},
-            ),
-            SuiteModelSpec(
                 name="transformer_neobert",
                 display_name="Transformer NeoBERT",
                 family="transformer_sequence_classifier",
-                runner=make_runner("transformer_neobert", "transformer_sequence_classifier", kwargs["transformer_tertiary_model_id"]),
-                kwargs={"model_id": kwargs["transformer_tertiary_model_id"], "display_name": "Transformer NeoBERT"},
+                runner=make_runner("transformer_neobert", "transformer_sequence_classifier", kwargs["transformer_model_id"]),
+                kwargs={"model_id": kwargs["transformer_model_id"], "display_name": "Transformer NeoBERT"},
+            ),
+            SuiteModelSpec(
+                name="transformer_modernbert_large",
+                display_name="Transformer ModernBERT-large",
+                family="transformer_sequence_classifier",
+                runner=make_runner("transformer_modernbert_large", "transformer_sequence_classifier", kwargs["transformer_secondary_model_id"]),
+                kwargs={"model_id": kwargs["transformer_secondary_model_id"], "display_name": "Transformer ModernBERT-large"},
             ),
         ]
 
@@ -969,16 +967,16 @@ def test_benchmark_seed_sweep_writes_aggregate_summary(tmp_path: Path, monkeypat
         tmp_path / "suite",
         evaluation_subreddit="seattle",
         split_seeds=(13, 21),
-        model_names=("transformer_modernbert_base", "transformer_neobert"),
+        model_names=("transformer_neobert", "transformer_modernbert_large"),
     )
 
     assert summary["split_seeds"] == [13, 21]
-    assert summary["selected_models"] == ["transformer_modernbert_base", "transformer_neobert"]
+    assert summary["selected_models"] == ["transformer_neobert", "transformer_modernbert_large"]
     assert len(summary["seed_runs"]) == 2
     assert len(summary["model_aggregates"]) == 2
     assert summary["best_model_selection_order"] == ["ready_rate", "min_auto_precision", "mean_auto_recall", "mean_pr_auc"]
     assert Path(tmp_path / "suite" / "seed_sweeps" / "seed_sweep_summary.json").exists()
-    aggregate = next(item for item in summary["model_aggregates"] if item["name"] == "transformer_modernbert_base")
+    aggregate = next(item for item in summary["model_aggregates"] if item["name"] == "transformer_neobert")
     assert aggregate["metric_summary"]["pr_auc"]["count"] == 2
     assert aggregate["metric_summary"]["review_recall"]["mean"] > 0.7
     assert aggregate["production_ready_runs"] == 2

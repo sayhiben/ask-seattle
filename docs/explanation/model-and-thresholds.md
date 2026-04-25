@@ -16,17 +16,16 @@ That choice is deliberate:
 
 This project does not currently need a larger or more expensive retrain loop to prove the workflow.
 
-That said, the repository now also includes a five-model benchmark suite so you can compare whether encoder-transformer families improve the fuzzy edge of the decision boundary without turning every local retrain into a transformer job.
+That said, the repository now also includes a four-model benchmark suite so you can compare whether encoder-transformer families improve the fuzzy edge of the decision boundary without turning every local retrain into a transformer job.
 
 The artifact-backed comparison stack currently includes:
 
 - TF-IDF baseline
-- ModernBERT-base encoder classifier
 - NeoBERT encoder classifier
 - ModernBERT-large encoder classifier
-- a stacked transformer decider trained from the three encoder scores plus shared post-shape features
+- a stacked transformer decider trained from the two active encoder scores plus shared post-shape features
 
-The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by calibrated strict-threshold readiness before using recall and PR-AUC as tie breakers. ModernBERT-base, NeoBERT, and ModernBERT-large all run small bounded config grids before final selection. The current grid adds a CUDA-only 512-token precision NeoBERT candidate and 48 GB CUDA-only ModernBERT-large long-context and precision-long-context candidates.
+The encoder-transformer benchmarks use title/body pair encoding instead of one flattened text string. They use calibration PR-AUC for early stopping, restore the best epoch checkpoint, and keep the better candidate by calibrated strict-threshold readiness before using recall and PR-AUC as tie breakers. NeoBERT and ModernBERT-large each run small bounded config grids before final selection. The current grid adds a CUDA-only 512-token precision NeoBERT candidate and 48 GB CUDA-only ModernBERT-large long-context and precision-long-context candidates.
 
 On CUDA runs, the neural training paths now also enable TF32 float32 matmul. That is a speed optimization for Ampere-and-newer NVIDIA GPUs; it lowers remote wall-clock cost without changing the product-level threshold policy.
 
@@ -197,7 +196,6 @@ What changed is the default bridge policy. `make bridge` now starts with `DECIDE
 
 The stacked transformer decider is not a hand-tuned average. It is a separate logistic model trained on:
 
-- calibrated `transformer_modernbert_base` score
 - calibrated `transformer_neobert` score
 - calibrated `transformer_modernbert_large` score
 - simple post-shape features such as post type, low-text, sparse-media, and crosspost flags
@@ -205,15 +203,15 @@ The stacked transformer decider is not a hand-tuned average. It is a separate lo
 
 Those training scores are now generated out-of-fold on the suite train split. Each transformer component is retrained on inner train/calibration slices, only scores the held-out outer fold, and the meta-model is fit on that stitched-together held-out score table. That avoids the old leakage pattern where the stacker learned from component scores on rows those components had already seen during training. On CUDA hosts, those fold-local component retrains use the GPU; on MPS hosts they still force `cpu_fallback` because that path is not stable enough yet.
 
-That matters because the stacked decider can now learn when one transformer should dominate and when agreement across the three carries more signal than any one raw score without over-crediting in-sample consensus.
+That matters because the stacked decider can now learn when `NeoBERT` should dominate and when `ModernBERT-large` or the post-shape features should pull the decision without over-crediting in-sample consensus.
 
-It is also less arbitrary than the older TF-IDF-anchored hybrid: the stacked policy is trained and calibrated on its own score distribution instead of borrowing TF-IDF thresholds for a different mixed score.
+It is also less arbitrary than the older bridge-side hybrid used to be: the stacked policy is trained and calibrated on its own score distribution instead of borrowing TF-IDF thresholds for a different mixed score.
 
 The older routed bridge-side hybrid still exists as an alternate policy:
 
 - `DECIDER_POLICY=hybrid_consensus`
 
-That policy is still benchmark-informed. It uses a weighted average of the primary bridge score plus the successfully scored comparison-model outputs, and the weights come from local benchmark artifacts instead of a fixed primary-model boost.
+That policy is still benchmark-informed, but it is no longer just a weighted score that borrows TF-IDF thresholds. Benchmarking now builds a real `hybrid_consensus_policy` artifact: it combines the primary bridge score with successfully scored comparison-model outputs when a post is routed, falls back to the primary score when it is not, fits a calibrator on that effective score distribution, and selects its own low/high thresholds on the shared calibration split.
 
 Current hybrid weighting policy:
 
@@ -227,6 +225,8 @@ The weight formula is precision-first:
 - `auto_recall_at_precision_95` is the primary driver
 - `review_recall_at_precision_75` is the secondary driver
 - `pr_auc` is only a tie-breaker
+
+When the saved `hybrid_consensus_policy` artifact is available, the bridge loads its calibrator and threshold policy directly. If that artifact is missing or incompatible with the active comparison set, the bridge still falls back to an in-memory benchmark-weighted policy so `/check` can continue working.
 
 If you want to inspect only the primary TF-IDF behavior, run:
 

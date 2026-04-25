@@ -726,8 +726,8 @@ def test_load_comparison_models_filters_to_supported_active_suite(
 ) -> None:
     primary_artifact = tmp_path / "tfidf.joblib"
     primary_artifact.write_text("primary", encoding="utf-8")
-    modernbert_base_artifact = tmp_path / "modernbert-base.joblib"
-    modernbert_base_artifact.write_text("modernbert-base", encoding="utf-8")
+    neobert_artifact = tmp_path / "neobert.joblib"
+    neobert_artifact.write_text("neobert", encoding="utf-8")
     modernbert_artifact = tmp_path / "modernbert-large.joblib"
     modernbert_artifact.write_text("modernbert", encoding="utf-8")
     semantic_artifact = tmp_path / "semantic.joblib"
@@ -769,10 +769,10 @@ def test_load_comparison_models_filters_to_supported_active_suite(
                         "status": "ok",
                     },
                     {
-                        "name": "transformer_modernbert_base",
-                        "display_name": "Transformer ModernBERT-base",
+                        "name": "transformer_neobert",
+                        "display_name": "Transformer NeoBERT",
                         "model_family": "transformer_sequence_classifier",
-                        "artifact_path": str(modernbert_base_artifact),
+                        "artifact_path": str(neobert_artifact),
                         "status": "ok",
                     },
                 ]
@@ -783,8 +783,8 @@ def test_load_comparison_models_filters_to_supported_active_suite(
 
     def fake_load_model(path: Path) -> dict[str, Any]:
         artifact_name = Path(path).name
-        if artifact_name == "modernbert-base.joblib":
-            return {"model_name": "transformer_modernbert_base", "model_family": "transformer_sequence_classifier"}
+        if artifact_name == "neobert.joblib":
+            return {"model_name": "transformer_neobert", "model_family": "transformer_sequence_classifier"}
         if artifact_name == "modernbert-large.joblib":
             return {"model_name": "transformer_modernbert_large", "model_family": "transformer_sequence_classifier"}
         raise AssertionError(f"unexpected artifact load: {artifact_name}")
@@ -798,7 +798,7 @@ def test_load_comparison_models_filters_to_supported_active_suite(
     )
 
     assert [entry["name"] for entry in loaded] == [
-        "transformer_modernbert_base",
+        "transformer_neobert",
         "transformer_modernbert_large",
     ]
 

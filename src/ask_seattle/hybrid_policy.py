@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ask_seattle.model import apply_probability_calibrator
+
 HYBRID_POLICY_NAME = "hybrid_consensus_policy"
 HYBRID_POLICY_DISPLAY_NAME = "Hybrid consensus policy"
 HYBRID_POLICY_MODEL_FAMILY = "hybrid_decider_policy"
 HYBRID_WEIGHT_FORMULA_VERSION = "v1_benchmark_weighted_precision_first"
+HYBRID_POLICY_CONFIG_VERSION = "v2_calibrated_effective_policy"
 
 HYBRID_WEIGHT_READY_RATE_FLOOR = 0.2
 HYBRID_WEIGHT_READY_RATE_SCALE = 0.8
@@ -140,6 +143,12 @@ def hybrid_policy_response(
         "evaluation_subreddit": hybrid_policy.get("evaluation_subreddit"),
         "active_model_names": list(hybrid_policy.get("active_model_names") or []),
         "weights": list(hybrid_policy.get("weights") or []),
+        "config_version": hybrid_policy.get("config_version"),
+        "threshold_policy": dict(hybrid_policy.get("threshold_policy") or {})
+        if isinstance(hybrid_policy.get("threshold_policy"), dict)
+        else None,
+        "calibration_available": hybrid_policy.get("calibrator") is not None
+        or bool((hybrid_policy.get("calibration") or {}).get("available")),
     }
     if applied_weights:
         by_name = {str(item.get("name") or ""): item for item in payload["weights"] if isinstance(item, dict)}
@@ -201,37 +210,42 @@ def hybrid_decider_response(
     }
     if positive_votes and negative_votes:
         review_reasons.append("comparison_disagreement")
-    if policy != "hybrid_consensus" or not route_reasons:
-        decision_context["review_reasons"] = list(dict.fromkeys(review_reasons))
-        decision_context["review_priority"] = _review_priority(decision_context["review_reasons"])
-        return None, decision_context
-    if len(successful) < int(min_comparison_results):
-        review_reasons.append("insufficient_comparison_support")
+    if policy != "hybrid_consensus":
         decision_context["review_reasons"] = list(dict.fromkeys(review_reasons))
         decision_context["review_priority"] = _review_priority(decision_context["review_reasons"])
         return None, decision_context
 
-    weighted_score, applied_weights, weight_source = _weighted_hybrid_score(
+    effective_score, applied_weights, weight_source = _hybrid_effective_score(
         primary_result=primary_result,
         primary_model_name=primary_model_name,
         successful=successful,
+        route_reasons=route_reasons,
+        min_comparison_results=min_comparison_results,
         hybrid_policy=hybrid_policy,
     )
-    low_threshold = float(primary_result.get("low_threshold") or 0.0)
-    high_threshold = float(primary_result.get("high_threshold") or low_threshold)
-    label = "askseattle" if weighted_score >= low_threshold else "not_askseattle"
+    if route_reasons and len(successful) < int(min_comparison_results):
+        review_reasons.append("insufficient_comparison_support")
+    calibrated_score, calibration_source = _hybrid_calibrated_score(
+        effective_score=effective_score,
+        hybrid_policy=hybrid_policy,
+    )
+    low_threshold, high_threshold, threshold_source = _hybrid_thresholds(
+        hybrid_policy=hybrid_policy,
+        primary_result=primary_result,
+    )
+    label = "askseattle" if calibrated_score >= low_threshold else "not_askseattle"
     confidence_band = "low"
-    if weighted_score >= high_threshold:
+    if calibrated_score >= high_threshold:
         confidence_band = "high"
-    elif weighted_score >= low_threshold:
+    elif calibrated_score >= low_threshold:
         confidence_band = "borderline"
     decider_result = {
         **primary_result,
         "model_name": HYBRID_POLICY_NAME,
         "display_name": "Hybrid consensus",
-        "score": float(weighted_score),
-        "score_raw": float(weighted_score),
-        "score_calibrated": float(weighted_score),
+        "score": float(calibrated_score),
+        "score_raw": float(effective_score),
+        "score_calibrated": float(calibrated_score),
         "label": label,
         "confidence_band": confidence_band,
         "low_threshold": low_threshold,
@@ -243,13 +257,21 @@ def hybrid_decider_response(
         review_reasons.append("confidence_changed_by_hybrid")
     decision_context.update(
         {
-            "decision_source": "hybrid_consensus",
+            "decision_source": (
+                "hybrid_consensus"
+                if weight_source not in {"primary_only", "insufficient_comparison_support_fallback"}
+                else "hybrid_primary_only"
+            ),
             "review_reasons": list(dict.fromkeys(review_reasons)),
             "review_priority": _review_priority(review_reasons),
-            "hybrid_score": float(weighted_score),
+            "effective_high_threshold": float(high_threshold),
+            "hybrid_score": float(calibrated_score),
+            "hybrid_score_raw": float(effective_score),
             "primary_weight": float(applied_weights.get(primary_model_name or "", 0.0)),
             "comparison_weight": None,
             "hybrid_weight_source": weight_source,
+            "hybrid_calibration_source": calibration_source,
+            "hybrid_threshold_source": threshold_source,
             "hybrid_policy": hybrid_policy_response(hybrid_policy, applied_weights=applied_weights),
         }
     )
@@ -574,3 +596,56 @@ def _weighted_hybrid_score(
         name = str(entry.get("name") or "").strip()
         applied_weights[name] = HYBRID_LEGACY_COMPARISON_WEIGHT / float(denominator or 1.0)
     return float(legacy_score), applied_weights, "legacy_primary_weight"
+
+
+def _hybrid_effective_score(
+    *,
+    primary_result: dict[str, Any],
+    primary_model_name: str | None,
+    successful: list[dict[str, Any]],
+    route_reasons: list[str],
+    min_comparison_results: int,
+    hybrid_policy: dict[str, Any] | None,
+) -> tuple[float, dict[str, float], str]:
+    resolved_primary_name = str(primary_model_name or primary_result.get("model_name") or "").strip()
+    primary_score = float(primary_result.get("score") or 0.0)
+    if not route_reasons:
+        return primary_score, {resolved_primary_name: 1.0}, "primary_only"
+    if len(successful) < int(min_comparison_results):
+        return primary_score, {resolved_primary_name: 1.0}, "insufficient_comparison_support_fallback"
+    return _weighted_hybrid_score(
+        primary_result=primary_result,
+        primary_model_name=primary_model_name,
+        successful=successful,
+        hybrid_policy=hybrid_policy,
+    )
+
+
+def _hybrid_calibrated_score(
+    *,
+    effective_score: float,
+    hybrid_policy: dict[str, Any] | None,
+) -> tuple[float, str]:
+    if isinstance(hybrid_policy, dict):
+        calibrator = hybrid_policy.get("calibrator")
+        if calibrator is not None:
+            return (
+                float(apply_probability_calibrator(calibrator, [float(effective_score)])[0]),
+                str((hybrid_policy.get("calibration") or {}).get("method") or "sigmoid"),
+            )
+    return float(effective_score), "identity"
+
+
+def _hybrid_thresholds(
+    *,
+    hybrid_policy: dict[str, Any] | None,
+    primary_result: dict[str, Any],
+) -> tuple[float, float, str]:
+    threshold_policy = hybrid_policy.get("threshold_policy") if isinstance(hybrid_policy, dict) else None
+    if isinstance(threshold_policy, dict):
+        low_threshold = float(threshold_policy.get("low_threshold") or 0.0)
+        high_threshold = float(threshold_policy.get("high_threshold") or low_threshold)
+        return low_threshold, high_threshold, "hybrid_policy"
+    low_threshold = float(primary_result.get("low_threshold") or 0.0)
+    high_threshold = float(primary_result.get("high_threshold") or low_threshold)
+    return low_threshold, high_threshold, "primary_model"
