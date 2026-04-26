@@ -326,6 +326,48 @@ When you do remote retrain or benchmark work, the easiest way to reconstruct wha
 
 Two transformer models can look similar on paper but still serve different roles in the decider, and two different families can still be redundant in practice. When deciding whether to keep or cut a benchmark-suite model, ask what unique precision/recall or slice behavior it contributes beyond the others, not just whether it ranked third or fourth on one table.
 
+## Ten more things I wish I knew before I started
+
+### 11. Scope changes must be wired into the prep path before any remote spend
+
+Cleaning the corpus or talking through a narrower target population is not enough. If the training-preparation code still admits the old rows, the next remote retrain and benchmark will silently grade the wrong problem.
+
+### 12. Verify the prepared split locally before launching RunPod
+
+Before any billable remote run, prove locally that the prepared counts and split coverage match the intended scope. If the held-out split still contains excluded post types, stop there and fix the prep path first.
+
+### 13. Crossposts are not useful enough if they are title-only shells
+
+If crossposts stay in scope, the browser helper needs to capture or hydrate the embedded source content. Otherwise the model is being asked to classify many crossposts from almost no text, which is a product-definition error more than a model error.
+
+### 14. Crosspost repair should merge safe duplicates, but preserve real reframes
+
+Many captured corpora contain both the discovered crosspost row and the original source row. Repair those pairs into the crosspost row when labels and content line up, but do not flatten genuinely reworded crossposts into duplicates just because they point at the same source permalink.
+
+### 15. Blackwell-class RunPod GPUs need a newer runtime stack than older templates guarantee
+
+`RTX 5090` support is not just “pick a faster GPU.” It requires a compatible image, CUDA 12.8-era PyTorch, and cached-venv health checks that reject stale `cu124` environments before training starts.
+
+### 16. OOF stacker training should use CUDA on remote GPUs and only fall back locally when needed
+
+The robust out-of-fold stacker path is expensive enough that forcing it through CPU on RunPod wastes money and time. Use CUDA on real remote GPU hosts, keep `cpu_fallback` for unstable MPS paths, and do not conflate those two environments.
+
+### 17. Cache reuse and stale-cost cleanup are separate policies
+
+Deleting an “expired” retained volume right before reusing it is not a real cache policy. Treat lease expiry as “eligible for cleanup when idle,” keep reuse logic simple, and run pruning separately so the training path does not destroy warm caches opportunistically.
+
+### 18. On macOS, scheduled cleanup should be `launchd`-style, not wall-clock wishful thinking
+
+If the Mac is asleep, a specific wall-clock LaunchAgent run may not happen. Prefer `RunAtLoad` plus `StartInterval` for lightweight maintenance jobs so they run when the machine is awake instead of depending on one exact minute.
+
+### 19. Remote-trained artifacts must be portable back to the local repo
+
+If a pulled bundle still references component artifacts under `/workspace/...`, it is not really usable locally even if the remote benchmark succeeded. Either store relative references or implement explicit rebasing so local `load_model()` and local benchmark runs work after sync.
+
+### 20. When two deciders serve the same purpose, run the bakeoff and delete the loser
+
+Keeping both the stacked and hybrid deciders as “supported” after the product decision is made only creates stale docs, confusing CLI flags, and dead test surface. Once one policy wins the deployment question, remove the redundant one from runtime, benchmarking, docs, and local artifacts.
+
 ## Things not to commit
 
 Do not commit:
